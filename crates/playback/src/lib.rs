@@ -5,6 +5,7 @@
 //! the DSP chain land in phase 6 as sinks wrapped around the same decoder.
 
 pub mod engine;
+pub mod probe;
 pub mod queue;
 
 pub use engine::{Command, Engine, EngineError, EngineEvent};

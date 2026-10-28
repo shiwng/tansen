@@ -5,6 +5,7 @@
 
 pub mod addon;
 pub mod registry;
+pub mod yt;
 
 use serde::{Deserialize, Serialize};
 

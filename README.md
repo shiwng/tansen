@@ -18,6 +18,7 @@ discovery is gated on the PoToken spike. Feature status:
 - **rodio + Symphonia** — decode/playback (MP3, FLAC, MP4/AAC, OGG/Opus, WAV, AIFF, WavPack, APE)
 - **rusqlite** (bundled SQLite) — settings, library, playlists, history
 - **lofty** — tags + embedded artwork; **souvlaki** — OS media keys
+- YouTube Music catalogue via a **Kotlin sidecar** (`../BitChord/sidecar/`): upstream's GPL client served over 127.0.0.1 HTTP, spawned and supervised by the app (`docs/sidecar-api.md`). Off by default — `catalogue_sources` setting.
 - No backend server; no telemetry.
 
 ## Run (dev)

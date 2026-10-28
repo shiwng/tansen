@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 persistence = { path = "../persistence" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "json", "blocking"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -15,4 +15,5 @@ async-trait = "0.1"
 tracing = "0.1"
 
 [dev-dependencies]
+playback = { path = "../playback" }
 tempfile = "3"

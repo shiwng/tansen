@@ -36,11 +36,10 @@ Remaining from M2:
    tiers), `SourceRegistry` with persisted order, `SourceResolver` with racing
    `bestAcross` + fallback rules (port of the documented ordering, no Kotlin).
 2. ✅ Addon HTTP adapter (manifest/search/stream, SharedCalls dedup, 429 quiet period) + Settings → Sources management screen (add-by-URL with manifest validation, health dots, enable/disable/remove) — integration-tested against a local mock server.
-3. **Next: remote streaming playback** — `SourceStream` URLs need a ranged-reader MediaSource for rodio/Symphonia (the `ChunkedDataSource` equivalent), then addon search results become playable and the resolver work below gets a real exercise.
-4. QuickJS module adapter (`rquickjs`), two-export contract, sandboxed `fetch`.
-5. YouTube Music: feasibility spike for BotGuard PoToken on desktop
-   (WebView minter). **If it cannot be made to work, the feature is documented
-   as blocked, never simulated.**
+3. ✅ **YouTube Music via Kotlin sidecar** — upstream's `:shared` client (Innertube, StreamResolver, lyrics race) runs as a local HTTP sidecar (`BitChord/sidecar/`); Rust `YtMusicSource` supervises it and implements `MusicSource`. Verified end-to-end: search → AAC stream → 5 s Symphonia decode, RMS 0.126. Gated behind `catalogue_sources` (off by default). Gaps recorded: HLS/DASH, word-level lyrics payload, no PoToken minter.
+4. **Remote streaming playback in the engine** — the engine plays files; `SourceStream` URLs need fetch-to-cache (or a ranged reader) feeding rodio, then YT queue rows become playable end to end. (Addon sources keep the same need; simpler: HTTP range reader.)
+5. QuickJS module adapter (`rquickjs`), two-export contract, sandboxed `fetch`.
+5. ~~YouTube Music PoToken spike~~ — superseded by the sidecar path (item 3): the upstream Kotlin client resolves without a BotGuard token on the AAC-download path today. Observed, re-tested by the round-trip test; not guaranteed.
 - Verify: integration test against a local mock addon server (search →
   stream → play); resolver unit tests for rank/fallback/quality rules.
 
