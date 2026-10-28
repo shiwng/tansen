@@ -1,86 +1,130 @@
 # Feature parity matrix
 
-Statuses: ✅ implemented & tested · 🟨 partial (works, scope-bounded) · 📋 planned (phase) · 🚫 blocked (documented reason).
+Statuses (per the project brief): `NOT AUDITED · AUDITED · NOT IMPLEMENTED · IN PROGRESS · IMPLEMENTED · TESTED · BLOCKED · NOT APPLICABLE`.
 
-Legend: phase numbers refer to `docs/plan.md`.
+- **IMPLEMENTED** = present in the code. **TESTED** = passed its required test (unit, integration, or verified behavior — never "it compiles").
+- **BLOCKED** / **NOT APPLICABLE** always carry the reason.
+- Reference: upstream = BitChord Android v1.8.1 (repo == APK) and its GPL web player (`BitChord/web/app`), which is the desktop design reference we vendor from.
 
-## Playback
+Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attribution in README) · [P] ported/reimplemented in Rust/TS · [R] Rust backend.
 
-| Feature | Status | Notes |
+## 1. Shell & navigation (design parity)
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| Glass sidebar (Search/Home/New + Library sections + Playlists + Settings gear) | `web/app/src/shell/Sidebar.tsx` | TESTED | [V]+[P] | Same classes/structure; sections re-bound to the local library. Verified: DOM capture shows nav tree with `aria-current` (REA browser scenario, 2026-10-28) |
+| Design tokens (colors, type scale, radii, motion, z-layers) | `styles/tokens.css` | TESTED | [V] | Verbatim; DM Sans self-hosted (variable woff2) replacing the Google-CDN link |
+| Tailwind v4 glue (`@theme inline`, `type-*`, `glass-material`, `glass-pill`, `artwork-stroke`, `hairline-*`, no-preflight reset) | `styles/global.css` | TESTED | [V] | Verbatim + DM Sans `@font-face` |
+| SF Pro Display (lyrics font) | `assets/fonts/sf-pro-*` | IMPLEMENTED | [V] | ⚠ License flag: Apple-proprietary face shipped upstream without its own license; kept for lyrics parity, recorded in README limitations |
+| Wordmark + logo | `logo-mark.svg` | IMPLEMENTED | [V] | |
+| Player pill (LCD: artwork→fullscreen, title/artist links, 2px seek line with hover times, transport, volume, Up Next/lyrics toggles) | `PlayerBar.tsx`, `Lcd.tsx` | TESTED | [V]+[P] | Video/motion/nerdstats code paths stripped; `useScrubber` re-driven by engine `Position` events (10 Hz) + rAF interpolation |
+| Side panel (Up Next ⇄ lyrics, slide-in) | `SidePanel.tsx` | IMPLEMENTED | [V] | |
+| Full-screen player (artwork + mesh backdrop, lyrics/queue columns, idle chrome fade, browser fullscreen) | `FullScreenPlayer.tsx` | IMPLEMENTED | [V]+[P] | Video surface, motion artwork, NerdStats, favorite button omitted (see §7) |
+| Mesh backdrop (artwork-derived palette) | `MeshBackdrop.tsx` + `lib/meshPalette.ts` | IMPLEMENTED | [V] | Canvas-based; works on local artwork via `art://` |
+| Keyboard shortcuts (Space, ⌘←/→/↑/↓, ⌘F, /, Esc) | `useKeyboardShortcuts.ts` | IMPLEMENTED | [V] | |
+| Scrubber (drag-seek with pending-commit, `--progress` rAF) | `useScrubber.ts` | IMPLEMENTED | [V] | `getAudio()` returns null on desktop; `getPlayhead()` interpolates engine ticks |
+| Mobile drawer + top bar (<484px) | `MobileTopBar.tsx` | IMPLEMENTED | [V]+[P] | Responsive rules from the original kept |
+| Router (lazy page registry, preload on hover) | `pageRegistry.tsx`, `routes.tsx` | TESTED | [V]+[P] | Local routes; router redirect verified in browser scenario |
+| Light/dark themes | `tokens.css` | IMPLEMENTED | [V] | `prefers-color-scheme` only (upstream behavior); no manual toggle upstream → none here |
+
+## 2. Library
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| Import folders (dialog → scan) | MediaStore equivalent | TESTED | [R] | `folder_add`+`scan_start`; end-to-end cargo test on a real WAV; dedupe verified (rescan adds 0) |
+| Metadata extraction (tags, duration, codec, bitrate, sample rate, bit depth, channels) | MediaStore fields | TESTED | [R] | lofty; asserted in scanner test |
+| Artwork extraction + cache | MediaStore albumart | TESTED | [R] | Content-hash cache (`sha256(path+mtime)`); unchanged files never rewritten |
+| `art://` serving to the webview | content:// | IMPLEMENTED | [R] | Custom Tauri protocol, path-scoped |
+| Songs view (sortable track list) | LibraryScreen songs | TESTED | [V] TrackList | Virtualized ≥80 rows as upstream |
+| Albums / Artists grids + detail pages | `LocalGroups.kt` pages | TESTED | [R]+[P] | SQL groupings (`persistence::views`), tested incl. album_artist fallback; DetailHeader + TrackList |
+| Recently Played | history section | IMPLEMENTED | [R]+[P] | `play_history` rows on every track start |
+| Search (albums/artists/songs) | SearchScreen | IMPLEMENTED | [P] | Client-side over the index; typeahead stubbed until catalogue sources land |
+| Scan progress + summary states | — | IMPLEMENTED | [R]+[P] | `scan://progress`/`scan://done` events |
+| Missing-file detection (mark, not delete) | playback-time restream | TESTED | [R] | Scanner marks `missing`, verified in test |
+| Playlists: create / rename / delete / set contents / play | YTM playlists (local analog) | TESTED | [R] | Repo-level; schema tested; UI wired (create/rename/delete/play) |
+| Playlist reorder UI | PlayerQueue drag | IMPLEMENTED | [V] UpNext | Drag-move on Up Next rows; in-playlist reorder pending |
+| **Queue persistence across restarts** | `LastPlayed.saveQueue` | TESTED | [R] | `playback_state` table (migration 2); persister thread flushes structural changes ≤0.8 s / position ≥2 s; restore skips dead files — round-trip test |
+| Library watcher (auto-rescan) | — | NOT IMPLEMENTED | | `notify` planned next |
+
+## 3. Playback
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| Play/pause/stop/next/previous/seek/volume | PlaybackService | TESTED | [R] | Queue algebra unit-tested (9 tests); engine smoke-launched; transport wired end-to-end |
+| Queue ops (load/insert/jump/remove/clear/move) | QueueCoordinator tiers | TESTED | [R] | `Queue` model tested incl. `Move` index-tracking |
+| Repeat off/all/one | repeat modes | TESTED | [R] | Unit-tested (end-of-queue stop, repeat-all wrap, repeat-one) |
+| Shuffle | shuffle | IMPLEMENTED | [P] | Seed-random start + setting; in-queue deterministic shuffle (upstream `QueueWindow`) pending |
+| Gapless advance | Media3 gapless | IMPLEMENTED | [R] | 2 s pre-append + position-drop handoff detection; measured-seam validation pending (P6) |
+| Native media keys (macOS Now Playing / Windows SMTC) | MediaSession | IMPLEMENTED | [R] souvlaki | Attached on main thread; play/pause/seek/next/prev/stop wired; position pushed at 2 Hz |
+| Playback errors surface + auto-advance | `recoverFrom` | IMPLEMENTED | [R]+[P] | `TrackError` event → UI error band + queue advance |
+| Crossfade 0–12 s | `CrossfadeController` (two ExoPlayers) | NOT IMPLEMENTED | | Phase 6: two-sink equal-power mix. UI stores the preference already |
+| Playback speed | speed | NOT IMPLEMENTED | | rodio `set_speed` available |
+| Skip silence | FFmpeg renderers | NOT IMPLEMENTED | | Needs a silence-trim source wrapper |
+| Equalizer / loudness / limiter | `DspChain`, `EqualizerProcessor` | NOT IMPLEMENTED | | Phase 6 |
+| Audio cache | SimpleCache 512 MB | NOT APPLICABLE (local files) | | Reason: local playback reads disk directly; cache returns with network sources (P4) |
+| Sleep timer | `SleepTimer.kt` | NOT IMPLEMENTED | | Phase 6 |
+| Listening stats (wall-clock) | `ListeningRecorder` | IMPLEMENTED | [R] | Simplified: one history row per track start (not sampled wall-clock yet) |
+
+## 4. Lyrics (phase 5 data layer — live now)
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| Provider system: 13 providers raced in priority order, word > line > plain | `LyricsRepository.kt` → web `lyrics/` | TESTED | [V] | `repository.ts` vendored verbatim; **26 upstream vitest tests pass** (parse 15, clock 10, repository 1) |
+| ISRC identification (BiniLyrics, 2.5 s cap, LRU) | same | TESTED | [V] | Covered by repository test |
+| Parsers: TTML, enhanced-LRC/A2, QRC/YRC karaoke, plain LRC/text | `TtmlLyrics.kt` etc. | TESTED | [V] | `parse.test.ts` |
+| Apple-style word animation (`LyricClock`, am-lyrics renderer) | `LyricClock.kt` → `clock.ts` | TESTED | [V] | `clock.test.ts`; panel wired to engine playhead via `getPlayhead()` |
+| Provider settings (enable/order/precede-syllables/key) | `AppSettings` lyrics keys | TESTED | [V] | `LyricsSettings.tsx` + zustand localStorage store |
+| Provider picker + per-provider states | `LyricsProviderSheet` | IMPLEMENTED | [V] | |
+| HTTP layer | `LyricsHttp.kt` → extension bridge | TESTED | [P] | Rewritten: webview `fetch` for CORS-open hosts, **Rust `proxy_get`** (host-allowlisted) for the rest — replaces the upstream browser-extension bridge |
+| YouTube transcript/Music providers | Innertube | BLOCKED | | Reason: no Innertube client on desktop yet (same PoToken spike as §5); stubs return "missing" honestly |
+| Spotify Canvas lyric backdrop | `SpotifyCanvas.kt` | BLOCKED | | Reason: needs a Spotify user session; upstream needs it too. Code path stripped, not faked |
+| Translation | Google endpoints | NOT IMPLEMENTED | | Optional upstream; off by default |
+
+## 5. Sources & discovery (phase 4)
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| `MusicSource` trait (health/search/stream + `StreamRequest` tiers) | `MusicSource.kt` | NOT IMPLEMENTED | | Interface shape documented in audit; lands with the first adapter |
+| Addon HTTP sources | `AddonClient.kt` | NOT IMPLEMENTED | | First planned adapter (plain JSON protocol) |
+| QuickJS modules | `ModuleManager.kt` | NOT IMPLEMENTED | | Via `rquickjs` |
+| JioSaavn | `JioSaavnSource.kt` | NOT IMPLEMENTED | | |
+| YouTube Music catalogue + auth + streaming | Innertube/InnerTubeX/PoToken | BLOCKED | | Reason: web clients require Google BotGuard PoTokens (Android WebView upstream). Desktop spike (WebView minter or equivalent) is the gate; **never simulated** |
+| Racing resolver + lossless upgrades + strict matching | `SourceResolver.kt` | NOT IMPLEMENTED | | Logic documented; ports after ≥2 real sources exist to test against |
+| Cross-source fallback (`youtubeFallback`) | `PlaybackFallback.kt` | NOT IMPLEMENTED | | |
+
+## 6. Artwork & visual extras
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| Artwork display (artwork-stroke, radiosity glow) | sharedUi | IMPLEMENTED | [V] | Artwork + FSPlayer layers |
+| Dynamic page tint | `ArtworkPalette` → `usePageTint` | NOT IMPLEMENTED | | `artworkColor.ts` vendored; tint hook not yet attached to pages |
+| Animated canvas (Apple/Tidal/Spotify/community) | `CanvasRepository` | BLOCKED | | Reason: third-party catalogue endpoints + sessions; upstream needs them too |
+| Artist signatures / Apple artist art | canvas/* | BLOCKED | | Same reason |
+
+## 7. Integrations (phase 7)
+
+| Feature | Upstream | Status | How | Notes / test |
+|---|---|---|---|---|
+| Last.fm scrobbling | `LastFM.kt` | NOT IMPLEMENTED | | MD5-signed web-services flow documented |
+| ListenBrainz | `ListenBrainzManager.kt` | NOT IMPLEMENTED | | Token API |
+| Discord Rich Presence | kizzy gateway | NOT IMPLEMENTED | | User-token gateway; opt-in only, no official API |
+| Listen Together | `ListenTogether.kt` + Go server | NOT IMPLEMENTED | | Protocol documented; Go reference server exists upstream |
+| Downloads + taggers | `download/*` | NOT IMPLEMENTED | | Only for sources whose terms permit |
+| Spotify import/library | `SpotifyImporter.kt` | NOT IMPLEMENTED | | Needs user session (upstream: WebView) |
+| Chromecast | `CastController.kt` | NOT APPLICABLE | | Reason: no desktop Cast SDK equivalent; upstream feature is Android/GMS-bound |
+| Favorites / like status | `LikeState.kt` | NOT IMPLEMENTED | | YTM rating concept; local analog (per-track favorite) planned; button hidden meanwhile |
+| Android Auto / Wear / widgets / TV / web bridge | app module | NOT APPLICABLE | | Reason: platform-bound features with no desktop equivalent |
+
+## 8. Settings coverage
+
+| Upstream setting group | Status | Notes |
 |---|---|---|
-| Play / pause / stop / next / previous | 🟨 P3 slice | works; previous = history-aware restart, tested in queue model |
-| Seek | 🟨 P3 slice | rodio `try_seek`, drag-to-seek in UI |
-| Volume | 🟨 P3 slice | engine + UI slider + keyboard |
-| Persistent queue, reorder | 🟨 P3 slice | queue snapshot API + panel (add/remove/jump/clear); reorder drag + persistence across restarts planned |
-| Gapless playback | 🟨 P3 slice | pre-append ahead of track end, position-drop handoff detection; measured transition validation pending (P6) |
-| Crossfade 0–12 s | 📋 P6 | two-sink equal-power mix (BitChord uses two ExoPlayers) |
-| Playback speed | 📋 P6 | rodio `set_speed` exists; UI pending |
-| Skip silence | 📋 P6 | needs a silence-trimming source wrapper |
-| Repeat / shuffle | 🟨 P3 slice | repeat off/all/one wired; shuffle planned |
-| Codec/bitrate/sample-rate/bit-depth reporting | 🟨 P3 slice | stored at scan (lofty), shown in library; NerdStats-style panel planned |
-| Native media keys (macOS/Windows) | 🟨 P3 slice | souvlaki wired (Now Playing / SMTC); Windows build pending test |
-| Background playback recovery / error skip | 🟨 P3 slice | unopenable track → `TrackError` event + auto-advance |
-
-## Library
-
-| Feature | Status | Notes |
-|---|---|---|
-| Import folders | ✅ P3 slice | dialog picker → canonical path → scan; tested end-to-end on a real WAV |
-| Metadata extraction | ✅ P3 slice | lofty: tags, duration, codec, bitrate, sample rate, bit depth, channels |
-| Artwork (embedded) | 🟨 P3 slice | extracted to content-hash cache, served via `art://` |
-| Search / sort / filter | 🟨 P3 slice | client-side; server-side query when libraries grow |
-| Missing-file detection, rescan without duplicates | ✅ P3 slice | tested: second scan adds 0, missing marked not deleted |
-| Playlists + history persistence | 🟨 P3 slice | schema + repos + commands exist; playlist UI pending |
-| SMB / WebDAV sources | 📋 P4/P7 | BitChord uses SMBJ/PROPFIND; Rust: `pavao`/`reqwest_dav` candidates |
-
-## Discovery & sources
-
-| Feature | Status | Notes |
-|---|---|---|
-| Source interface (`health`/`search`/`stream`, quality tiers) | 📋 P4 | shape mirrors `MusicSource.kt`; racing resolver plan in audit §3 |
-| Addon HTTP sources (manifest/search/stream) | 📋 P4 | plain JSON protocol, cheapest first win |
-| QuickJS module sources | 📋 P4 | `rquickjs`; same two-export contract |
-| YouTube Music catalogue + auth | 🚫 until PoToken spike | web clients need BotGuard tokens; requires WebView or external minter — spike first, else blocked (documented, not simulated) |
-| JioSaavn | 📋 P4 | undocumented public API, same risk class as YTM |
-| Fallback/upgrade/substitution rules | 📋 P4 | logic documented; port after ≥2 real sources exist to test against |
-
-## Lyrics
-
-| Feature | Status | Notes |
-|---|---|---|
-| Provider interface + priority + raced fetch | 📋 P5 | port of `LyricsRepository` selection rules |
-| Plain + line-synced LRC (LRCLIB first) | 📋 P5 | open API, no credentials |
-| Word-level TTML/QRC parsing | 📋 P5 | parsers are pure logic (GPL-compatible translation) |
-| ISRC identification & matching | 📋 P5 | 2.5 s budget, LRU — port as specified |
-| Synchronized lyrics UI | 📋 P5 | `LyricClock` algorithm is fully specified + unit-tested upstream |
-| Caching, fallback, unavailable states | 📋 P5 | |
-| Translation | 🚫 P5+ | depends on Google endpoints; optional, off by default |
-
-## Audio features
-
-| Feature | Status | Notes |
-|---|---|---|
-| Equalizer (10-band) | 📋 P6 | BitChord: bilinear SVF chain on float blocks — port math, wrap rodio source |
-| Loudness normalization | 📋 P6 | requires per-track loudness data (YTM provides; local = ReplayGain scan) |
-| Sleep timer | 📋 P6 | trivial once P3 controls exist |
-| Audio cache | 📋 P4/P6 | local files need none; network sources get an LRU disk cache |
-| Listening statistics | 🟨 P3 slice | play history rows recorded; aggregation UI pending |
-
-## Downloads & integrations
-
-| Feature | Status | Notes |
-|---|---|---|
-| Downloads + tagging | 📋 P7 | only where source terms permit; BitChord's taggers are portable logic |
-| Last.fm / ListenBrainz scrobbling | 📋 P7 | documented protocols (MD5-signed posts / token API) |
-| Discord Rich Presence | 📋 P7 | user-token gateway; no official API — document risk, gate behind opt-in |
-| Listen Together | 📋 P7 | protocol + Go reference server exist and are documented |
-| Spotify import | 📋 P7 | embed-page scrape + matching; private GraphQL needs user session |
-| Chromecast | 🚫 | no desktop-cast SDK equivalent; reassess only with a concrete use case |
-
-## Platform
-
-| Feature | Status | Notes |
-|---|---|---|
-| macOS build + launch | ✅ P2/P3 | dev build verified on arm64; packaging (dmg) in P8 |
-| Windows build | 📋 P8 | cross-compile check pending; SMTC via souvlaki configured |
-| Installers / updates | 📋 P8 | tauri bundler + updater plugin |
+| Playback (repeat/shuffle/autoplay/crossfade/speed/automix) | IN PROGRESS | Repeat + shuffle live; crossfade preference stored; speed/automix pending (P6); every visible control works or says "not yet implemented" |
+| Audio output (PCM/USB/loudness/Atmos/spatial) | NOT IMPLEMENTED | Phase 6; desktop output = default device (rodio) |
+| Equalizer | NOT IMPLEMENTED | Phase 6 |
+| Downloads / cache | NOT IMPLEMENTED / N.A. | See §3 |
+| Sources/network | NOT IMPLEMENTED | Phase 4 |
+| Appearance (theme/liquid glass/canvas/nerd stats) | PARTIAL | `showNerdStats` stored (panel pending); upstream theme is media-query based (kept); liquid-glass/canvas toggles pending with their features |
+| Lyrics (sources/order/offset/translation) | IMPLEMENTED | Provider order/enable/prefer-syllables/key live; per-track offset pending |
+| Library (filter non-music, sort, folders) | IN PROGRESS | Folder management live; non-music filter (ringtones etc.) pending |
+| Integrations | NOT IMPLEMENTED | Phase 7 |

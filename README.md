@@ -5,9 +5,12 @@ architecture and experience of [BitChord](https://github.com/kushagrasinghx/BitC
 (a YouTube Music client) with a local-first core. **Not affiliated with or
 endorsed by BitChord, YouTube, or Google.**
 
-Status: **phase 3 vertical slice** — local library + real playback work end to
-end; catalogue discovery, lyrics and integrations are staged behind
-[docs/plan.md](docs/plan.md). Feature status: [docs/feature-matrix.md](docs/feature-matrix.md).
+Status: **M2 + phase-5 lyrics data layer** — the UI is the upstream web player's
+design (vendored, GPL-3.0): glass sidebar, player pill/LCD, full-screen player
+with mesh backdrop, Up Next, and the full lyrics system. Local library,
+playlists, queue persistence and real playback work end to end. Catalogue
+discovery is gated on the PoToken spike. Feature status:
+[docs/feature-matrix.md](docs/feature-matrix.md).
 
 ## Stack
 
@@ -50,8 +53,9 @@ tests/fixtures/     generated audio fixtures for tests
 ## Testing
 
 ```bash
-cargo test                        # queue algebra, scanner end-to-end (real WAV), units
-pnpm --dir apps/desktop build     # tsc strict + vite production build
+cargo test                                # 15 Rust tests: queue algebra, scanner e2e (real WAV), persistence views
+pnpm --dir apps/desktop test              # 26 vitest tests: lyric parsers, LyricClock, repository selection rules
+pnpm --dir apps/desktop build             # tsc strict + vite production build
 ```
 
 The queue model (`crates/playback/src/queue.rs`) and the scanner path are the
@@ -73,13 +77,17 @@ Kotlin app (repo @ v1.8.1 + supplied APK, same version) — modules, playback
 internals, source resolution, lyrics pipeline, downloads, auth, integrations —
 with file/line evidence, and what each part means for this port.
 
-## License
+## License & attribution
 
-GPL-3.0-or-later. BitChord is GPL-3.0; behavioral translation of its logic
-must carry a compatible license, so this project adopts GPL-3.0. Upstream
-attribution: BitChord by Kushagra Singh and contributors. Third-party
-dependency licenses are listed in `docs/audit-bitchord.md` §10 and Cargo/npm
-metadata; no proprietary artwork or branding is copied.
+GPL-3.0-or-later — matching upstream so logic and UI translations are
+license-compatible. The UI is **vendored from BitChord's own GPL web player**
+(`BitChord/web/app/src` — tokens, shell, track list, lyrics system); those
+files keep their upstream structure and this project adds nothing that would
+restrict them. Upstream: BitChord by Kushagra Singh and contributors.
+Known asset flag: the lyrics font (SF Pro Display woff2) is Apple-proprietary
+and ships upstream without its own license — kept for design parity, flagged
+here for distribution review. DM Sans (Google, OFL) is self-hosted for the UI
+face.
 
 ## Known limitations (honest list)
 

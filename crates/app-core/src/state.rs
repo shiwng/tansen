@@ -32,12 +32,47 @@ impl AppState {
         let engine = Engine::spawn()?;
         let scanner = Scanner::new(data_dir.join("art"));
         crate::history::spawn_recorder(db.clone(), engine.events.clone());
+        crate::persist_state::spawn_persister(db.clone(), engine.events.clone());
         Ok(Self {
             db,
             engine,
             scanner,
             media: crate::media::Media::new(),
         })
+    }
+
+    /// Restores the last queue (paused) from SQLite, skipping tracks whose
+    /// files are gone. Called once after open, before the UI loads.
+    pub fn restore_playback(&self) -> Result<bool, CoreError> {
+        let Some(state) = persistence::views::load_playback_state(&self.db)? else {
+            return Ok(false);
+        };
+        let alive: Vec<TrackRef> = state
+            .tracks
+            .into_iter()
+            .filter(|t| std::path::Path::new(&t.path).exists())
+            .collect();
+        if alive.is_empty() {
+            persistence::views::clear_playback_state(&self.db)?;
+            return Ok(false);
+        }
+        let index = state.index.filter(|i| *i < alive.len()).unwrap_or(0);
+        let position = state.position_sec;
+        let repeat = match state.repeat.as_str() {
+            "all" => Repeat::All,
+            "one" => Repeat::One,
+            _ => Repeat::Off,
+        };
+        self.engine.send(Command::Apply(QueueOp::Load {
+            tracks: alive,
+            index,
+            play: false,
+        }));
+        self.engine.send(Command::Apply(QueueOp::SetRepeat(repeat)));
+        if position > 0.5 {
+            self.engine.send(Command::Seek(position));
+        }
+        Ok(true)
     }
 
     // ---- Library -----------------------------------------------------------
@@ -160,6 +195,10 @@ impl AppState {
         self.engine.send(Command::Apply(QueueOp::Clear));
     }
 
+    pub fn queue_move(&self, from: usize, to: usize) {
+        self.engine.send(Command::Apply(QueueOp::Move { from, to }));
+    }
+
     pub fn queue_snapshot(&self) -> playback::QueueSnapshot {
         self.engine.snapshot()
     }
@@ -201,6 +240,16 @@ impl AppState {
 
     pub fn playlist_set_tracks(&self, id: i64, ids: &[i64]) -> Result<(), CoreError> {
         repo::set_playlist_tracks(&self.db, id, ids)?;
+        Ok(())
+    }
+
+    pub fn playlist_rename(&self, id: i64, name: &str) -> Result<(), CoreError> {
+        repo::rename_playlist(&self.db, id, name)?;
+        Ok(())
+    }
+
+    pub fn playlist_delete(&self, id: i64) -> Result<(), CoreError> {
+        repo::delete_playlist(&self.db, id)?;
         Ok(())
     }
 }

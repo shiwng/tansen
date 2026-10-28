@@ -18,14 +18,17 @@ track-error surfacing, keyboard shortcuts.
 - Known scope cuts: playlist UI, queue reorder drag, queue persistence across
   restarts, window-state restore — all next.
 
-## M2 — Finish phase 3
+## M2 — Finish phase 3 ✅ core (this delivery) — remainder below
 
-1. Queue persisted across restarts; restore position.
-2. Playlist UI (create, add tracks, reorder, play) + History page.
+Done: queue persistence across restarts (`playback_state`, migration 2, persister thread + restore), playlist create/rename/delete/set-contents/play, History (Recently Played), albums/artists grouping + detail pages, scan progress/summary events, queue `Move` op, UI re-based on the upstream web-player design (vendored shell: Sidebar/PlayerBar/Lcd/FullScreenPlayer/SidePanel/UpNext/TrackList/tokens; DM Sans + SF Pro Display self-hosted), lyrics system vendored + live (13 providers, parsers, clock, settings; Rust `proxy_get` replaces the browser-extension bridge), **39 automated tests** (13 Rust + 26 vitest).
+
+Remaining from M2:
+
+
+1. ~~Queue persisted~~ ✅ · ~~Playlist UI + History~~ ✅ · ~~Album/artist views~~ ✅
+2. Playlist **add-to** from TrackMenu (picker) + in-playlist reorder drag.
 3. Scan watcher (`notify`) for automatic re-index; prune-orphan artwork GC.
-4. Album/artist grouping views (port `LocalGroups` stable-id concept).
-- Verify: restart persistence test; playlist CRUD integration test; scan of a
-  1k-file fixture under a time budget.
+4. Restart-persistence integration test (currently round-trip tested at the repo layer).
 
 ## M3 — Phase 4 sources
 

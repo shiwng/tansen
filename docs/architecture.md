@@ -20,6 +20,29 @@ music-player/
 
 The proposed `frontend/` top-level directory was merged into `apps/desktop/src` — one npm package, one build. `sources`, `lyrics`, `audio-processing` and `integrations` crates are introduced with their phases, not pre-created.
 
+## Vendored UI (upstream web player)
+
+The desktop UI is the upstream web player's design, vendored file-by-file from
+`BitChord/web/app/src` (GPL-3.0, same as this project): `styles/tokens.css`,
+`styles/global.css`, the shell (`AppShell`, `Sidebar`, `PlayerBar`, `Lcd`,
+`SidePanel`, `UpNext`, `FullScreenPlayer`, `LyricsPanel`, `LyricsSettings`,
+`useScrubber`, `useKeyboardShortcuts`, `MeshBackdrop`), the music components
+(`TrackList`, `Artwork`, `Lockups`, `DetailHeader`, `ShelfView`, `Menu`, …),
+`state/ui.ts`, and the entire `src/lyrics/*` system with its tests. Two layers
+were rewritten for the desktop:
+
+1. **`state/player.ts`** — same field/action contract as upstream's store, but
+   backed by Tauri commands + `player://event`s instead of YouTube decks.
+   `getPlayhead()` interpolates the 10 Hz engine ticks; `getAudio()` returns
+   null (consumers use the playhead).
+2. **`lyrics/http.ts`** — the upstream browser-extension bridge becomes a
+   host-allowlisted Rust `proxy_get` command (reqwest), so CORS-less lyric
+   hosts work without any extension.
+
+Catalogue-only features (video surface, motion artwork, canvas, NerdStats,
+favorites, party sync) are stripped at the import sites, not stubbed to
+pretend.
+
 ## Data flow
 
 ```

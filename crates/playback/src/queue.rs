@@ -26,6 +26,8 @@ pub enum QueueOp {
     /// `at` is `Some(index)`).
     Insert { tracks: Vec<TrackRef>, at: Option<usize> },
     RemoveAt(usize),
+    /// Reorder: move the entry at `from` to `to` (queue drag).
+    Move { from: usize, to: usize },
     Clear,
     Jump(usize),
     Next,
@@ -164,6 +166,25 @@ impl Queue {
                 }
                 QueueEffect { load: None, changed: true }
             }
+            QueueOp::Move { from, to } => {
+                if from >= self.tracks.len() || to >= self.tracks.len() || from == to {
+                    return QueueEffect { load: None, changed: false };
+                }
+                let moved = self.tracks.remove(from);
+                self.tracks.insert(to, moved);
+                if let Some(i) = self.index {
+                    self.index = Some(if from == i {
+                        to
+                    } else if from < i && to >= i {
+                        i - 1
+                    } else if from > i && to <= i {
+                        i + 1
+                    } else {
+                        i
+                    });
+                }
+                QueueEffect { load: None, changed: true }
+            }
             QueueOp::Clear => {
                 let had = !self.tracks.is_empty();
                 self.tracks.clear();
@@ -299,6 +320,26 @@ mod tests {
         assert!(e.changed && e.load.is_none());
         assert_eq!(q.snapshot(false).index, None);
         assert!(q.snapshot(false).tracks.is_empty());
+    }
+
+    #[test]
+    fn move_reorders_and_tracks_current() {
+        let mut q = q3();
+        // Move track 3 to the front: current (index 0, track 1) shifts right.
+        let e = q.apply(QueueOp::Move { from: 2, to: 0 });
+        assert!(e.changed);
+        let snap = q.snapshot(false);
+        assert_eq!(snap.tracks[0].id, 3);
+        assert_eq!(snap.index, Some(1), "current entry follows the move");
+        assert_eq!(q.current().unwrap().id, 1);
+
+        // Move the current track itself.
+        q.apply(QueueOp::Move { from: 1, to: 2 });
+        assert_eq!(q.snapshot(false).index, Some(2));
+
+        // Out-of-range moves are no-ops.
+        let e = q.apply(QueueOp::Move { from: 5, to: 0 });
+        assert!(!e.changed);
     }
 
     #[test]

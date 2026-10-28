@@ -266,6 +266,21 @@ pub fn create_playlist(db: &Db, name: &str, now: i64) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+pub fn rename_playlist(db: &Db, playlist_id: i64, name: &str) -> Result<()> {
+    let conn = db.lock()?;
+    conn.execute(
+        "UPDATE playlists SET name = ?2 WHERE id = ?1",
+        params![playlist_id, name],
+    )?;
+    Ok(())
+}
+
+pub fn delete_playlist(db: &Db, playlist_id: i64) -> Result<()> {
+    let conn = db.lock()?;
+    conn.execute("DELETE FROM playlists WHERE id = ?1", params![playlist_id])?;
+    Ok(())
+}
+
 pub fn list_playlists(db: &Db) -> Result<Vec<(i64, String)>> {
     let conn = db.lock()?;
     let mut stmt = conn.prepare("SELECT id, name FROM playlists ORDER BY id")?;

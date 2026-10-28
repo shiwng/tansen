@@ -36,6 +36,7 @@ fn main() {
             let dir = data_dir();
             tracing::info!(dir = %dir.display(), "app data dir");
             let state = Arc::new(AppState::open(&dir).expect("app state init"));
+            let _ = state.restore_playback();
 
             attach_media_keys(&state);
             spawn_event_forwarder(app.handle().clone(), state.engine_events());
@@ -65,11 +66,20 @@ fn main() {
             commands::queue_insert,
             commands::queue_remove,
             commands::queue_jump,
+            commands::queue_move,
             commands::queue_clear,
             commands::playlist_create,
             commands::playlists_get,
             commands::playlist_tracks_get,
             commands::playlist_tracks_set,
+            commands::albums_get,
+            commands::artists_get,
+            commands::album_tracks_get,
+            commands::artist_tracks_get,
+            commands::playlist_rename,
+            commands::playlist_delete,
+            commands::history_get,
+            commands::proxy_get,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

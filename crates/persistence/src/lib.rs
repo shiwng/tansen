@@ -7,6 +7,7 @@
 
 pub mod models;
 pub mod repo;
+pub mod views;
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -132,5 +133,16 @@ const MIGRATIONS: &[&str] = &[
         played_at  INTEGER NOT NULL
     );
     CREATE INDEX idx_history_time ON play_history(played_at);
+    "#,
+    // 2 — recoverable playback state (queue + position + repeat), one row.
+    r#"
+    CREATE TABLE playback_state (
+        id           INTEGER PRIMARY KEY CHECK (id = 0),
+        tracks_json  TEXT NOT NULL,
+        index_num    INTEGER,
+        position_sec REAL NOT NULL DEFAULT 0,
+        repeat_mode  TEXT NOT NULL DEFAULT 'off',
+        updated_at   INTEGER NOT NULL
+    );
     "#,
 ];

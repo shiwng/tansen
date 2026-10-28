@@ -1,131 +1,170 @@
-import { useEffect, useState } from "react";
-import { Repeat } from "lucide-react";
-import { backend } from "../backend";
-import { usePlayer } from "../stores/player";
-import { useLibrary } from "../stores/library";
+import { useQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { LyricsSettings } from '@/shell/LyricsSettings';
+import { usePlayer, CROSSFADE_CHOICES } from '@/state/player';
+import { q } from '@/lib/rows';
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-raised)] p-4">
-      <h2 className="mb-3 text-sm font-semibold">{title}</h2>
-      <div className="flex flex-col gap-2.5">{children}</div>
-    </section>
-  );
-}
 
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+/**
+ * Settings, in the original's shape: Playback, Library, Lyrics, Integrations,
+ * About. Every control is wired to real state; features that don't exist yet
+ * say so instead of pretending.
+ */
+export function SettingsPage() {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <div>
-        <div className="text-sm">{label}</div>
-        {hint && <div className="text-xs text-[var(--text-dim)]">{hint}</div>}
+    <div>
+      <h1 className="mx-(--body-gutter) pt-11 type-header-emphasized">Settings</h1>
+      <div className="mx-(--body-gutter) mb-12 flex max-w-3xl flex-col gap-8">
+        <PlaybackSection />
+        <LibrarySection />
+        <LyricsSection />
+        <IntegrationsSection />
+        <AboutSection />
       </div>
-      {children}
     </div>
   );
 }
 
-function NotYet({ children }: { children: React.ReactNode }) {
+function PlaybackSection() {
+  const player = usePlayer();
   return (
-    <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-dim)]">
-      {children}
-    </span>
+    <section>
+      <h2 className="mb-3 type-title-2-emphasized">Playback</h2>
+      <div className="flex flex-col gap-2">
+        <Row label="Repeat" hint="Cycles off, all, one — the pill's repeat button does the same">
+          <button className={player_settings_button} onClick={player.cycleRepeat}>
+            <span className="capitalize">{player.repeat}</span>
+          </button>
+        </Row>
+        <Row label="Shuffle" hint="Shuffles the next selection when you press play on a list">
+          <input type="checkbox" className={player_settings_checkbox} checked={player.shuffle} onChange={player.toggleShuffle} />
+        </Row>
+        <Row label="Crossfade" hint="Stored now; the two-deck fade arrives with phase 6">
+          <select
+            className={player_settings_button}
+            value={player.crossfadeSec}
+            onChange={(e) => player.setCrossfade(Number(e.currentTarget.value))}
+          >
+            {CROSSFADE_CHOICES.map((sec) => (
+              <option key={sec} value={sec}>
+                {sec === 0 ? 'Off' : `${sec} seconds`}
+              </option>
+            ))}
+          </select>
+        </Row>
+        <Row label="Gapless playback" hint="Always on for local files">
+          <span className="type-callout text-secondary">Always on</span>
+        </Row>
+        <Row label="Equalizer / loudness / skip silence" hint="The DSP chain lands in phase 6">
+          <span className="type-callout text-secondary">Not yet implemented</span>
+        </Row>
+      </div>
+    </section>
   );
 }
 
-export function SettingsPage() {
-  const repeat = usePlayer((s) => s.repeat);
-  const cycleRepeat = usePlayer((s) => s.cycleRepeat);
-  const rescan = useLibrary((s) => s.rescan);
-  const scanning = useLibrary((s) => s.scanning);
-  const [settings, setSettings] = useState<[string, string][]>([]);
-
-  useEffect(() => {
-    backend.settingsGet().then(setSettings).catch(() => {});
-  }, []);
-
-  const get = (k: string) => settings.find(([key]) => key === k)?.[1];
-  const put = async (k: string, v: string) => {
-    setSettings((s) => [...s.filter(([key]) => key !== k), [k, v]]);
-    await backend.settingsSet(k, v);
-  };
-
+function LibrarySection() {
+  const folders = useQuery({ queryKey: ['local', 'folders'], queryFn: () => invoke<{ id: number; path: string }[]>('folders_get') });
+  const albums = useQuery(q.albums());
   return (
-    <div className="h-full overflow-y-auto px-6 py-6">
-      <h1 className="mb-4 text-2xl font-bold tracking-tight">Settings</h1>
-      <div className="flex max-w-2xl flex-col gap-4">
-        <Section title="Playback">
-          <Row label="Repeat mode" hint="Cycles off → all → one">
+    <section>
+      <h2 className="mb-3 type-title-2-emphasized">Library</h2>
+      <p className="mb-2 type-callout text-secondary">
+        {albums.data ? `${albums.data.length} albums indexed` : '…'}
+      </p>
+      <div className="flex flex-col gap-2">
+        {folders.data?.map((f) => (
+          <div key={f.id} className="flex items-center gap-3 rounded-[10px] bg-quinary px-3 py-2">
+            <span className="min-w-0 flex-1 truncate type-callout">{f.path}</span>
             <button
-              onClick={cycleRepeat}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm capitalize"
+              className="type-callout-emphasized text-key"
+              onClick={() => void invoke('folder_remove', { id: f.id }).then(() => invoke('scan_start'))}
             >
-              <Repeat size={13} /> {repeat}
+              Remove & rescan
             </button>
-          </Row>
-          <Row label="Gapless playback" hint="Always on for local files">
-            <NotYet>always on</NotYet>
-          </Row>
-          <Row label="Crossfade" hint="Adjustable 0–12 s (phase 6)">
-            <NotYet>not yet implemented</NotYet>
-          </Row>
-          <Row label="Equalizer" hint="10-band DSP chain (phase 6)">
-            <NotYet>not yet implemented</NotYet>
-          </Row>
-        </Section>
-
-        <Section title="Library">
-          <Row label="Rescan folders" hint="Re-index changed files, mark missing ones">
-            <button
-              onClick={rescan}
-              disabled={scanning}
-              className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              {scanning ? "Scanning…" : "Rescan"}
-            </button>
-          </Row>
-        </Section>
-
-        <Section title="Sources">
-          <Row label="Streaming sources (YouTube Music, addon servers)" hint="Source adapters land in phase 4">
-            <NotYet>not yet implemented</NotYet>
-          </Row>
-        </Section>
-
-        <Section title="Integrations">
-          <Row label="Last.fm / ListenBrainz scrobbling" hint="Phase 7">
-            <NotYet>not yet implemented</NotYet>
-          </Row>
-          <Row label="Discord Rich Presence" hint="Phase 7">
-            <NotYet>not yet implemented</NotYet>
-          </Row>
-          <Row label="Lyrics" hint="Provider system lands in phase 5">
-            <NotYet>not yet implemented</NotYet>
-          </Row>
-        </Section>
-
-        <Section title="Appearance">
-          <Row label="Theme" hint="Dark is the only theme in this slice; the choice is persisted">
-            <select
-              value={get("theme") ?? "dark"}
-              onChange={(e) => put("theme", e.target.value)}
-              className="rounded-lg border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-1.5 text-sm"
-            >
-              <option value="dark">Dark</option>
-              <option value="dark">System (dark)</option>
-            </select>
-          </Row>
-        </Section>
-
-        <Section title="About">
-          <Row label="Version" hint="Phase 3 vertical slice">
-            <span className="text-sm text-[var(--text-dim)]">0.1.0</span>
-          </Row>
-          <Row label="Stored settings" hint="SQLite, application data directory">
-            <span className="text-sm text-[var(--text-dim)]">{settings.length} keys</span>
-          </Row>
-        </Section>
+          </div>
+        ))}
       </div>
+    </section>
+  );
+}
+
+function LyricsSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <section>
+      <h2 className="mb-3 type-title-2-emphasized">Lyrics</h2>
+      <div className="flex flex-col gap-2">
+        <Row label="Providers" hint="Enable, order, and time the lyric sources">
+          <button className={player_settings_button} onClick={() => setOpen(true)}>
+            Configure…
+          </button>
+        </Row>
+      </div>
+      {open && <LyricsSettings onClose={() => setOpen(false)} />}
+    </section>
+  );
+}
+
+function IntegrationsSection() {
+  return (
+    <section>
+      <h2 className="mb-3 type-title-2-emphasized">Integrations</h2>
+      <div className="flex flex-col gap-2">
+        <Row label="Last.fm / ListenBrainz scrobbling" hint="Phase 7">
+          <span className="type-callout text-secondary">Not yet implemented</span>
+        </Row>
+        <Row label="Discord Rich Presence" hint="Phase 7">
+          <span className="type-callout text-secondary">Not yet implemented</span>
+        </Row>
+        <Row label="Listening parties" hint="Protocol exists upstream; desktop client is phase 7">
+          <span className="type-callout text-secondary">Not yet implemented</span>
+        </Row>
+        <Row label="YouTube Music / addons / Spotify" hint="Source adapters are phase 4; YouTube waits on the PoToken spike">
+          <span className="type-callout text-secondary">Not yet implemented</span>
+        </Row>
+      </div>
+    </section>
+  );
+}
+
+function AboutSection() {
+  const [settings, setSettings] = useState<[string, string][]>([]);
+  useEffect(() => {
+    void invoke<[string, string][]>('settings_get').then(setSettings).catch(() => {});
+  }, []);
+  return (
+    <section>
+      <h2 className="mb-3 type-title-2-emphasized">About</h2>
+      <div className="flex flex-col gap-2">
+        <Row label="Version" hint="Phase 3 slice + M2 library work; lyrics providers are wired (phase 5 data layer live)">
+          <span className="type-callout text-secondary">0.2.0</span>
+        </Row>
+        <Row label="Stored settings" hint="SQLite (WAL) in the app data directory">
+          <span className="type-callout text-secondary">{settings.length} keys</span>
+        </Row>
+        <p className="type-callout text-secondary">
+          BitChord Desktop is an independent GPL-3.0 re-implementation inspired by BitChord; not affiliated with
+          YouTube or Google. Design and logic reference the upstream GPL project — see docs/audit-bitchord.md.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+const player_settings_button =
+  'rounded-[10px] border-0 bg-quinary px-3.5 py-2 type-callout-emphasized text-primary outline-none';
+const player_settings_checkbox = 'size-4 accent-key';
+
+function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-[10px] bg-quinary px-3 py-2.5">
+      <div>
+        <div className="type-body">{label}</div>
+        {hint && <div className="type-callout text-secondary">{hint}</div>}
+      </div>
+      {children}
     </div>
   );
 }
