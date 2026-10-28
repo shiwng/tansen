@@ -154,6 +154,7 @@ function SourcesSection() {
         the phase-4 resolver; management and health are live now.
       </p>
       <div className="flex flex-col gap-2">
+        <CatalogueToggle />
         {sources.data?.map(({ config, health }) => (
           <div key={config.config_id} className="flex items-center gap-3 rounded-[10px] bg-quinary px-3 py-2.5">
             <span
@@ -208,6 +209,33 @@ function SourcesSection() {
         {error && <p className="type-callout text-key">{error}</p>}
       </div>
     </section>
+  );
+}
+
+/** The master switch for catalogue playback (YouTube Music via the sidecar). */
+function CatalogueToggle() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    void invoke<[string, string][]>('settings_get').then((rows) => {
+      setOn(rows.find(([k]) => k === 'catalogue_sources')?.[1] === 'true');
+    });
+  }, []);
+  return (
+    <Row
+      label="YouTube Music (catalogue)"
+      hint="Streams through the local Kotlin sidecar; needs the sidecar jar and Java 17"
+    >
+      <input
+        type="checkbox"
+        className={player_settings_checkbox}
+        checked={on ?? false}
+        onChange={(e) => {
+          const value = e.currentTarget.checked;
+          setOn(value);
+          void invoke('settings_set', { key: 'catalogue_sources', value: value ? 'true' : 'false' });
+        }}
+      />
+    </Row>
   );
 }
 

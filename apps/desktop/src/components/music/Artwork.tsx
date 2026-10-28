@@ -1,5 +1,10 @@
 import { useState, type CSSProperties } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { sizedArtwork } from '@/lib/artwork';
+
+function resolveSrc(src: string): string {
+  return src.startsWith('http') ? src : convertFileSrc(src, 'art');
+}
 
 interface ArtworkProps {
   src: string | null;
@@ -25,8 +30,11 @@ export function Artwork({ src, displayWidth, aspect = 1, radius, className, eage
   // googleusercontent answers bursts with 429 (lib/artwork.ts). A failed load
   // is retried once after a pause, then falls back to YouTube's own URL.
   const [attempt, setAttempt] = useState(0);
-  const sized = src ? sizedArtwork(src, displayWidth, aspect) : null;
-  const url = attempt >= 2 || sized === src ? src : sized;
+  // Local artwork rides the art:// protocol; catalogue thumbnails are plain
+  // https URLs and pass through untouched.
+  const resolved = src ? resolveSrc(src) : null;
+  const sized = resolved ? sizedArtwork(resolved, displayWidth, aspect) : null;
+  const url = attempt >= 2 || sized === resolved ? resolved : sized;
   return (
     <div
       className={className ? `${frame} ${className}` : frame}

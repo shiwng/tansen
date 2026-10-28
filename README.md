@@ -19,7 +19,7 @@ discovery is gated on the PoToken spike. Feature status:
 - **rodio + Symphonia** — decode/playback (MP3, FLAC, MP4/AAC, OGG/Opus, WAV, AIFF, WavPack, APE)
 - **rusqlite** (bundled SQLite) — settings, library, playlists, history
 - **lofty** — tags + embedded artwork; **souvlaki** — OS media keys
-- YouTube Music catalogue via a **Kotlin sidecar** (`../BitChord/sidecar/`): upstream's GPL client served over 127.0.0.1 HTTP, spawned and supervised by the app (`docs/sidecar-api.md`). Off by default — `catalogue_sources` setting.
+- YouTube Music catalogue via a **Kotlin sidecar** (`../BitChord/sidecar/`): upstream's GPL client served over 127.0.0.1 HTTP, spawned and supervised by the app (`docs/sidecar-api.md`). Off by default — the Settings → Sources toggle. Search → YouTube Music tab plays rows through a ranged-HTTP streaming reader (no full download).
 - No backend server; no telemetry.
 
 ## Run (dev)
@@ -55,7 +55,7 @@ tests/fixtures/     generated audio fixtures for tests
 ## Testing
 
 ```bash
-cargo test                                # 15 Rust tests: queue algebra, scanner e2e (real WAV), persistence views
+cargo test                                # Rust tests: queue algebra, scanner e2e, range-reader streaming, persistence
 pnpm --dir apps/desktop test              # 26 vitest tests: lyric parsers, LyricClock, repository selection rules
 pnpm --dir apps/desktop build             # tsc strict + vite production build
 ```

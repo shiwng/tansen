@@ -7,6 +7,7 @@
 pub mod engine;
 pub mod probe;
 pub mod queue;
+pub mod remote;
 
 pub use engine::{Command, Engine, EngineError, EngineEvent};
 pub use queue::{Queue, QueueOp, QueueSnapshot, Repeat};

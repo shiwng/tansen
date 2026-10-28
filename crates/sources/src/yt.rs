@@ -145,7 +145,7 @@ impl YtMusicSource {
                         }
                         // A sidecar that exited (bad jar path, port clash)
                         // should not be waited on for the full deadline.
-                        if let Ok(Some(status)) = child2.lock().unwrap().try_wait() {
+                        if let Ok(Some(_)) = child2.lock().unwrap().try_wait() {
                             return None;
                         }
                         std::thread::sleep(HEALTH_POLL);

@@ -115,6 +115,28 @@ function idsOf(tracks: Track[]): number[] {
   return tracks.map((t) => Number(t.videoId.replace('local:', '')));
 }
 
+/** Catalogue rows keep their YouTube video ids and ride the remote path. */
+function isRemote(tracks: Track[]): boolean {
+  return tracks.length > 0 && !tracks[0]!.videoId.startsWith('local:');
+}
+
+function playRemoteCommand(tracks: Track[], start: number, mode: 'load' | 'insert-next' | 'append'): void {
+  invoke('player_play_remote', {
+    args: {
+      tracks: tracks.map((t) => ({
+        videoId: t.videoId,
+        title: t.title,
+        artist: t.artists[0]?.name ?? '',
+        album: t.album?.name ?? null,
+        duration_sec: t.durationSec ?? 0,
+        thumbnailUrl: t.thumbnail,
+      })),
+      start,
+      mode,
+    },
+  }).catch((e) => usePlayer.setState({ status: 'error', error: String(e) }));
+}
+
 /** A Track for a local library file, from a backend TrackRef. */
 export function trackFromRef(t: {
   id: number; title: string; artist: string; album: string; duration_sec: number; art_path: string | null;
@@ -174,6 +196,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   ...loadSettings(),
 
   playTracks: (tracks, startIndex, _source) => {
+    if (isRemote(tracks)) return playRemoteCommand(tracks, startIndex, 'load');
     const ids = idsOf(tracks);
     if (!ids.length) return;
     set({ status: 'loading' });
@@ -182,14 +205,19 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     );
   },
 
-  playTrack: (track, source) => get().playTracks([track], 0, source),
+  playTrack: (track, source) => {
+    if (!track.videoId.startsWith('local:')) return playRemoteCommand([track], 0, 'load');
+    get().playTracks([track], 0, source);
+  },
 
   playNext: (tracks, _source) => {
-    invoke('queue_insert', { ids: idsOf(tracks), at: get().index + 1 }).catch(() => {});
+    if (isRemote(tracks)) void playRemoteCommand(tracks, 0, 'insert-next');
+    else invoke('queue_insert', { ids: idsOf(tracks), at: get().index + 1 }).catch(() => {});
   },
 
   addToQueue: (tracks, _source) => {
-    invoke('queue_insert', { ids: idsOf(tracks), at: null }).catch(() => {});
+    if (isRemote(tracks)) void playRemoteCommand(tracks, 0, 'append');
+    else invoke('queue_insert', { ids: idsOf(tracks), at: null }).catch(() => {});
   },
 
   jumpTo: (i) => invoke('queue_jump', { index: i }).catch(() => {}),

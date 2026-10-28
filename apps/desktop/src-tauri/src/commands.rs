@@ -386,3 +386,72 @@ pub fn source_set_enabled(state: StateHandle<'_>, config_id: String, enabled: bo
 pub fn source_reorder(state: StateHandle<'_>, config_id: String, delta: i32) -> Result<(), String> {
     sources::registry::reorder(&state.db, &config_id, delta).map_err(err)
 }
+
+// ---- Catalogue search + remote playback -----------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct RemoteTrackDto {
+    #[serde(rename = "videoId")]
+    pub video_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: Option<String>,
+    #[serde(default)]
+    pub duration_sec: f64,
+    #[serde(default, rename = "thumbnailUrl")]
+    pub thumbnail_url: Option<String>,
+}
+
+#[command]
+pub async fn yt_search(state: StateHandle<'_>, query: String) -> Result<Vec<app_core::yt_handle::CatalogRow>, String> {
+    let yt = state.yt().map_err(err)?;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = db;
+        yt.search(&query, 30)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[derive(serde::Deserialize)]
+pub struct PlayRemoteArgs {
+    pub tracks: Vec<RemoteTrackDto>,
+    #[serde(default = "default_start")]
+    pub start: usize,
+    #[serde(default)]
+    pub mode: String,
+}
+
+fn default_start() -> usize {
+    0
+}
+
+#[command]
+pub async fn player_play_remote(state: StateHandle<'_>, args: PlayRemoteArgs) -> Result<(), String> {
+    let mode = match args.mode.as_str() {
+        "insert-next" => app_core::yt_handle::PlayMode::InsertNext,
+        "append" => app_core::yt_handle::PlayMode::Append,
+        _ => app_core::yt_handle::PlayMode::Load,
+    };
+    let state2 = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let tracks: Vec<app_core::yt_handle::RemoteTrack> = args
+            .tracks
+            .into_iter()
+            .map(|t| app_core::yt_handle::RemoteTrack {
+                video_id: t.video_id,
+                title: t.title,
+                artist: t.artist,
+                album: t.album,
+                duration_sec: t.duration_sec,
+                thumbnail_url: t.thumbnail_url,
+            })
+            .collect();
+        state2.play_remote(&tracks, args.start, mode).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}

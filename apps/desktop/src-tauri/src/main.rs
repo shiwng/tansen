@@ -42,6 +42,9 @@ fn main() {
 
             attach_media_keys(&state);
             spawn_event_forwarder(app.handle().clone(), state.engine_events());
+            // Catalogue rows ride placeholders until this loop swaps in real
+            // stream URLs (only acts when the sidecar is actually up).
+            spawn_resolve_ahead(app.handle().clone(), state.engine_events(), state.engine_tx());
             // Watcher-driven rescans surface as the same `scan://done` event
             // the manual scan path uses, so library views refresh.
             spawn_scan_event_forwarder(app.handle().clone(), state.scan_events.clone());
@@ -86,6 +89,8 @@ fn main() {
             commands::playlist_delete,
             commands::history_get,
             commands::proxy_get,
+            commands::yt_search,
+            commands::player_play_remote,
             commands::sources_get,
             commands::sources_get_with_health,
             commands::source_add,
@@ -168,6 +173,28 @@ fn spawn_event_forwarder(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
+    });
+}
+
+fn spawn_resolve_ahead(
+    app: tauri::AppHandle,
+    events: tokio::sync::broadcast::Sender<playback::EngineEvent>,
+    engine_tx: std::sync::mpsc::Sender<playback::Command>,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Cloned out so the closure owns the state for 'static.
+        let state = app.state::<Arc<AppState>>().inner().clone();
+        // The resolver reads the cached sidecar handle when the catalogue flag
+        // is on; with the flag off the loop stays idle because rows never get
+        // placeholders.
+        app_core::remote::spawn_resolve_ahead(
+            events,
+            engine_tx,
+            Arc::new(move |video_id: &str| {
+                let yt = state.yt().map_err(|e| e.to_string())?;
+                yt.stream_blocking(video_id).map(|s| s.url)
+            }),
+        );
     });
 }
 

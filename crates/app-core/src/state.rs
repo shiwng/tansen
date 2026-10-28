@@ -17,6 +17,8 @@ pub enum CoreError {
     Audio(#[from] playback::EngineError),
     #[error("track {0} not found")]
     TrackMissing(i64),
+    #[error("{0}")]
+    Catalogue(String),
 }
 
 pub struct AppState {
@@ -28,6 +30,9 @@ pub struct AppState {
     pub scan_events: tokio::sync::broadcast::Sender<library::ScanSummary>,
     /// Serializes scans; the watcher skips when the command path holds it.
     scan_lock: std::sync::Mutex<()>,
+    /// The sidecar-backed YouTube source, launched once on first use and kept
+    /// for the process lifetime. `None` until the catalogue is first used.
+    yt: std::sync::Mutex<Option<Arc<crate::yt_handle::YtHandle>>>,
 }
 
 impl AppState {
@@ -46,6 +51,7 @@ impl AppState {
             media: crate::media::Media::new(),
             scan_events,
             scan_lock: std::sync::Mutex::new(()),
+            yt: std::sync::Mutex::new(None),
         })
     }
 
@@ -58,7 +64,12 @@ impl AppState {
         let alive: Vec<TrackRef> = state
             .tracks
             .into_iter()
-            .filter(|t| std::path::Path::new(&t.path).exists())
+            .filter(|t| {
+                crate::remote::is_placeholder(&t.path)
+                    || t.path.starts_with("http://")
+                    || t.path.starts_with("https://")
+                    || std::path::Path::new(&t.path).exists()
+            })
             .collect();
         if alive.is_empty() {
             persistence::views::clear_playback_state(&self.db)?;
@@ -167,6 +178,84 @@ impl AppState {
         Ok(())
     }
 
+    // ---- Remote (YouTube via sidecar) --------------------------------------
+
+    /// The catalogue flag plus a launched-once sidecar handle. Errors name the
+    /// fix (flag off, jar missing, no Java) — remote playback never pretends.
+    pub fn yt(&self) -> Result<Arc<crate::yt_handle::YtHandle>, CoreError> {
+        let enabled = repo::get_setting(&self.db, "catalogue_sources")
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if !enabled {
+            return Err(CoreError::Catalogue("catalogue sources are disabled (enable them in Settings → Sources)".into()));
+        }
+        let mut guard = self.yt.lock().unwrap();
+        if let Some(handle) = &*guard {
+            return Ok(handle.clone());
+        }
+        let jar = repo::get_setting(&self.db, "sidecar_jar").ok().flatten().map(PathBuf::from);
+        let java = repo::get_setting(&self.db, "java_path").ok().flatten();
+        let source = sources::yt::YtMusicSource::launch(jar, java)
+            .map_err(|e| CoreError::Catalogue(format!("YouTube sidecar unavailable: {e}")))?;
+        let handle = Arc::new(crate::yt_handle::YtHandle { source: Arc::new(source) });
+        *guard = Some(handle.clone());
+        Ok(handle)
+    }
+
+    /// Queues catalogue tracks. The start track is resolved immediately so
+    /// sound starts without waiting for the resolve-ahead loop; the rest ride
+    /// placeholders until the loop fills them.
+    pub fn play_remote(
+        &self,
+        tracks: &[crate::yt_handle::RemoteTrack],
+        start: usize,
+        mode: crate::yt_handle::PlayMode,
+    ) -> Result<(), CoreError> {
+        use crate::yt_handle::PlayMode;
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        let yt = self.yt()?;
+        let mut refs: Vec<TrackRef> = tracks
+            .iter()
+            .map(|t| TrackRef {
+                id: 0,
+                title: t.title.clone(),
+                artist: t.artist.clone(),
+                album: t.album.clone().unwrap_or_default(),
+                duration_sec: t.duration_sec,
+                art_path: t.thumbnail_url.clone(),
+                path: crate::remote::placeholder_for(&t.video_id),
+            })
+            .collect();
+
+        match mode {
+            PlayMode::Load => {
+                let start = start.min(refs.len() - 1);
+                let stream = yt
+                    .stream_blocking(&tracks[start].video_id)
+                    .map_err(|e| CoreError::Catalogue(format!("stream resolve failed: {e}")))?;
+                refs[start].path = stream.url;
+                self.media.update_track(refs.get(start));
+                self.engine.send(Command::Apply(playback::QueueOp::Load {
+                    tracks: refs,
+                    index: start,
+                    play: true,
+                }));
+            }
+            PlayMode::InsertNext => {
+                self.engine
+                    .send(Command::Apply(playback::QueueOp::Insert { tracks: refs, at: Some(self.engine.snapshot().index.map(|i| i + 1).unwrap_or(0)) }));
+            }
+            PlayMode::Append => {
+                self.engine.send(Command::Apply(playback::QueueOp::Insert { tracks: refs, at: None }));
+            }
+        }
+        Ok(())
+    }
+
     // ---- Playback ----------------------------------------------------------
 
     /// Replaces the queue with `ids` starting at `start`.
@@ -253,6 +342,12 @@ impl AppState {
     /// Subscribe to engine state changes (UI + OS media controls feed).
     pub fn engine_events(&self) -> tokio::sync::broadcast::Sender<EngineEvent> {
         self.engine.events.clone()
+    }
+
+    /// Command channel for services that push into the engine from their own
+    /// threads (the resolve-ahead loop).
+    pub fn engine_tx(&self) -> std::sync::mpsc::Sender<Command> {
+        self.engine.command_tx()
     }
 
     fn sync_media_playback(&self) {

@@ -13,7 +13,6 @@
 
 use sources::yt::{fetch_prefix, YtMusicSource};
 use sources::{MusicSource, StreamRequest};
-use std::io::Cursor;
 use std::path::PathBuf;
 
 #[tokio::test(flavor = "current_thread")]
@@ -53,10 +52,23 @@ async fn sidecar_search_stream_decode_round_trip() {
     // Download the whole file (4:37 @ 131 kbps ≈ 4.5 MB; MP4 demuxing wants
     // the real length) and decode it. The probe decodes real samples with
     // Symphonia — no device.
-    let bytes = fetch_prefix(&stream.url, 16_777_216).await.expect("stream bytes download");
-    assert!(bytes.len() > 128 * 1024, "got {} bytes, too small to hold 5 s of audio", bytes.len());
-    let rms = playback::probe::decode_rms(Cursor::new(bytes), std::time::Duration::from_secs(5))
-        .expect("5 seconds decode");
-    println!("decoded RMS: {rms:.5}");
+    // The engine's path: a seekable range reader straight over HTTP — no
+    // download. The MP4 demuxer seeks for moov; the reader answers with
+    // ranged fetches at line rate. The reader uses a blocking HTTP client,
+    // which — exactly like in the engine — must be created and dropped off
+    // the async runtime, so the decode runs on its own thread.
+    let url = stream.url.clone();
+    let rms = std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let reader = playback::remote::HttpRangeReader::new(url, vec![])
+                    .expect("range reader over the stream URL");
+                playback::probe::decode_rms(reader, std::time::Duration::from_secs(5))
+            })
+            .join()
+            .expect("decode thread")
+    })
+    .expect("5 seconds decode from ranged HTTP");
+    println!("decoded RMS (ranged HTTP): {rms:.5}");
     assert!(rms > 0.005, "decoded audio is effectively silence (RMS {rms})");
 }

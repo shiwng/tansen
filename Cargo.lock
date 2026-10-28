@@ -90,6 +90,7 @@ dependencies = [
  "persistence",
  "playback",
  "serde",
+ "sources",
  "souvlaki",
  "tempfile",
  "thiserror 2.0.21",
@@ -2917,6 +2918,7 @@ name = "playback"
 version = "0.1.0"
 dependencies = [
  "persistence",
+ "reqwest 0.12.28",
  "rodio",
  "serde",
  "symphonia",

@@ -216,6 +216,14 @@ impl Queue {
         }
     }
 
+    /// Replaces a queued track's path (remote resolve-ahead). Not a queue
+    /// edit the UI needs to hear about: order, index and identity stay.
+    pub fn patch_path(&mut self, index: usize, path: &str) {
+        if let Some(track) = self.tracks.get_mut(index) {
+            track.path = path.to_string();
+        }
+    }
+
     /// Moves playback to `i`, remembering the old position.
     fn goto(&mut self, i: usize) -> QueueEffect {
         if let Some(prev) = self.index {

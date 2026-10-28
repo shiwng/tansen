@@ -15,8 +15,11 @@ pub fn spawn_recorder(db: Arc<persistence::Db>, events: broadcast::Sender<Engine
         .spawn(move || loop {
             match rx.blocking_recv() {
                 Ok(EngineEvent::TrackChanged { track: Some(t) }) => {
-                    if let Err(e) = repo::record_play(&db, t.id, library::scanner::now_secs()) {
-                        tracing::warn!(error = %e, "history insert failed");
+                    // Catalogue rows have no library id to record (id = 0).
+                    if t.id > 0 {
+                        if let Err(e) = repo::record_play(&db, t.id, library::scanner::now_secs()) {
+                            tracing::warn!(error = %e, "history insert failed");
+                        }
                     }
                 }
                 Ok(_) => {}

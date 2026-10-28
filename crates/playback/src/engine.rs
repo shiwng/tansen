@@ -7,6 +7,7 @@
 //! layer forwards to the frontend.
 
 use crate::queue::{Queue, QueueOp, QueueSnapshot};
+use crate::remote::HttpRangeReader;
 use persistence::models::TrackRef;
 use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
 use std::fs::File;
@@ -38,6 +39,9 @@ pub enum Command {
     Stop,
     Seek(f64),
     SetVolume(f64),
+    /// Replaces a queued track's source path — how remote tracks get their
+    /// real stream URL after the resolve-ahead task fetches one.
+    PatchUrl { index: usize, url: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,10 +100,23 @@ impl Worker {
     }
 
     /// Opens and appends `track`'s decoder to the sink without clearing.
+    /// Local files open straight from disk; http(s) paths stream through the
+    /// range reader; `sidecar://` placeholders that were never patched (a
+    /// manual next before the resolve-ahead finished) error and skip.
     fn append(&mut self, track: &TrackRef) -> Result<(), String> {
-        let path: PathBuf = track.path.clone().into();
-        let file = File::open(&path).map_err(|e| e.to_string())?;
-        let source = Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?;
+        // Local and remote decoders are different concrete types; the sink
+        // takes any Source, so each branch erases to the same trait object.
+        let source: Box<dyn Source<Item = f32> + Send> =
+            if track.path.starts_with("http://") || track.path.starts_with("https://") {
+                let reader = HttpRangeReader::new(track.path.clone(), vec![]).map_err(|e| e.to_string())?;
+                Box::new(Decoder::new(BufReader::new(reader)).map_err(|e| e.to_string())?)
+            } else if track.path.starts_with("sidecar://") {
+                return Err("stream not resolved yet".into());
+            } else {
+                let path: PathBuf = track.path.clone().into();
+                let file = File::open(&path).map_err(|e| e.to_string())?;
+                Box::new(Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?)
+            };
         if let Some(d) = source.total_duration() {
             self.duration_hint = d.as_secs_f64();
         } else if track.duration_sec > 0.0 {
@@ -295,6 +312,12 @@ impl Engine {
         let _ = self.tx.send(cmd);
     }
 
+    /// A handle for services that push commands from their own threads
+    /// (resolve-ahead). Commands are applied on the audio thread.
+    pub fn command_tx(&self) -> Sender<Command> {
+        self.tx.clone()
+    }
+
     /// Cheap synchronous view for command handlers.
     pub fn snapshot(&self) -> QueueSnapshot {
         self.snapshot.read().unwrap().clone()
@@ -372,6 +395,9 @@ impl Worker {
                 self.sink.set_volume(v as f32);
                 self.volume = v;
                 self.emit(EngineEvent::Volume { level: v });
+            }
+            Command::PatchUrl { index, url } => {
+                self.queue.patch_path(index, &url);
             }
         }
     }
