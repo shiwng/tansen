@@ -5,7 +5,7 @@ Tansen is a Tauri 2 application: Rust owns state, audio and background work; Rea
 ## Workspace layout
 
 ```
-music-player/
+tansen/
 ├── apps/desktop/
 │   ├── src/              React UI (pages, components, zustand stores)
 │   └── src-tauri/        Tauri shell: commands, event forwarding, art protocol, media keys
