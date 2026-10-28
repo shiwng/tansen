@@ -5,6 +5,7 @@ members = [
     "crates/playback",
     "crates/library",
     "crates/persistence",
+    "crates/sources",
     "apps/desktop/src-tauri",
 ]
 

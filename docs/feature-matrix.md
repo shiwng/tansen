@@ -86,11 +86,13 @@ Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attributio
 
 | Feature | Upstream | Status | How | Notes / test |
 |---|---|---|---|---|
-| `MusicSource` trait (health/search/stream + `StreamRequest` tiers) | `MusicSource.kt` | NOT IMPLEMENTED | | Interface shape documented in audit; lands with the first adapter |
-| Addon HTTP sources | `AddonClient.kt` | NOT IMPLEMENTED | | First planned adapter (plain JSON protocol) |
+| **`MusicSource` trait** (health/search/stream + `StreamRequest` tiers, `StreamFormat` comparison rules) | `MusicSource.kt` | TESTED | [R] | `crates/sources`: trait + types ported with the tier semantics verbatim; registry unit-tested |
+| **Addon HTTP sources** (manifest/search/stream, SharedCalls dedup, 429 quiet period) | `AddonClient.kt` | TESTED | [R] | Integration-tested against a real local mock server: health Ok/Rejected/Unreachable distinctions, search rows, tiered stream, cache |
+| **Source management UI** (add by URL with manifest validation, health dots, enable/disable, remove) | `SourcesScreen.kt` | IMPLEMENTED | [R]+[P] | Settings → Sources; registration refuses servers without a valid manifest |
+| Racing resolver (`bestAcross`, lossless upgrades, strict matching) | `SourceResolver.kt` | NOT IMPLEMENTED | | Next: needs a second real source (or mock) + remote streaming playback to be exercisable |
 | QuickJS modules | `ModuleManager.kt` | NOT IMPLEMENTED | | Via `rquickjs` |
 | JioSaavn | `JioSaavnSource.kt` | NOT IMPLEMENTED | | |
-| YouTube Music catalogue + auth + streaming | Innertube/InnerTubeX/PoToken | BLOCKED | | Reason: web clients require Google BotGuard PoTokens (Android WebView upstream). Desktop spike (WebView minter or equivalent) is the gate; **never simulated** |
+| YouTube Music catalogue + auth + streaming | Innertube/InnerTubeX/PoToken | BLOCKED | | Reason: web clients require Google BotGuard PoTokens (Android WebView upstream). Desktop spike (WebView minter or equivalent) is the gate; **never simulated**. A `YouTube` `SourceKind` already exists in the registry ordering |
 | Racing resolver + lossless upgrades + strict matching | `SourceResolver.kt` | NOT IMPLEMENTED | | Logic documented; ports after ≥2 real sources exist to test against |
 | Cross-source fallback (`youtubeFallback`) | `PlaybackFallback.kt` | NOT IMPLEMENTED | | |
 

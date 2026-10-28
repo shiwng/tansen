@@ -4,6 +4,7 @@
 use crate::StateHandle;
 use playback::QueueSnapshot;
 use persistence::models::{Folder, Track, TrackRef};
+use sources::MusicSource as _;
 use tauri::{command, Emitter};
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -290,4 +291,98 @@ pub async fn proxy_get(url: String, patient: Option<bool>) -> Result<Option<Prox
     }
     let body = resp.text().await.map_err(|e| e.to_string())?;
     Ok(Some(ProxyResponse { status, body }))
+}
+
+// ---- Sources (phase 4, addon protocol first) -------------------------------
+
+#[command]
+pub fn sources_get(state: StateHandle<'_>) -> Result<Vec<sources::registry::SourceConfig>, String> {
+    sources::registry::load_configs(&state.db).map_err(err)
+}
+
+#[derive(serde::Serialize)]
+pub struct SourceWithHealth {
+    #[serde(flatten)]
+    pub config: sources::registry::SourceConfig,
+    pub health: sources::SourceHealth,
+}
+
+/// All configured sources with a live health read each, checked concurrently
+/// (each check carries its own timeout).
+#[command]
+pub async fn sources_get_with_health(state: StateHandle<'_>) -> Result<Vec<SourceWithHealth>, String> {
+    let db = state.db.clone();
+    let configs =
+        tauri::async_runtime::spawn_blocking(move || sources::registry::load_configs(&db).map_err(err))
+            .await
+            .map_err(err)??;
+    let mut set = tokio::task::JoinSet::new();
+    for config in configs {
+        set.spawn(async move {
+            let source = sources::addon::AddonSource::new(
+                config.config_id.clone(),
+                config.name.clone(),
+                config.base_url.clone(),
+            );
+            let health = match source.health().await {
+                Ok(h) => h,
+                Err(e) => sources::SourceHealth::Unreachable { reason: e.to_string() },
+            };
+            SourceWithHealth { config, health }
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(result) = set.join_next().await {
+        out.push(result.map_err(err)?);
+    }
+    out.sort_by_key(|s| (s.config.kind.rank(), s.config.rank));
+    Ok(out)
+}
+
+#[derive(serde::Deserialize)]
+pub struct NewSource {
+    pub base_url: String,
+}
+
+/// Adds an addon source from a base URL: fetches the manifest to validate the
+/// protocol and derive a display name. A server that doesn't answer with a
+/// valid manifest is refused — a half-working source must not enter the list.
+#[command]
+pub async fn source_add(state: StateHandle<'_>, new: NewSource) -> Result<sources::registry::SourceConfig, String> {
+    let base = new.base_url.trim_end_matches('/').to_string();
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err("Source URL must start with http:// or https://".into());
+    }
+    let source = sources::addon::AddonSource::new(base.clone(), base.clone(), base.clone());
+    let manifest = source
+        .probe_manifest()
+        .await
+        .map_err(|e| format!("Source did not answer with a valid manifest: {e}"))?;
+    let name = manifest.name.clone().unwrap_or_else(|| manifest.id.clone());
+    let config = sources::registry::SourceConfig {
+        config_id: format!("addon:{}", manifest.id),
+        kind: sources::SourceKind::Addon,
+        name,
+        base_url: base,
+        enabled: true,
+        rank: 0,
+    };
+    let _ = &manifest;
+    sources::registry::add_config(&state.db, config.clone()).map_err(err)?;
+    Ok(config)
+}
+
+#[command]
+pub fn source_remove(state: StateHandle<'_>, config_id: String) -> Result<(), String> {
+    sources::registry::remove_config(&state.db, &config_id).map_err(err)
+}
+
+#[command]
+pub fn source_set_enabled(state: StateHandle<'_>, config_id: String, enabled: bool) -> Result<(), String> {
+    sources::registry::set_enabled(&state.db, &config_id, enabled).map_err(err)
+}
+
+#[command]
+pub fn source_reorder(state: StateHandle<'_>, config_id: String, delta: i32) -> Result<(), String> {
+    sources::registry::reorder(&state.db, &config_id, delta).map_err(err)
 }

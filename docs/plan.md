@@ -30,15 +30,15 @@ Remaining from M2:
 3. Scan watcher (`notify`) for automatic re-index; prune-orphan artwork GC.
 4. Restart-persistence integration test (currently round-trip tested at the repo layer).
 
-## M3 — Phase 4 sources
+## M3 — Phase 4 sources 🟨 in progress
 
-1. `sources` crate: `MusicSource` trait (health/search/stream + `StreamRequest`
+1. ✅ `sources` crate: `MusicSource` trait (health/search/stream + `StreamRequest`
    tiers), `SourceRegistry` with persisted order, `SourceResolver` with racing
    `bestAcross` + fallback rules (port of the documented ordering, no Kotlin).
-2. Addon HTTP adapter first (manifest/search/stream), with health checks in
-   Settings → Sources screen.
-3. QuickJS module adapter (`rquickjs`), two-export contract, sandboxed `fetch`.
-4. YouTube Music: feasibility spike for BotGuard PoToken on desktop
+2. ✅ Addon HTTP adapter (manifest/search/stream, SharedCalls dedup, 429 quiet period) + Settings → Sources management screen (add-by-URL with manifest validation, health dots, enable/disable/remove) — integration-tested against a local mock server.
+3. **Next: remote streaming playback** — `SourceStream` URLs need a ranged-reader MediaSource for rodio/Symphonia (the `ChunkedDataSource` equivalent), then addon search results become playable and the resolver work below gets a real exercise.
+4. QuickJS module adapter (`rquickjs`), two-export contract, sandboxed `fetch`.
+5. YouTube Music: feasibility spike for BotGuard PoToken on desktop
    (WebView minter). **If it cannot be made to work, the feature is documented
    as blocked, never simulated.**
 - Verify: integration test against a local mock addon server (search →

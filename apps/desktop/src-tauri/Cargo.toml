@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 app-core = { path = "../../../crates/app-core" }
 library = { path = "../../../crates/library" }
 persistence = { path = "../../../crates/persistence" }
+sources = { path = "../../../crates/sources" }
 playback = { path = "../../../crates/playback" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

@@ -84,6 +84,12 @@ fn main() {
             commands::playlist_delete,
             commands::history_get,
             commands::proxy_get,
+            commands::sources_get,
+            commands::sources_get_with_health,
+            commands::source_add,
+            commands::source_remove,
+            commands::source_set_enabled,
+            commands::source_reorder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

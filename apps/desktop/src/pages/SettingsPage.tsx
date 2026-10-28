@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { LyricsSettings } from '@/shell/LyricsSettings';
@@ -19,6 +19,7 @@ export function SettingsPage() {
         <PlaybackSection />
         <LibrarySection />
         <LyricsSection />
+        <SourcesSection />
         <IntegrationsSection />
         <AboutSection />
       </div>
@@ -126,6 +127,95 @@ function LyricsSection() {
   );
 }
 
+function SourcesSection() {
+  const client = useQueryClient();
+  const sources = useQuery({
+    queryKey: ['sources'],
+    queryFn: () => invoke<SourceRow[]>('sources_get_with_health'),
+    refetchInterval: false,
+  });
+  const [url, setUrl] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const add = useMutation({
+    mutationFn: (base_url: string) => invoke<SourceRow['config']>('source_add', { new: { base_url } }),
+    onSuccess: () => {
+      setUrl('');
+      setError(null);
+      void client.invalidateQueries({ queryKey: ['sources'] });
+    },
+    onError: (e) => setError(String(e)),
+  });
+
+  return (
+    <section>
+      <h2 className="mb-3 type-title-2-emphasized">Sources</h2>
+      <p className="mb-2 type-callout text-secondary">
+        Addon servers speak the original's manifest/search/stream protocol. Search and playback through them land with
+        the phase-4 resolver; management and health are live now.
+      </p>
+      <div className="flex flex-col gap-2">
+        {sources.data?.map(({ config, health }) => (
+          <div key={config.config_id} className="flex items-center gap-3 rounded-[10px] bg-quinary px-3 py-2.5">
+            <span
+              className="size-2 flex-none rounded-full"
+              style={{ background: health.state === 'ok' ? 'var(--systemGreen)' : health.state === 'rejected' ? 'var(--systemRed)' : 'var(--systemGray)' }}
+              title={health.state}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 type-body">
+                <span className="truncate">{config.name}</span>
+                {!config.enabled && <span className="type-callout text-secondary">(off)</span>}
+              </div>
+              <div className="truncate type-callout text-secondary">
+                {health.state === 'ok' ? config.base_url : health.state === 'unreachable' ? `Unreachable — ${health.reason}` : `Rejected — ${'reason' in health ? health.reason : ''}`}
+              </div>
+            </div>
+            <button
+              className="type-callout-emphasized text-secondary hover:text-primary"
+              onClick={() => void invoke('source_set_enabled', { configId: config.config_id, enabled: !config.enabled }).then(() => client.invalidateQueries({ queryKey: ['sources'] }))}
+            >
+              {config.enabled ? 'Disable' : 'Enable'}
+            </button>
+            <button
+              className="type-callout-emphasized text-key"
+              onClick={() => void invoke('source_remove', { configId: config.config_id }).then(() => client.invalidateQueries({ queryKey: ['sources'] }))}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        {sources.data && sources.data.length === 0 && (
+          <p className="type-callout text-secondary">No sources yet — add an addon server below.</p>
+        )}
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (url.trim()) add.mutate(url.trim());
+          }}
+        >
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.currentTarget.value)}
+            placeholder="https://my-addon-server.example"
+            className="min-w-0 flex-1 rounded-[10px] border-0 bg-quinary px-3 py-2 type-body text-primary outline-none"
+            aria-label="Addon server URL"
+          />
+          <button type="submit" disabled={add.isPending || !url.trim()} className="rounded-pill bg-key px-4 py-2 type-callout-emphasized text-white disabled:opacity-50">
+            {add.isPending ? 'Checking…' : 'Add source'}
+          </button>
+        </form>
+        {error && <p className="type-callout text-key">{error}</p>}
+      </div>
+    </section>
+  );
+}
+
+interface SourceRow {
+  config: { config_id: string; name: string; base_url: string; enabled: boolean; rank: number };
+  health: { state: 'ok' | 'unreachable' | 'rejected'; detail?: string | null; reason?: string };
+}
+
 function IntegrationsSection() {
   return (
     <section>
@@ -138,9 +228,6 @@ function IntegrationsSection() {
           <span className="type-callout text-secondary">Not yet implemented</span>
         </Row>
         <Row label="Listening parties" hint="Protocol exists upstream; desktop client is phase 7">
-          <span className="type-callout text-secondary">Not yet implemented</span>
-        </Row>
-        <Row label="YouTube Music / addons / Spotify" hint="Source adapters are phase 4; YouTube waits on the PoToken spike">
           <span className="type-callout text-secondary">Not yet implemented</span>
         </Row>
       </div>
