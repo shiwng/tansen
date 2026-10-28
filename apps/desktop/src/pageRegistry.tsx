@@ -14,6 +14,7 @@ const search = () => import('@/pages/SearchPage').then((m) => ({ default: m.Sear
 const album = () => import('@/pages/AlbumPage').then((m) => ({ default: m.AlbumPage }));
 const artist = () => import('@/pages/ArtistPage').then((m) => ({ default: m.ArtistPage }));
 const playlist = () => import('@/pages/PlaylistPage').then((m) => ({ default: m.PlaylistPage }));
+const reorder = () => import('@/pages/ReorderPlaylistPage').then((m) => ({ default: m.ReorderPlaylistPage }));
 const settings = () => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage }));
 
 export const PAGE_ROUTES: PageRoute[] = [
@@ -23,6 +24,7 @@ export const PAGE_ROUTES: PageRoute[] = [
   { path: '/album/:id', load: album },
   { path: '/artist/:id', load: artist },
   { path: '/playlist/:id', load: playlist },
+  { path: '/playlist/:id/reorder', load: reorder },
   { path: '/library/:section', load: library },
   { path: '/settings', load: settings },
 ];

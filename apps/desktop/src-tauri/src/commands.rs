@@ -197,6 +197,11 @@ pub fn playlist_tracks_set(state: StateHandle<'_>, id: i64, ids: Vec<i64>) -> Re
 }
 
 #[command]
+pub fn playlist_add_tracks(state: StateHandle<'_>, id: i64, ids: Vec<i64>) -> Result<(), String> {
+    state.playlist_add_tracks(id, &ids).map_err(err)
+}
+
+#[command]
 pub fn playlist_rename(state: StateHandle<'_>, id: i64, name: String) -> Result<(), String> {
     state.playlist_rename(id, &name).map_err(err)
 }

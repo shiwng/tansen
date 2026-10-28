@@ -233,6 +233,27 @@ pub fn set_playlist_tracks(db: &Db, playlist_id: i64, track_ids: &[i64]) -> Resu
     Ok(())
 }
 
+/// Appends tracks to a playlist's end. Returns the new length.
+pub fn append_playlist_tracks(db: &Db, playlist_id: i64, track_ids: &[i64]) -> Result<i64> {
+    let mut conn = db.lock()?;
+    let tx = conn.transaction()?;
+    let next: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    for (offset, id) in track_ids.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO playlist_tracks(playlist_id, position, track_id) VALUES(?1, ?2, ?3)",
+            params![playlist_id, next + offset as i64, id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(next + track_ids.len() as i64)
+}
+
 pub fn playlist_tracks(db: &Db, playlist_id: i64) -> Result<Vec<TrackRef>> {
     let conn = db.lock()?;
     let mut stmt = conn.prepare(

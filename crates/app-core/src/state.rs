@@ -24,6 +24,10 @@ pub struct AppState {
     pub engine: Engine,
     pub scanner: Scanner,
     pub media: crate::media::Media,
+    /// Completed-scan notifications (watcher scans surface here too).
+    pub scan_events: tokio::sync::broadcast::Sender<library::ScanSummary>,
+    /// Serializes scans; the watcher skips when the command path holds it.
+    scan_lock: std::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -31,13 +35,17 @@ impl AppState {
         let db = Arc::new(Db::open(&data_dir.join("bitchord.db"))?);
         let engine = Engine::spawn()?;
         let scanner = Scanner::new(data_dir.join("art"));
+        let (scan_events, _) = tokio::sync::broadcast::channel(16);
         crate::history::spawn_recorder(db.clone(), engine.events.clone());
         crate::persist_state::spawn_persister(db.clone(), engine.events.clone());
+        crate::watcher::spawn_watcher(db.clone(), scanner.clone(), scan_events.clone());
         Ok(Self {
             db,
             engine,
             scanner,
             media: crate::media::Media::new(),
+            scan_events,
+            scan_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -113,11 +121,50 @@ impl AppState {
     /// Runs one scan pass over every registered folder, on the caller's
     /// blocking thread (Tauri wraps this in spawn_blocking).
     pub fn scan(&self, on_progress: impl Fn(library::ScanProgress) + Send + Sync) -> Result<library::ScanSummary, CoreError> {
-        let folders: Vec<(i64, String)> = repo::list_folders(&self.db)?
+        let _guard = self.scan_lock.lock().unwrap();
+        let folders = self.scan_folders()?;
+        Ok(self.scanner.scan(&self.db, &folders, on_progress)?)
+    }
+
+    fn scan_folders(&self) -> Result<Vec<(i64, String)>, CoreError> {
+        Ok(repo::list_folders(&self.db)?
             .into_iter()
             .map(|f| (f.id, f.path))
-            .collect();
-        Ok(self.scanner.scan(&self.db, &folders, on_progress)?)
+            .collect())
+    }
+
+    /// Watcher entry: scans only when the setting is on and no scan is running,
+    /// then reports the summary on `scan_events`.
+    pub fn scan_if_free(&self) {
+        if repo::get_setting(&self.db, "watch_folders")
+            .ok()
+            .flatten()
+            .map(|v| v == "false")
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Ok(_guard) = self.scan_lock.try_lock() else {
+            return; // a user-triggered scan is already running
+        };
+        let folders = match self.scan_folders() {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, "watcher scan listing failed");
+                return;
+            }
+        };
+        match self.scanner.scan(&self.db, &folders, |_| {}) {
+            Ok(summary) => {
+                let _ = self.scan_events.send(summary);
+            }
+            Err(e) => tracing::warn!(error = %e, "watcher scan failed"),
+        }
+    }
+
+    pub fn playlist_add_tracks(&self, id: i64, ids: &[i64]) -> Result<(), CoreError> {
+        repo::append_playlist_tracks(&self.db, id, ids)?;
+        Ok(())
     }
 
     // ---- Playback ----------------------------------------------------------
@@ -252,6 +299,7 @@ impl AppState {
         repo::delete_playlist(&self.db, id)?;
         Ok(())
     }
+
 }
 
 pub fn data_dir_default() -> PathBuf {

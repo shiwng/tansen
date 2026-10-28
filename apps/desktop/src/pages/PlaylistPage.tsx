@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useNavigate } from 'react-router';
 import { useParams } from 'react-router';
 import { invoke } from '@tauri-apps/api/core';
 import { DetailHeader } from '@/components/music/DetailHeader';
@@ -7,12 +8,15 @@ import { TrackList } from '@/components/music/TrackList';
 import { shuffleList } from '@/components/music/play';
 import { trackFromRef, usePlayer } from '@/state/player';
 import type { TrackRef } from '@/types';
-import { sourceFor } from '@/lib/rows';
+import { artUrl, sourceFor } from '@/lib/rows';
+import { useArtworkColor } from '@/lib/artworkColor';
+import { usePageTint } from '@/lib/usePageTint';
 
 /** A user playlist: an ordered list of library tracks. */
 export function PlaylistPage() {
   const { id } = useParams<{ id: string }>();
   const playlistId = Number(id);
+  const navigate = useNavigate();
   const client = useQueryClient();
   const playTracks = usePlayer((s) => s.playTracks);
   const [renaming, setRenaming] = useState(false);
@@ -43,6 +47,9 @@ export function PlaylistPage() {
 
   const title = meta.data.find(([pid]) => pid === playlistId)?.[1] ?? 'Playlist';
   const rows = tracks.data.map(trackFromRef);
+  // Tint from the first track's artwork, like an upstream playlist page.
+  const tint = useArtworkColor(artUrl(tracks.data.find((t) => t.art_path)?.art_path));
+  usePageTint(tint);
   const source = sourceFor('playlist', title, String(playlistId));
   const minutes = Math.round(tracks.data.reduce((sum, t) => sum + t.duration_sec, 0) / 60);
 
@@ -64,6 +71,12 @@ export function PlaylistPage() {
         canPlay={rows.length > 0}
         extra={
           <>
+            <button
+              className="rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary hover:bg-quaternary"
+              onClick={() => navigate(`/playlist/${playlistId}/reorder`)}
+            >
+              Reorder
+            </button>
             <button
               className="rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary hover:bg-quaternary"
               onClick={() => {
@@ -114,7 +127,7 @@ export function PlaylistPage() {
         </div>
       ) : (
         <p className="mx-(--body-gutter) pb-10 type-body text-secondary">
-          Empty playlist. Use a track's ⋯ menu → “Add to Playlist” once the playlist picker is wired, or add from Songs.
+          Empty playlist. Add songs from any track's ⋯ menu → Add to Playlist.
         </p>
       )}
     </div>

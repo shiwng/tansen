@@ -4,6 +4,7 @@ pub mod history;
 pub mod media;
 pub mod persist_state;
 pub mod state;
+pub mod watcher;
 
 pub use state::{AppState, CoreError};
 

@@ -4,7 +4,9 @@ import { DetailHeader } from '@/components/music/DetailHeader';
 import { TrackList } from '@/components/music/TrackList';
 import { shuffleList } from '@/components/music/play';
 import { usePlayer } from '@/state/player';
-import { q, rowsToTracks, sourceFor } from '@/lib/rows';
+import { artUrl, q, rowsToTracks, sourceFor } from '@/lib/rows';
+import { useArtworkColor } from '@/lib/artworkColor';
+import { usePageTint } from '@/lib/usePageTint';
 
 /** An album: every track sharing album_artist + album, in disc/track order. */
 export function AlbumPage() {
@@ -20,6 +22,9 @@ export function AlbumPage() {
   if (tracks.isPending || album.isPending) return null;
 
   const info = album.data.find((a) => a.key === key);
+  // Artwork-driven page tint, as the original's album pages.
+  const tint = useArtworkColor(artUrl(info?.art_path));
+  usePageTint(tint);
   const rows = rowsToTracks(tracks.data);
   const source = sourceFor('album', info?.album ?? 'Album', key);
   const minutes = Math.round(rows.reduce((sum, t) => sum + (t.durationSec ?? 0), 0) / 60);

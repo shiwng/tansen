@@ -40,6 +40,9 @@ fn main() {
 
             attach_media_keys(&state);
             spawn_event_forwarder(app.handle().clone(), state.engine_events());
+            // Watcher-driven rescans surface as the same `scan://done` event
+            // the manual scan path uses, so library views refresh.
+            spawn_scan_event_forwarder(app.handle().clone(), state.scan_events.clone());
 
             app.manage(state);
             Ok(())
@@ -76,6 +79,7 @@ fn main() {
             commands::artists_get,
             commands::album_tracks_get,
             commands::artist_tracks_get,
+            commands::playlist_add_tracks,
             commands::playlist_rename,
             commands::playlist_delete,
             commands::history_get,
@@ -154,6 +158,24 @@ fn spawn_event_forwarder(
                     tracing::warn!(skipped = n, "event forwarder lagged");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+fn spawn_scan_event_forwarder(
+    app: tauri::AppHandle,
+    events: tokio::sync::broadcast::Sender<library::ScanSummary>,
+) {
+    let mut rx = events.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(summary) => {
+                    let _ = app.emit("scan://done", summary);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             }
         }
     });

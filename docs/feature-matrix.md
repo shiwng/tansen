@@ -42,9 +42,11 @@ Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attributio
 | Scan progress + summary states | — | IMPLEMENTED | [R]+[P] | `scan://progress`/`scan://done` events |
 | Missing-file detection (mark, not delete) | playback-time restream | TESTED | [R] | Scanner marks `missing`, verified in test |
 | Playlists: create / rename / delete / set contents / play | YTM playlists (local analog) | TESTED | [R] | Repo-level; schema tested; UI wired (create/rename/delete/play) |
+| **Add to Playlist** (track ⋯ menu → picker, or create-on-the-spot) | TrackMenu items | TESTED | [R]+[P] | `playlist_add_tracks` (append); picker vendored from upstream's view shape |
+| **Playlist reorder page** (drag rows, Save/Cancel) | `ReorderPlaylistPage.kt` | TESTED | [P] | Dedicated page like the original; `reorderMove` helper unit-tested (6 vitest cases) |
 | Playlist reorder UI | PlayerQueue drag | IMPLEMENTED | [V] UpNext | Drag-move on Up Next rows; in-playlist reorder pending |
 | **Queue persistence across restarts** | `LastPlayed.saveQueue` | TESTED | [R] | `playback_state` table (migration 2); persister thread flushes structural changes ≤0.8 s / position ≥2 s; restore skips dead files — round-trip test |
-| Library watcher (auto-rescan) | — | NOT IMPLEMENTED | | `notify` planned next |
+| **Library watcher (auto-rescan on file change)** | MediaStore auto-update | TESTED | [R] | `notify` watcher, 2 s debounce, initial scan on subscribe, `watch_folders` setting gates it, scans skipped while a manual scan runs; integration test covers add/file/setting-off phases |
 
 ## 3. Playback
 
@@ -97,7 +99,7 @@ Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attributio
 | Feature | Upstream | Status | How | Notes / test |
 |---|---|---|---|---|
 | Artwork display (artwork-stroke, radiosity glow) | sharedUi | IMPLEMENTED | [V] | Artwork + FSPlayer layers |
-| Dynamic page tint | `ArtworkPalette` → `usePageTint` | NOT IMPLEMENTED | | `artworkColor.ts` vendored; tint hook not yet attached to pages |
+| Dynamic page tint | `ArtworkPalette` → `usePageTint` | IMPLEMENTED | [V] | Album/playlist pages tint from artwork (`art://` now sends CORS so the canvas can read pixels); tokens' `[data-tint]` rules vendored |
 | Animated canvas (Apple/Tidal/Spotify/community) | `CanvasRepository` | BLOCKED | | Reason: third-party catalogue endpoints + sessions; upstream needs them too |
 | Artist signatures / Apple artist art | canvas/* | BLOCKED | | Same reason |
 
@@ -126,5 +128,5 @@ Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attributio
 | Sources/network | NOT IMPLEMENTED | Phase 4 |
 | Appearance (theme/liquid glass/canvas/nerd stats) | PARTIAL | `showNerdStats` stored (panel pending); upstream theme is media-query based (kept); liquid-glass/canvas toggles pending with their features |
 | Lyrics (sources/order/offset/translation) | IMPLEMENTED | Provider order/enable/prefer-syllables/key live; per-track offset pending |
-| Library (filter non-music, sort, folders) | IN PROGRESS | Folder management live; non-music filter (ringtones etc.) pending |
+| Library (filter non-music, sort, folders) | IN PROGRESS | Folder management + **watch-folders toggle** live; non-music filter (ringtones etc.) pending |
 | Integrations | NOT IMPLEMENTED | Phase 7 |

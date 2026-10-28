@@ -67,6 +67,13 @@ function PlaybackSection() {
 function LibrarySection() {
   const folders = useQuery({ queryKey: ['local', 'folders'], queryFn: () => invoke<{ id: number; path: string }[]>('folders_get') });
   const albums = useQuery(q.albums());
+  const [watch, setWatch] = useState<boolean | null>(null);
+  useEffect(() => {
+    void invoke<[string, string][]>('settings_get').then((rows) => {
+      const value = rows.find(([k]) => k === 'watch_folders')?.[1];
+      setWatch(value !== 'false'); // default on
+    });
+  }, []);
   return (
     <section>
       <h2 className="mb-3 type-title-2-emphasized">Library</h2>
@@ -74,6 +81,18 @@ function LibrarySection() {
         {albums.data ? `${albums.data.length} albums indexed` : '…'}
       </p>
       <div className="flex flex-col gap-2">
+        <Row label="Watch folders" hint="Re-index automatically when files change on disk">
+          <input
+            type="checkbox"
+            className={player_settings_checkbox}
+            checked={watch ?? true}
+            onChange={(e) => {
+              const on = e.currentTarget.checked;
+              setWatch(on);
+              void invoke('settings_set', { key: 'watch_folders', value: on ? 'true' : 'false' });
+            }}
+          />
+        </Row>
         {folders.data?.map((f) => (
           <div key={f.id} className="flex items-center gap-3 rounded-[10px] bg-quinary px-3 py-2">
             <span className="min-w-0 flex-1 truncate type-callout">{f.path}</span>

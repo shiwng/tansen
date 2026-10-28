@@ -27,6 +27,7 @@ pub struct ScanSummary {
     pub errors: usize,
 }
 
+#[derive(Clone)]
 pub struct Scanner {
     pub art_dir: PathBuf,
 }
