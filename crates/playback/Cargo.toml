@@ -1,0 +1,16 @@
+[package]
+name = "playback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+persistence = { path = "../persistence" }
+rodio = { version = "0.21", features = ["symphonia-all"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

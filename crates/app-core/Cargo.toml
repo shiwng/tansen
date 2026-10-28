@@ -1,0 +1,18 @@
+[package]
+name = "app-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+persistence = { path = "../persistence" }
+playback = { path = "../playback" }
+library = { path = "../library" }
+souvlaki = "0.8"
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
