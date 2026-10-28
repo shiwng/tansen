@@ -1,6 +1,6 @@
 # Architecture
 
-BitChord Desktop is a Tauri 2 application: Rust owns state, audio and background work; React/TypeScript owns presentation. The mapping from the original Kotlin app is in `docs/audit-bitchord.md` §10; this document describes what exists now and what lands where.
+Tansen is a Tauri 2 application: Rust owns state, audio and background work; React/TypeScript owns presentation. The mapping from the original Kotlin app is in `docs/audit-bitchord.md` §10; this document describes what exists now and what lands where.
 
 ## Workspace layout
 

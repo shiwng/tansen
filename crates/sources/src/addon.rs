@@ -106,7 +106,7 @@ impl AddonSource {
             base: base.trim_end_matches('/').to_string(),
             http: reqwest::Client::builder()
                 .timeout(TIMEOUT)
-                .user_agent("BitChordDesktop/0.2 (https://github.com/bitchord)")
+                .user_agent("Tansen/0.3")
                 .build()
                 .expect("reqwest client"),
             cache: Mutex::new(HashMap::new()),

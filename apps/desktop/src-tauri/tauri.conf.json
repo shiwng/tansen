@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "BitChord Desktop",
-  "version": "0.1.0",
-  "identifier": "com.bitchord.desktop",
+  "productName": "Tansen",
+  "version": "0.3.0",
+  "identifier": "app.tansen.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "BitChord Desktop",
+        "title": "Tansen",
         "width": 1280,
         "height": 820,
         "minWidth": 960,

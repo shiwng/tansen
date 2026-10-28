@@ -281,7 +281,7 @@ pub async fn proxy_get(url: String, patient: Option<bool>) -> Result<Option<Prox
     let timeout = std::time::Duration::from_secs(if patient.unwrap_or(false) { 15 } else { 6 });
     let client = reqwest::Client::builder()
         .timeout(timeout)
-        .user_agent("BitChord Desktop (https://github.com/bitchord)")
+        .user_agent("Tansen/0.3")
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;

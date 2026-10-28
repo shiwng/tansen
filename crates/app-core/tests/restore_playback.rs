@@ -8,7 +8,7 @@ use persistence::Db;
 fn queue_survives_an_app_restart() {
     // Skip gracefully where there is no audio device (Engine::spawn fails).
     let dir = tempfile::tempdir().unwrap();
-    let db = std::sync::Arc::new(Db::open(&dir.path().join("bitchord.db")).unwrap());
+    let db = std::sync::Arc::new(Db::open(&dir.path().join("tansen.db")).unwrap());
 
     // Two real files in the test's own temp dir — the shared fixture directory
     // must stay exactly one file, or the scanner test's counts drift.

@@ -195,28 +195,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
-name = "bitchord-desktop"
-version = "0.1.0"
-dependencies = [
- "app-core",
- "library",
- "percent-encoding",
- "persistence",
- "playback",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sources",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4222,6 +4200,28 @@ dependencies = [
  "pkg-config",
  "toml 0.8.2",
  "version-compare",
+]
+
+[[package]]
+name = "tansen"
+version = "0.1.0"
+dependencies = [
+ "app-core",
+ "library",
+ "percent-encoding",
+ "persistence",
+ "playback",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sources",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

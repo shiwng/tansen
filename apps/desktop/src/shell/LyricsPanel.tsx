@@ -30,7 +30,7 @@ type AmLyricsElement = HTMLElement & {
 const HIDE_FOOTER = '.lyrics-footer { visibility: hidden !important; pointer-events: none !important; }';
 
 /** The phone's lyric typeface (@font-face in styles/global.css), then the app's. */
-const LYRIC_FONT = "'BitChord SF Pro Display', 'DM Sans', system-ui, sans-serif";
+const LYRIC_FONT = "'Tansen SF Pro Display', 'DM Sans', system-ui, sans-serif";
 
 let lyricFont: Promise<void> | null = null;
 let lyricFontLoaded = false;

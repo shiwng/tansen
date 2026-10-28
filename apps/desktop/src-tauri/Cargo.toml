@@ -1,9 +1,9 @@
 [package]
-name = "bitchord-desktop"
+name = "tansen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "BitChord Desktop — a local-first music player"
+description = "Tansen — a local-first music player"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

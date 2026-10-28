@@ -107,7 +107,7 @@ impl YtMusicSource {
             child: Arc::new(Mutex::new(child)),
             http: reqwest::Client::builder()
                 .timeout(HTTP_TIMEOUT)
-                .user_agent("BitChordDesktop/0.2")
+                .user_agent("Tansen/0.3")
                 .build()
                 .expect("reqwest client"),
             version: Mutex::new(None),

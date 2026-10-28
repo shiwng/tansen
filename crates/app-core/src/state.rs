@@ -32,7 +32,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn open(data_dir: &std::path::Path) -> Result<Self, CoreError> {
-        let db = Arc::new(Db::open(&data_dir.join("bitchord.db"))?);
+        let db = Arc::new(Db::open(&data_dir.join("tansen.db"))?);
         let engine = Engine::spawn()?;
         let scanner = Scanner::new(data_dir.join("art"));
         let (scan_events, _) = tokio::sync::broadcast::channel(16);
@@ -303,7 +303,33 @@ impl AppState {
 }
 
 pub fn data_dir_default() -> PathBuf {
-    dirs_data_root().join("bitchord-desktop")
+    dirs_data_root().join("tansen")
+}
+
+/// One-time migration from the pre-rename data directory
+/// (`bitchord-desktop` → `tansen`): renames the directory and its database
+/// files. Runs before `AppState::open`; a no-op when either side is absent.
+pub fn migrate_legacy_data_dir() {
+    let new = data_dir_default();
+    if new.exists() {
+        return;
+    }
+    let old = dirs_data_root().join("bitchord-desktop");
+    if !old.is_dir() {
+        return;
+    }
+    if std::fs::rename(&old, &new).is_err() {
+        tracing::warn!("could not migrate legacy data dir {}", old.display());
+        return;
+    }
+    for (from, to) in [
+        ("bitchord.db", "tansen.db"),
+        ("bitchord.db-wal", "tansen.db-wal"),
+        ("bitchord.db-shm", "tansen.db-shm"),
+    ] {
+        let _ = std::fs::rename(new.join(from), new.join(to));
+    }
+    tracing::info!("migrated data dir to {}", new.display());
 }
 
 #[cfg(target_os = "macos")]

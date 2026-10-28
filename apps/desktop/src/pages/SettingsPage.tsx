@@ -244,15 +244,15 @@ function AboutSection() {
     <section>
       <h2 className="mb-3 type-title-2-emphasized">About</h2>
       <div className="flex flex-col gap-2">
-        <Row label="Version" hint="Phase 3 slice + M2 library work; lyrics providers are wired (phase 5 data layer live)">
-          <span className="type-callout text-secondary">0.2.0</span>
+        <Row label="Version" hint="Local library, playback, lyrics providers; YouTube Music via the sidecar behind the catalogue flag">
+          <span className="type-callout text-secondary">0.3.0</span>
         </Row>
         <Row label="Stored settings" hint="SQLite (WAL) in the app data directory">
           <span className="type-callout text-secondary">{settings.length} keys</span>
         </Row>
         <p className="type-callout text-secondary">
-          BitChord Desktop is an independent GPL-3.0 re-implementation inspired by BitChord; not affiliated with
-          YouTube or Google. Design and logic reference the upstream GPL project — see docs/audit-bitchord.md.
+          Tansen is a GPL-3.0 desktop music player. Its design and logic follow BitChord (upstream, GPL-3.0) and
+          borrow from its code under the same license; it is not affiliated with YouTube or Google.
         </p>
       </div>
     </section>

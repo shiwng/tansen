@@ -25,8 +25,8 @@ impl Media {
     /// called on the main thread on macOS.
     pub fn attach(&self, on_command: impl Fn(MediaControlEvent) + Send + Sync + 'static) {
         let config = PlatformConfig {
-            dbus_name: "bitchord",
-            display_name: "BitChord Desktop",
+            dbus_name: "tansen",
+            display_name: "Tansen",
             hwnd: None,
         };
         match MediaControls::new(config) {

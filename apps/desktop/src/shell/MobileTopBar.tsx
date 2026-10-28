@@ -12,7 +12,7 @@ export function MobileTopBar() {
       </button>
       <span className="flex items-center gap-2">
         <LogoMark size={18} className="text-primary" />
-        <span className="type-[700_16px/20px]">BitChord</span>
+        <span className="type-[700_16px/20px]">Tansen</span>
       </span>
     </header>
   );

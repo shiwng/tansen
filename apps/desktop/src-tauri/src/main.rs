@@ -27,6 +27,8 @@ fn main() {
 
     let art_root = data_dir().join("art");
 
+    app_core::state::migrate_legacy_data_dir();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol("art", move |_ctx, request| {

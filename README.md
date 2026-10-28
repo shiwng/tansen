@@ -1,9 +1,10 @@
-# BitChord Desktop
+# Tansen
 
-A Rust + React desktop music player for macOS and Windows, re-implementing the
-architecture and experience of [BitChord](https://github.com/kushagrasinghx/BitChord)
-(a YouTube Music client) with a local-first core. **Not affiliated with or
-endorsed by BitChord, YouTube, or Google.**
+A Rust + React desktop music player for macOS and Windows, named after the
+legendary musician. Its architecture, design and features follow
+[BitChord](https://github.com/kushagrasinghx/BitChord) (a YouTube Music
+client) and borrow from its GPL code under the same license. **Not affiliated
+with or endorsed by BitChord, YouTube, or Google.**
 
 Status: **M2 + phase-5 lyrics data layer** — the UI is the upstream web player's
 design (vendored, GPL-3.0): glass sidebar, player pill/LCD, full-screen player
@@ -33,10 +34,10 @@ cd apps/desktop && pnpm tauri dev
 ## Build
 
 ```bash
-cd apps/desktop && pnpm tauri build   # macOS .app/.dmg (Windows .msi on Windows)
+cd apps/desktop && pnpm tauri build   # macOS Tansen.app/.dmg (Windows .msi on Windows)
 ```
 
-Data lives in the OS app-data dir (`bitchord-desktop`); SQLite WAL mode; schema
+Data lives in the OS app-data dir (`tansen`; pre-rename dirs migrate automatically); SQLite WAL mode; schema
 migrations are versioned in `crates/persistence/src/lib.rs`.
 
 ## Layout
@@ -61,7 +62,8 @@ pnpm --dir apps/desktop build             # tsc strict + vite production build
 
 The queue model (`crates/playback/src/queue.rs`) and the scanner path are the
 regression core; playback itself needs an output device and is smoke-tested by
-launching the app.
+launching the app. The sidecar round-trip test (`yt_sidecar`, `--ignored`)
+proves the YouTube path end to end and needs the built jar + network.
 
 ## Architecture
 
@@ -84,7 +86,9 @@ GPL-3.0-or-later — matching upstream so logic and UI translations are
 license-compatible. The UI is **vendored from BitChord's own GPL web player**
 (`BitChord/web/app/src` — tokens, shell, track list, lyrics system); those
 files keep their upstream structure and this project adds nothing that would
-restrict them. Upstream: BitChord by Kushagra Singh and contributors.
+restrict them. Upstream: BitChord by Kushagra Singh and contributors. The
+Tansen name and the app mark (three sound bars) are this project's own; no
+BitChord branding is used.
 Known asset flag: the lyrics font (SF Pro Display woff2) is Apple-proprietary
 and ships upstream without its own license — kept for design parity, flagged
 here for distribution review. DM Sans (Google, OFL) is self-hosted for the UI
