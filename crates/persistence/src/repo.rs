@@ -271,6 +271,7 @@ pub fn playlist_tracks(db: &Db, playlist_id: i64) -> Result<Vec<TrackRef>> {
             duration_sec: r.get(4)?,
             art_path: r.get(5)?,
             path: r.get(6)?,
+            video_id: None,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

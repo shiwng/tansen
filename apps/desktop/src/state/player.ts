@@ -137,12 +137,12 @@ function playRemoteCommand(tracks: Track[], start: number, mode: 'load' | 'inser
   }).catch((e) => usePlayer.setState({ status: 'error', error: String(e) }));
 }
 
-/** A Track for a local library file, from a backend TrackRef. */
+/** A Track for a queue row: local library files and catalogue rows alike. */
 export function trackFromRef(t: {
-  id: number; title: string; artist: string; album: string; duration_sec: number; art_path: string | null;
+  id: number; title: string; artist: string; album: string; duration_sec: number; art_path: string | null; video_id?: string | null;
 }): Track {
   return {
-    videoId: `local:${t.id}`,
+    videoId: t.video_id ?? `local:${t.id}`,
     title: t.title,
     artists: [{ name: t.artist || 'Unknown Artist', id: null }],
     album: t.album ? { id: null, name: t.album } : null,

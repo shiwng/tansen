@@ -79,6 +79,16 @@ impl Queue {
         self.index.and_then(|i| self.tracks.get(i))
     }
 
+    /// Index of the current track, for engine bookkeeping (pending loads).
+    pub fn current_index(&self) -> Option<usize> {
+        self.index
+    }
+
+    /// Direct access to one queued track (engine patches/wait on these).
+    pub fn track_at(&self, index: usize) -> Option<&TrackRef> {
+        self.tracks.get(index)
+    }
+
     /// The track `Next` would play, honouring repeat modes. `None` = stop.
     pub fn next_track(&self) -> Option<&TrackRef> {
         self.next_index().and_then(|i| self.tracks.get(i))
@@ -251,6 +261,7 @@ mod tests {
             duration_sec: 60.0,
             art_path: None,
             path: format!("/t/{id}.flac"),
+            video_id: None,
         }
     }
 
@@ -348,6 +359,19 @@ mod tests {
         // Out-of-range moves are no-ops.
         let e = q.apply(QueueOp::Move { from: 5, to: 0 });
         assert!(!e.changed);
+    }
+
+    #[test]
+    fn patch_path_replaces_placeholder_for_resolve_ahead() {
+        let mut q = q3();
+        q.patch_path(1, "sidecar://track/abc/stream");
+        assert_eq!(q.track_at(1).unwrap().path, "sidecar://track/abc/stream");
+        q.patch_path(1, "https://cdn.example/abc.m4a");
+        assert_eq!(q.track_at(1).unwrap().path, "https://cdn.example/abc.m4a");
+        // Order, index and identity untouched by a patch.
+        assert_eq!(q.snapshot(false).index, Some(0));
+        // Out-of-range patch is a silent no-op.
+        q.patch_path(9, "x");
     }
 
     #[test]

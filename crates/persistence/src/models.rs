@@ -36,6 +36,10 @@ pub struct TrackRef {
     pub duration_sec: f64,
     pub art_path: Option<String>,
     pub path: String,
+    /// The catalogue video id for remote rows (id is 0 for those). Lets a
+    /// restored queue re-resolve expired stream URLs.
+    #[serde(default)]
+    pub video_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +58,7 @@ impl From<Track> for TrackRef {
             duration_sec: t.duration_sec,
             art_path: t.art_path,
             path: t.path,
+            video_id: None,
         }
     }
 }

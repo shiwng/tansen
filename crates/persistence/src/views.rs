@@ -93,6 +93,7 @@ pub fn history(db: &Db, limit: i64) -> Result<Vec<HistoryEntry>> {
                 duration_sec: r.get(4)?,
                 art_path: r.get(5)?,
                 path: r.get(6)?,
+                video_id: None,
             },
             played_at: r.get(7)?,
         })
@@ -205,6 +206,7 @@ pub fn album_tracks(db: &Db, key: &str) -> Result<Vec<TrackRef>> {
             duration_sec: r.get(4)?,
             art_path: r.get(5)?,
             path: r.get(6)?,
+            video_id: None,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -228,6 +230,7 @@ pub fn artist_tracks(db: &Db, name: &str) -> Result<Vec<TrackRef>> {
             duration_sec: r.get(4)?,
             art_path: r.get(5)?,
             path: r.get(6)?,
+            video_id: None,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

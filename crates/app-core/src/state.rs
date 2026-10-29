@@ -70,6 +70,14 @@ impl AppState {
                     || t.path.starts_with("https://")
                     || std::path::Path::new(&t.path).exists()
             })
+            .map(|mut t| {
+                // Stream URLs expire (~6 h). A restored remote row goes back to
+                // its placeholder so the resolve-ahead loop re-resolves it.
+                if t.video_id.is_some() && t.path.starts_with("http") {
+                    t.path = crate::remote::placeholder_for(t.video_id.as_deref().unwrap_or(""));
+                }
+                t
+            })
             .collect();
         if alive.is_empty() {
             persistence::views::clear_playback_state(&self.db)?;
@@ -228,6 +236,7 @@ impl AppState {
                 duration_sec: t.duration_sec,
                 art_path: t.thumbnail_url.clone(),
                 path: crate::remote::placeholder_for(&t.video_id),
+                video_id: Some(t.video_id.clone()),
             })
             .collect();
 

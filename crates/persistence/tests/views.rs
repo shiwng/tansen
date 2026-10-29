@@ -13,6 +13,7 @@ fn ref_with(id: i64, title: &str, artist: &str, album: &str, _album_artist: &str
         duration_sec: 100.0,
         art_path: None,
         path: format!("/t/{id}.flac"),
+        video_id: None,
     }
 }
 

@@ -9,6 +9,8 @@ export interface TrackRef {
   duration_sec: number;
   art_path: string | null;
   path: string;
+  /** Catalogue video id for remote rows (id is 0 for those). */
+  video_id?: string | null;
 }
 
 /** Queue snapshot as `queue_snapshot` returns it. */

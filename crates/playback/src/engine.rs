@@ -71,6 +71,28 @@ struct Worker {
     manual_until: Instant,
     playing: bool,
     duration_hint: f64,
+    /// A queue row selected for playback whose stream URL is still a
+    /// `sidecar://` placeholder. The resolve-ahead service patches it; the
+    /// tick notices and loads. Bounded by `PLACEHOLDER_WAIT`.
+    pending: Option<PendingLoad>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingLoad {
+    index: usize,
+    play: bool,
+    since: Instant,
+}
+
+/// How long to hold a transition while the resolve-ahead fetches a stream
+/// URL. Past this, the row errors and the queue advances (a dead sidecar must
+/// not wedge the player).
+const PLACEHOLDER_WAIT: Duration = Duration::from_secs(10);
+
+impl Worker {
+    fn is_placeholder(path: &str) -> bool {
+        path.starts_with("sidecar://")
+    }
 }
 
 impl Worker {
@@ -150,7 +172,15 @@ impl Worker {
         self.clear_sink();
         let effect = self.queue.apply(QueueOp::Next);
         match effect.load {
-            Some((t, _)) => self.load(&t, true),
+            Some((t, _)) if !Self::is_placeholder(&t.path) => self.load(&t, true),
+            Some(_) => {
+                // Placeholder next: hold a pending load (silence now, sound
+                // when the patch lands) instead of skipping the track.
+                if let Some(index) = self.queue.current_index() {
+                    self.pending = Some(PendingLoad { index, play: true, since: Instant::now() });
+                }
+                self.emit_queue();
+            }
             None => {
                 self.playing = false;
                 self.emit(EngineEvent::TrackChanged { track: None });
@@ -161,6 +191,38 @@ impl Worker {
     }
 
     fn tick(&mut self) {
+        // A transition waiting on a stream URL outranks everything else: pick
+        // up the patch, or give up after the bound.
+        if let Some(p) = self.pending {
+            match self.queue.track_at(p.index) {
+                Some(track) if !Self::is_placeholder(&track.path) => {
+                    let track = track.clone();
+                    self.pending = None;
+                    self.load(&track, p.play);
+                    return;
+                }
+                Some(_) => {
+                    if p.since.elapsed() > PLACEHOLDER_WAIT {
+                        let track = self.queue.track_at(p.index).cloned();
+                        self.pending = None;
+                        if let Some(track) = track {
+                            tracing::warn!(track = %track.path, "placeholder wait timed out");
+                            self.emit(EngineEvent::TrackError {
+                                track,
+                                message: "stream did not resolve in time".into(),
+                            });
+                        }
+                        self.advance_past_current();
+                    }
+                    // Still waiting: hold here. Old audio keeps playing (manual
+                    // next) or stays silent (natural end); no position/preload
+                    // work makes sense for a transition in flight.
+                    return;
+                }
+                None => self.pending = None, // row removed under us
+            }
+        }
+
         let pos = self.sink.get_pos().as_secs_f64();
         let empty = self.sink.empty();
 
@@ -220,14 +282,13 @@ impl Worker {
     fn on_track_finished(&mut self) {
         self.playing = false;
         let effect = self.queue.apply(QueueOp::Next);
-        match effect.load {
-            Some((t, _)) => self.load(&t, true),
-            None => {
-                self.clear_sink();
-                self.emit(EngineEvent::TrackChanged { track: None });
-                self.emit(EngineEvent::Finished);
-                self.emit_queue();
-            }
+        if effect.load.is_some() {
+            self.apply_effect(effect);
+        } else {
+            self.clear_sink();
+            self.emit(EngineEvent::TrackChanged { track: None });
+            self.emit(EngineEvent::Finished);
+            self.emit_queue();
         }
     }
 }
@@ -268,6 +329,7 @@ impl Engine {
             manual_until: Instant::now(),
             playing: false,
             duration_hint: 0.0,
+            pending: None,
         };
         let snap_out = snapshot.clone();
         let vol_out = volume.clone();
@@ -329,15 +391,37 @@ impl Engine {
 }
 
 impl Worker {
+    /// Route a queue effect's load through the placeholder logic: rows whose
+    /// stream URL has not been resolved yet hold a pending load (current audio
+    /// keeps playing, or silence for natural ends) until the resolve-ahead
+    /// patch lands — bounded, then a clean error + advance.
+    fn apply_effect(&mut self, effect: crate::queue::QueueEffect) {
+        match effect.load {
+            Some((t, play)) if Self::is_placeholder(&t.path) => {
+                if let Some(index) = self.queue.current_index() {
+                    if play {
+                        self.pending = Some(PendingLoad { index, play, since: Instant::now() });
+                        self.emit_queue();
+                    } else {
+                        // A removal-style load (play=false): quiet while waiting.
+                        self.sink.pause();
+                        self.playing = false;
+                        self.pending = Some(PendingLoad { index, play, since: Instant::now() });
+                        self.emit_queue();
+                    }
+                }
+            }
+            Some((t, play)) => self.load(&t, play),
+            None if effect.changed => self.emit_queue(),
+            None => {}
+        }
+    }
+
     fn handle(&mut self, cmd: Command) {
         match cmd {
             Command::Apply(op) => {
                 let effect = self.queue.apply(op);
-                match effect.load {
-                    Some((t, play)) => self.load(&t, play),
-                    None if effect.changed => self.emit_queue(),
-                    None => {}
-                }
+                self.apply_effect(effect);
             }
             Command::TogglePlay => {
                 if self.queue.current().is_none() {

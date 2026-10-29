@@ -30,6 +30,7 @@ fn queue_survives_an_app_restart() {
             duration_sec: 2.0,
             art_path: None,
             path: a.to_string_lossy().into_owned(),
+            video_id: None,
         },
         persistence::models::TrackRef {
             id: 2,
@@ -39,6 +40,7 @@ fn queue_survives_an_app_restart() {
             duration_sec: 2.0,
             art_path: None,
             path: b.to_string_lossy().into_owned(),
+            video_id: None,
         },
         persistence::models::TrackRef {
             id: 3,
@@ -48,6 +50,19 @@ fn queue_survives_an_app_restart() {
             duration_sec: 2.0,
             art_path: None,
             path: "/definitely/not/there.flac".into(),
+            video_id: None,
+        },
+        // A catalogue row whose stream URL was persisted hours ago: restore
+        // must hand it back as a placeholder so it re-resolves.
+        persistence::models::TrackRef {
+            id: 0,
+            title: "YT".into(),
+            artist: "Y".into(),
+            album: "AL".into(),
+            duration_sec: 2.0,
+            art_path: None,
+            path: "https://rr5---sn-x.googlevideo.com/videoplayback?expired".into(),
+            video_id: Some("abc123".into()),
         },
     ];
     views::save_playback_state(
@@ -72,7 +87,13 @@ fn queue_survives_an_app_restart() {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    assert_eq!(snap.tracks.len(), 2, "the dead file is dropped");
+    assert_eq!(snap.tracks.len(), 3, "dead local dropped; stale remote kept");
+    assert_eq!(snap.tracks[2].title, "YT");
+    assert!(
+        snap.tracks[2].path.starts_with("sidecar://"),
+        "stale stream URL re-placeholdered for re-resolve, got {}",
+        snap.tracks[2].path
+    );
     assert_eq!(snap.tracks[0].title, "A");
     assert_eq!(snap.tracks[1].title, "B");
     assert_eq!(snap.index, Some(1), "restore lands on the saved track");
@@ -82,7 +103,7 @@ fn queue_survives_an_app_restart() {
     // A second restore over an app whose queue is playing must not double-load:
     // the persister now re-saved the restored queue; restore again is idempotent.
     assert!(state.restore_playback().unwrap());
-    assert_eq!(state.queue_snapshot().tracks.len(), 2);
+    assert_eq!(state.queue_snapshot().tracks.len(), 3);
 }
 
 #[test]
