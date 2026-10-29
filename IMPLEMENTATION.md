@@ -253,7 +253,7 @@ SIGTERM-clean.
 
 | File | Role |
 |---|---|
-| `sidecar/build.gradle.kts` | Kotlin JVM 17 + fat jar task (`sidecar-all.jar`); supplies NewPipeExtractor (compileOnly upstream) itself. |
+| `sidecar/build.gradle.kts` | Kotlin JVM 17 + fat jar task (`sidecar-all.jar`); supplies NewPipeExtractor (compileOnly upstream) itself. Built from `sidecar-overlay/` in this repo via `scripts/build-sidecar.sh`. |
 | `src/main/kotlin/sidecar/Main.kt` | Routes: `/health`, `/search`, `/track/{id}`, `/track/{id}/stream[?prefer=aac]`, `/album/{id}`, `/playlist/{id}`, `/lyrics/track/{id}`. `prefer=aac` guarantees a progressive MP4/AAC via `resolveForDownload(requireM4a = true)`; without it, `StreamResolver.resolve` + mime sniff (one zero-byte ranged GET) + itag from the URL. |
 | `src/main/kotlin/sidecar/Json.kt` | `Song`/`SearchResult`/`SongPage`/`LyricLine` → wire JSON (the contract in docs/sidecar-api.md). |
 

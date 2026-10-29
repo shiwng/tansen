@@ -1,0 +1,56 @@
+/*
+ * BitChord sidecar — a local HTTP server exposing :shared's YouTube Music
+ * client to the Rust desktop app.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Part of BitChord (https://github.com/kushagrasinghx/BitChord), GPL-3.0.
+ * This module changes nothing in :shared; it only calls it.
+ */
+
+plugins {
+    id("org.jetbrains.kotlin.jvm")
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    implementation(project(":shared"))
+    // NewPipe is compileOnly in :shared (the phone ships a trimmed jar);
+    // the sidecar runs the real thing, so it supplies it here.
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")
+}
+
+/**
+ * A self-contained jar: main class plus the whole runtime classpath
+ * (:shared, Kotlin stdlib, coroutines, serialization, OkHttp, NewPipe,
+ * InnerTubeX…). The Rust side launches `java -jar sidecar-all.jar`.
+ */
+val fatJar = tasks.register<Jar>("fatJar") {
+    archiveBaseName.set("sidecar")
+    archiveClassifier.set("all")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest { attributes["Main-Class"] = "sidecar.MainKt" }
+    from(sourceSets.main.get().output)
+    dependsOn(configurations.runtimeClasspath)
+    from({
+        configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) }
+    }) {
+        // Signed-jar leftovers break the merge; none of it is used on the JVM.
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+    }
+}
+
+tasks.build { dependsOn(fatJar) }
+
+tasks.test {
+    useJUnitPlatform()
+}

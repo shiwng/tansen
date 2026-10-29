@@ -33,6 +33,8 @@ pub struct AppState {
     /// The sidecar-backed YouTube source, launched once on first use and kept
     /// for the process lifetime. `None` until the catalogue is first used.
     yt: std::sync::Mutex<Option<Arc<crate::yt_handle::YtHandle>>>,
+    /// Jar path found by the shell (Tauri resource dir). Checked first.
+    sidecar_hint: std::sync::Mutex<Option<PathBuf>>,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ impl AppState {
             scan_events,
             scan_lock: std::sync::Mutex::new(()),
             yt: std::sync::Mutex::new(None),
+            sidecar_hint: std::sync::Mutex::new(None),
         })
     }
 
@@ -188,6 +191,12 @@ impl AppState {
 
     // ---- Remote (YouTube via sidecar) --------------------------------------
 
+    /// Shell-provided jar location (the packaged app's resource directory).
+    /// Checked before env/settings/discovery.
+    pub fn set_sidecar_hint(&self, jar: PathBuf) {
+        *self.sidecar_hint.lock().unwrap() = Some(jar);
+    }
+
     /// The catalogue flag plus a launched-once sidecar handle. Errors name the
     /// fix (flag off, jar missing, no Java) — remote playback never pretends.
     pub fn yt(&self) -> Result<Arc<crate::yt_handle::YtHandle>, CoreError> {
@@ -203,7 +212,11 @@ impl AppState {
         if let Some(handle) = &*guard {
             return Ok(handle.clone());
         }
-        let jar = repo::get_setting(&self.db, "sidecar_jar").ok().flatten().map(PathBuf::from);
+        let jar = repo::get_setting(&self.db, "sidecar_jar")
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .or_else(|| self.sidecar_hint.lock().unwrap().clone());
         let java = repo::get_setting(&self.db, "java_path").ok().flatten();
         let source = sources::yt::YtMusicSource::launch(jar, java)
             .map_err(|e| CoreError::Catalogue(format!("YouTube sidecar unavailable: {e}")))?;

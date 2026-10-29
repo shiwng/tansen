@@ -16,6 +16,7 @@ Status as of **2026-10-28**, HEAD `e79d57d`. Companion documents:
 | Session 4 | `7518803` | M3 start: `sources` crate — `MusicSource` trait with upstream tier semantics, addon HTTP adapter (SharedCalls dedup, 429 quiet period), SQLite registry, Settings → Sources screen; mock-server integration tests. |
 | Session 5 | `7f70fdc` | **YouTube Music via Kotlin sidecar** (upstream checkout pinned at v1.8.1 + additive `sidecar/` module; nothing in `:shared` changed). `YtMusicSource` supervises the JVM. Round-trip proof: search → AAC stream → 5 s decode, RMS 0.126. |
 | Session 6 | `60085ba`, `51823a3` | Renamed to **Tansen** (product, bundle id, crate/npm names, data-dir migration `bitchord-desktop` → `tansen`, original app mark replacing BitChord's logo). Project moved to `~/Desktop/Tansen` with `~/Desktop/BitChord` as sibling. |
+| Session 9 | this commit | Reproducible builds: sidecar module sources moved into the repo (`sidecar-overlay/`), `scripts/build-sidecar.sh` builds from pinned upstream v1.8.1 (fresh clone or clean checkout; mavenLocal pre-seeded via resumed curl), jar packaged as a Tauri bundle resource, packaged-app discovery verified in a real `Tansen.app` (log line from `Contents/Resources/resources/`), macOS CI workflow added (no Windows job — honest). |
 | Session 8 | `facf82a` | Remote playback robustness: engine pending-load machine (next/natural-end onto an unresolved placeholder holds the transition up to 10 s instead of skipping), `TrackRef.video_id` + restore re-placeholdering for expired stream URLs (integration-tested), frontend queue rows carry real video ids. |
 | Session 7 | `e79d57d` | **Remote streaming playback**: `HttpRangeReader` (512 KiB ranged chunks — googlevideo throttles unbounded reads), engine queue entries dispatch by scheme, resolve-ahead thread swaps placeholder URLs before the gapless preload, YouTube Music tab in Search, play/queue on remote rows, catalogue toggle in Settings. Round-trip now decodes through the ranged-HTTP engine path in **4.5 s** (was 142 s downloading). |
 
@@ -77,7 +78,7 @@ production bundle clean; app smoke-launched after every session.
 | Chromecast | No desktop Cast SDK equivalent; upstream feature is Android/GMS-bound. |
 | Discord RPC, Last.fm/ListenBrainz, Listen Together, downloads | Designed (protocols documented in the audit), implementation scheduled phase 7. |
 | Windows build | **Untested** — no Windows host in this environment. Code paths are cross-platform (souvlaki/SMTC, `%APPDATA%` data dir); needs a CI or manual pass, plus a Java 17 runtime note for the sidecar. |
-| macOS signing/notarization | Placeholder icons and unsigned dev builds; release packaging is phase 8. |
+| macOS signing/notarization | Placeholder icons and unsigned dev builds; `.app` + `.dmg` bundle now verified, signing/notarization is phase 8. |
 
 ## 5. Known gaps / debt worth naming
 
@@ -94,8 +95,8 @@ production bundle clean; app smoke-launched after every session.
 
 ## 6. Verification summary
 
-- `cargo test` — 24 tests, 0 failures (queue algebra, range reader + ranged decode, scanner e2e, groupings, persistence round-trips, watcher, addon mock server, registry).
+- `cargo test` — 25 tests, 0 failures (queue algebra, range reader + ranged decode, scanner e2e, groupings, persistence round-trips, watcher, addon mock server, registry).
 - `cargo test -- --ignored` (network) — sidecar round-trip: search → `prefer=aac` → 5 s decode via ranged HTTP, RMS 0.126, 4.5 s total.
 - `pnpm test` — 32 tests (lyric parsers, LyricClock, repository selection, reorderMove).
 - `pnpm build` — tsc strict + Vite production bundle.
-- Manual: app launch + data-dir migration logs; UI structure verified via REA browser DOM capture (2026-10-28).
+- Manual: app launch + data-dir migration logs; UI structure verified via REA browser DOM capture (2026-10-28). `pnpm tauri build` produced `Tansen.app` + dmg; jar verified inside `Contents/Resources/resources/` (sha256 match) and the packaged binary logged `bundled sidecar jar` from that path (2026-10-29).

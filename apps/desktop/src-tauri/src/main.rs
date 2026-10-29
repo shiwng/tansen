@@ -40,6 +40,18 @@ fn main() {
             let state = Arc::new(AppState::open(&dir).expect("app state init"));
             let _ = state.restore_playback();
 
+            // Packaged builds ship the sidecar jar as a bundle resource
+            // (Tauri keeps the config-relative directory: Resources/resources/).
+            let bundled = app
+                .path()
+                .resource_dir()
+                .ok()
+                .map(|d| d.join("resources").join("sidecar-all.jar"));
+            if let Some(jar) = bundled.filter(|j| j.is_file()) {
+                tracing::info!(jar = %jar.display(), "bundled sidecar jar");
+                state.set_sidecar_hint(jar);
+            }
+
             attach_media_keys(&state);
             spawn_event_forwarder(app.handle().clone(), state.engine_events());
             // Catalogue rows ride placeholders until this loop swaps in real

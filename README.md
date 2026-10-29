@@ -26,16 +26,20 @@ How everything is built and connected: [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Run (dev)
 
-Prereqs: Rust 1.85+, Node 20+, pnpm. For YouTube Music: Java 17 and a built
-sidecar jar (`../BitChord/sidecar/build/libs/sidecar-all.jar`, or point
-`BITCHORD_SIDECAR_JAR` at one).
+Prereqs: Rust 1.85+, Node 20+, pnpm. For YouTube Music: JDK 17 (Gradle uses
+`JAVA_HOME`) — the sidecar jar builds from pinned upstream sources inside this
+repo's overlay and is packaged as a Tauri resource:
 
 ```bash
+./scripts/build-sidecar.sh        # clones/checks out BitChord v1.8.1, builds sidecar-all.jar
 pnpm install --dir apps/desktop
-cd apps/desktop && pnpm tauri dev
+cd apps/desktop && pnpm tauri dev # jar is discovered via cwd/exe/resource paths
 ```
 
-Enable YouTube Music in Settings → Sources. Library features need no sidecar.
+`tauri build` bundles the jar into the .app (`Contents/Resources/resources/`),
+where the packaged app finds it without any dev checkout. Enable YouTube Music
+in Settings → Sources. Library features need no sidecar. CI (`.github/workflows/ci.yml`)
+runs the same steps on macOS; there is no Windows workflow yet — see REPORT.md.
 
 ## Build
 
@@ -57,6 +61,8 @@ crates/persistence/ SQLite schema + repositories
 crates/sources/     MusicSource trait, addon adapter, YouTube sidecar source
 crates/app-core/    state + services (no Tauri dependency)
 docs/               upstream audit, architecture, feature matrix, plan, sidecar API
+sidecar-overlay/    Kotlin sidecar module (source of truth; built vs pinned upstream)
+scripts/            build-sidecar.sh — pinned-tag sidecar build into Tauri resources
 tests/fixtures/     generated audio fixtures for tests
 ```
 

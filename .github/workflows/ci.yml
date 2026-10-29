@@ -1,0 +1,86 @@
+# Tansen CI — macOS build + tests.
+#
+# Mirrors the documented local workflow: sidecar jar from pinned upstream
+# (scripts/build-sidecar.sh), then Rust tests, then the frontend.
+#
+# Windows: intentionally absent. The toolchain (Java 17 + Gradle + sidecar
+# resource packaging) has never been exercised on Windows; adding a job that
+# has not been verified would claim support that does not exist. See
+# REPORT.md "Known limitations".
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out upstream BitChord at the pinned tag (sidecar sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: kushagrasinghx/BitChord
+          ref: v1.8.1 # keep in sync with scripts/build-sidecar.sh / BITCHORD_REF
+          path: BitChord
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK (Gradle configures the shared module against it)
+        uses: android-actions/setup-android@v3
+
+      - name: Ensure platforms;android-37 (AGP pin; symlink where 37.0 ships)
+        run: |
+          SDK="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+          if [ -d "$SDK/platforms/android-37.0" ] && [ ! -d "$SDK/platforms/android-37" ]; then
+            ln -s "$SDK/platforms/android-37.0" "$SDK/platforms/android-37"
+          else
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" >/dev/null || true
+          fi
+
+      - name: Build sidecar jar
+        run: ./scripts/build-sidecar.sh
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - name: Frontend install + tests + production build
+        working-directory: apps/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm build

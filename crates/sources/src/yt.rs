@@ -225,9 +225,10 @@ fn discover_jar() -> Option<PathBuf> {
     }
     for base in bases {
         for relative in [
+            PathBuf::from("resources/sidecar-all.jar"),
+            PathBuf::from("apps/desktop/src-tauri/resources/sidecar-all.jar"),
             PathBuf::from("BitChord/sidecar/build/libs/sidecar-all.jar"),
             PathBuf::from("../BitChord/sidecar/build/libs/sidecar-all.jar"),
-            PathBuf::from("sidecar/build/libs/sidecar-all.jar"),
         ] {
             let candidate = base.join(&relative);
             if candidate.is_file() {
