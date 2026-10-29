@@ -16,6 +16,7 @@ Status as of **2026-10-28**, HEAD `e79d57d`. Companion documents:
 | Session 4 | `7518803` | M3 start: `sources` crate — `MusicSource` trait with upstream tier semantics, addon HTTP adapter (SharedCalls dedup, 429 quiet period), SQLite registry, Settings → Sources screen; mock-server integration tests. |
 | Session 5 | `7f70fdc` | **YouTube Music via Kotlin sidecar** (upstream checkout pinned at v1.8.1 + additive `sidecar/` module; nothing in `:shared` changed). `YtMusicSource` supervises the JVM. Round-trip proof: search → AAC stream → 5 s decode, RMS 0.126. |
 | Session 6 | `60085ba`, `51823a3` | Renamed to **Tansen** (product, bundle id, crate/npm names, data-dir migration `bitchord-desktop` → `tansen`, original app mark replacing BitChord's logo). Project moved to `~/Desktop/Tansen` with `~/Desktop/BitChord` as sibling. |
+| Session 8 | `facf82a` | Remote playback robustness: engine pending-load machine (next/natural-end onto an unresolved placeholder holds the transition up to 10 s instead of skipping), `TrackRef.video_id` + restore re-placeholdering for expired stream URLs (integration-tested), frontend queue rows carry real video ids. |
 | Session 7 | `e79d57d` | **Remote streaming playback**: `HttpRangeReader` (512 KiB ranged chunks — googlevideo throttles unbounded reads), engine queue entries dispatch by scheme, resolve-ahead thread swaps placeholder URLs before the gapless preload, YouTube Music tab in Search, play/queue on remote rows, catalogue toggle in Settings. Round-trip now decodes through the ranged-HTTP engine path in **4.5 s** (was 142 s downloading). |
 
 Test totals: **24 Rust tests + 32 vitest tests**, all green; `tsc` strict +
@@ -59,6 +60,7 @@ production bundle clean; app smoke-launched after every session.
 | Playlist persistence of queue | 🟨 | Queue persists; playlist add-from-queue pending |
 | Word-level lyric timings over the sidecar | 🟨 | Upstream model has them; sidecar exports line-level only — add when the desktop lyrics UI needs them |
 | In-queue row artwork for remote tracks | 🟨 | https thumbnails pass through; queue snapshot rows carry them (verify visual pass pending) |
+| Remote transition race (next before resolve) | ✅ fixed `facf82a` | Engine holds a bounded pending load until the resolve-ahead patch lands; timeout errors cleanly and advances. Stale URLs after restart re-resolve from `video_id` (integration-tested) |
 | Dynamic page tint on search/home | 🟨 | Album/playlist pages tinted; others pending |
 | Artwork orphan GC | 📋 | `prune_orphans` exists; not scheduled yet |
 | Scan watcher on Windows | 📋 | notify works cross-platform; untested |
@@ -79,11 +81,9 @@ production bundle clean; app smoke-launched after every session.
 
 ## 5. Known gaps / debt worth naming
 
-1. **Manual-next race on remote rows** — a next pressed before resolve-ahead
-   finishes skips the track cleanly (error path) instead of waiting. Widen the
-   ahead window or add fetch-to-cache.
-2. **First-play latency** — start track resolve is 1–2 s; a fetch-to-cache
-   layer doubles as the fix for (1).
+1. **First-play latency** — start track resolve is 1–2 s; a fetch-to-cache
+   layer would smooth it further (the transition race itself is fixed in
+   `facf82a` via bounded pending loads).
 3. **Library search is client-side** — fine at thousands of tracks; move to SQL
    FTS when libraries grow.
 4. **SF Pro Display lyrics font** — Apple-proprietary face shipped by upstream
