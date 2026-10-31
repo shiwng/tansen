@@ -320,3 +320,88 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 | `scripts/bench/run.sh` | — | M1 baseline harness: release build, 5 runs of start→first-paint, memory footprint (app process; sidecar JVM when running), 60 s idle and 60 s playing CPU (median table). Env-gated autoplay hook, no behavior change. |
 
 Manual smoke: app launch, migration log, UI render (browser DOM capture).
+
+---
+
+## 11. UI ↔ backend sync inventory (M2)
+
+Every IPC surface, its caller, and what it touches. **Hot** = fires ≥ 1/s
+during normal playback or a running scan; **cold** = startup/user-action
+frequency. Measured by inspection (grep over `src/` and `src-tauri/`) plus the
+per-command counters below; the counters' first 10 s window is quoted where it
+adds evidence.
+
+### Commands (45 registered)
+
+| Command | Caller | Hot/Cold | Reads | Writes |
+|---|---|---|---|---|
+| `settings_get` | SettingsPage (3 queries), lyrics settings | cold | settings table | — |
+| `settings_set` | SettingsPage toggles (`watch_folders`, `catalogue_sources`) | cold | — | settings; watcher re-subscribes on `watch_folders` |
+| `folder_add` / `folder_remove` | LibraryPage | cold | fs | folders |
+| `folders_get` | LibraryPage, SettingsPage | cold | folders | — |
+| `tracks_get` | HomePage/lib queries | cold (page mount) | tracks | — |
+| `scan_start` | LibraryPage import/rescan | cold (emits hot events while scanning) | fs tree | tracks + artwork cache; emits `scan://progress`/`scan://done` |
+| `player_load` | `player.playTracks` | cold (user) | queue | queue (`QueueOp::Load`) → TrackChanged events |
+| `player_toggle` | store + Space key | hot (user) | — | engine playing |
+| `player_pause` / `player_resume` / `player_stop` | **none registered callers** — reserved surface | — | — | engine playing |
+| `player_next` / `player_previous` | store next/previous | hot (user; auto-advance is engine-internal) | queue | queue index |
+| `player_seek` | scrubber, ⌘←→ | hot while dragging | — | engine position |
+| `player_volume` | volume/mute + re-applied at startup | cold per change | — | engine volume |
+| `player_repeat` | cycleRepeat + re-applied at startup | cold | queue | queue repeat |
+| `queue_snapshot` | store `refresh()` (once at startup) | cold | queue | — |
+| `queue_insert` / `queue_remove` / `queue_jump` / `queue_move` / `queue_clear` | Up Next actions, Play Next menus | cold (user) | queue | queue → QueueChanged event |
+| `playlist_create` / `playlist_rename` / `playlist_delete` | TrackMenu, PlaylistPage, LibraryPage | cold | — | playlists |
+| `playlists_get` | Sidebar, TrackMenu, Playlist, Library, Reorder pages | cold | playlists | — |
+| `playlist_tracks_get` / `playlist_tracks_set` / `playlist_add_tracks` | Playlist + Reorder pages, TrackMenu | cold | playlist_tracks | playlist_tracks |
+| `albums_get` / `artists_get` / `album_tracks_get` / `artist_tracks_get` | page queries | cold | tracks (SQL grouping) | — |
+| `history_get` | Recently Played page | cold | play_history | — |
+| `proxy_get` | lyrics `http.ts` (13 providers) | **hot** — 21 calls in the counters' first 10 s window; 24 h disk cache per URL | lyrics disk cache, network | lyrics cache files |
+| `bench_marker` | main.tsx first-paint | once | — | — |
+| `yt_search` | SearchPage YouTube tab | cold | sidecar → external | — |
+| `player_play_remote` | store `playRemoteCommand` | cold | sidecar | queue (`sidecar://` placeholders) + resolve-ahead |
+| `sources_get` / `source_reorder` | **no UI callers** — registered, reserved | — | sources_config | sources_config |
+| `sources_get_with_health` | SettingsPage | cold | sources_config + live health checks | — |
+| `source_add` / `source_remove` / `source_set_enabled` | SettingsPage | cold | manifest network | sources_config |
+
+### Events and protocols
+
+| Event | Emitter | Hot/Cold | Consumers | State written |
+|---|---|---|---|---|
+| `player://event` | main.rs forwarder ← EngineEvent broadcast | **hot** (10 Hz position while playing; state changes) | player store (queue/index/nowPlaying/status), playhead; souvlaki at 2 Hz | frontend store + playhead struct |
+| `scan://progress` | `scan_start` forwarder | hot during scans only | LibraryPage progress UI | — |
+| `scan://done` | `scan_start` + watcher forwarder | cold | LibraryPage view invalidation | — |
+| `art://` protocol (not a command) | Artwork `<img>` src | hot per library view | webview imgs | — (reads art cache files) |
+
+### Frontend internal sync (no IPC)
+
+- Scrubber: rAF loop over `getPlayhead()` (engine ticks + interpolation) — hot, zero IPC.
+- `localStorage` mirrors: `bitchord:player` (volume/muted/repeat/shuffle UI prefs), `bitchord:lyrics` (provider order/enabled/key). Re-applied to the engine once at startup (`player_volume`, `player_repeat`).
+- **No polling**: no `setInterval` anywhere, no `refetchInterval` (queries use `staleTime: 5 min`); all `setTimeout` uses are one-shot retries/races. Verified by grep.
+
+### Backend playback-state writers (not IPC)
+
+`engine.rs` is the sole writer of in-memory playback state (invariant holds).
+The DB mirror `playback_state` has exactly one writer (the persist_state
+thread, event-driven, ≤0.8 s); `play_history` is written only by the history
+thread; the resolve-ahead thread writes `Command::PatchUrl` + StreamCache
+fills. OS media keys call AppState methods directly — not IPC, not counted by
+the command counters.
+
+### Per-command call counters (M2 instrumentation)
+
+`src-tauri/src/metrics.rs`: every command invocation is counted in the
+`invoke_handler` wrapper (std `AtomicU64` per name, mutex'd map — no new
+dependencies). Debug builds only: `hit()` compiles to a no-op in release. A
+debug-only thread logs one line per 10 s window listing commands with a
+nonzero delta, target `metrics`:
+
+```
+INFO metrics: bench_marker +1 (total 1); player_repeat +1 (total 1);
+player_volume +1 (total 1); playlists_get +1 (total 1); proxy_get +21 (total 21);
+queue_snapshot +1 (total 1); tracks_get +1 (total 1)
+```
+
+That window is real startup data: `proxy_get` is by far the hottest command
+(lyrics providers racing for the restored track), everything else is one-shot
+startup. No behavior change — the wrapper adds one atomic increment (debug) or
+an inlined no-op (release) per command call.

@@ -138,6 +138,34 @@ decode and lands ≈ 2 %; memory is flat idle→playing (the StreamCache is
 empty on this path — the local fixture does not fill it; remote tracks fill
 it up to the 512 MiB bound).
 
+## M2 — UI↔backend sync inventory + command counters (2026-10-31)
+
+Full inventory table in `IMPLEMENTATION.md` §11. What the pass found, measured:
+
+- **No polling anywhere**: zero `setInterval`, zero `refetchInterval`; the UI
+  is purely event-driven off `player://event` (10 Hz position) plus one-shot
+  retries. The rAF scrubber reads the interpolated playhead without IPC.
+- **`proxy_get` is the hottest command**: 21 calls in the counters' first
+  10 s window (lyrics providers racing for the restored track). The 24 h
+  disk cache absorbs repeat fetches.
+- **Registered but caller-less commands** (reserved surface, honestly
+  marked): `player_pause`, `player_resume`, `player_stop`, `sources_get`,
+  `source_reorder`.
+- Playback-state invariant re-verified by inspection: the engine is the sole
+  writer of in-memory playback state; `playback_state` (DB) has exactly one
+  writer (persist_state thread); media keys bypass IPC entirely.
+
+Instrumentation: `metrics.rs` counts every command invocation in the
+`invoke_handler` wrapper (std atomics, no new deps), debug builds only
+(no-op in release), logged per 10 s window under the `metrics` log target.
+
+Verification: `cargo build` clean (tansen crate zero warnings; 2 pre-existing
+`sources` dead-code warnings noted, untouched); `cargo test --workspace`
+27 passed / 0 failed / 1 ignored; `pnpm test` 32/32. Counter smoke run
+(debug + custom-protocol, 15 s): startup window log captured (the excerpt
+quoted in IMPLEMENTATION.md §11). rustfmt is not installed on this
+toolchain (never used in this repo); code follows the file's existing style.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

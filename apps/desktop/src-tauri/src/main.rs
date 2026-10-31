@@ -2,6 +2,7 @@
 //! OS media keys) and owns nothing of substance itself.
 
 mod commands;
+mod metrics;
 
 use app_core::{AppState, MediaControlEvent, SeekDirection};
 
@@ -25,6 +26,17 @@ fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     tracing::info!(target: "bench", stage = "process-start", "bench: process start");
+
+    // M2 instrumentation: per-command IPC counters, logged every 10 s.
+    // Debug builds only — release keeps the no-op counter.
+    #[cfg(debug_assertions)]
+    std::thread::spawn(|| {
+        tracing::info!(target: "metrics", "command counters active (10 s windows)");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            metrics::cmd::log_window();
+        }
+    });
 
     let art_root = data_dir().join("art");
 
@@ -90,7 +102,13 @@ fn main() {
         .on_page_load(|webview, payload| {
             tracing::info!(target: "bench", event = ?payload.event(), url = ?webview.url().ok().map(|u| u.to_string()), "page load");
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            // M2: one wrapper counts every command invocation (debug builds
+            // only; no-op in release). The generated handler is pinned to a
+            // boxed trait object so the wrapper closure can capture it.
+            let handler: Box<
+                dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync,
+            > = Box::new(tauri::generate_handler![
             commands::settings_get,
             commands::settings_set,
             commands::folder_add,
@@ -136,7 +154,12 @@ fn main() {
             commands::source_remove,
             commands::source_set_enabled,
             commands::source_reorder,
-        ])
+            ]);
+            move |invoke| {
+                metrics::cmd::hit(invoke.message.command());
+                handler(invoke)
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
