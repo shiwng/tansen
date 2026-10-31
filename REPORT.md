@@ -250,6 +250,47 @@ a future milestone migrates it). Verification: `cargo test --workspace`
 **34 passed / 0 failed / 2 ignored** (app-core 3 → 9); builds clean; five-crate
 layout untouched.
 
+## M6 — task-based playback engine in the core crate (2026-10-31)
+
+New `crates/app-core/src/playback_engine.rs`. One tokio task owns the
+`PlaybackState` outright; input is a **bounded mpsc** (`Command`, depth 64,
+senders await under backpressure — nothing dropped); output is a
+**`tokio::sync::watch<PlaybackState>`** (tokio was already an app-core
+dependency — no new crates/deps; the app's existing runtime runs it).
+`rev` increments by exactly one on every published change; a `Play` publishes
+a whole lifecycle (Resolving → Buffering → Playing, or → Error(kind) when the
+factory fails), each step its own rev.
+
+`PipelineFactory` (`prepare`/`release`) is **the only seam** — no real audio
+exists in this engine; tests install a fake that fails configured entries and
+records call order (release-before-prepare asserted). The engine keeps the
+play-order queue internally (storage only; addressing stays by `EntryId`) so
+`Next`/`Prev`/`Enqueue{placement}` behave, and refuses illegal commands
+silently (no publish, no rev).
+
+Tests: 8 engine tests, including **three seeded-random 200-command
+sequences** (seeds 1/42/1337, std-only LCG — no rand dependency) asserting
+over the complete publish journal: `rev` strictly monotonic, every state
+`validate()`s (anchor rate 0 whenever not Playing, volume in range), and
+every status change is a legal edge per the M5 validator. The random tests
+earned their keep immediately: they caught the engine publishing `Resolving`
+with the stale `rate: 1` — fixed by recomputing the rate at every publish.
+
+One M5 edge was loosened for skip-during-buffering: `Buffering → Resolving`
+is now legal (M5's illegal-edge test updated accordingly).
+
+Graphify cross-check (per request): `graphify query "engine"` (84-node BFS
+neighborhood — Engine contains Worker/Command/EngineEvent, imports
+Queue/QueueOp/StreamCache), `graphify explain engine.rs` (30 connections),
+`path AppState → Engine` (single references hop). The checked-in graph
+predates M5, so `playback_types` nodes are absent from it — regenerating is
+a docs-session task, not an M6 one.
+
+Verification: `cargo test --workspace` **42 passed / 0 failed / 2 ignored**
+(app-core 9 → 17); workspace builds with zero unused warnings. Nothing in the
+production app drives this engine yet — it is the core-crate sibling the real
+audio engine will migrate onto.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

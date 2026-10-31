@@ -97,7 +97,7 @@ fn main() {
                         let _ = persistence::views::albums(&stress_state.db);
                         let _ = persistence::views::history(&stress_state.db, 50);
                         if round % 15 == 1 {
-                            if let Some(lib) = stress_lib.clone() {
+                            if stress_lib.is_some() {
                                 let scan_state = stress_state.clone();
                                 std::thread::spawn(move || {
                                     let _ = scan_state.scan(|_| {});

@@ -51,7 +51,9 @@ impl Status {
             // resolves first.
             Idle => matches!(self, Resolving | Playing),
             Resolving => matches!(self, Buffering | Playing | Error(_) | Idle),
-            Buffering => matches!(self, Playing | Error(_) | Idle),
+            // Resolving is reachable: skipping while buffering restarts
+            // the lifecycle (M6's Next-from-Buffering).
+            Buffering => matches!(self, Playing | Resolving | Error(_) | Idle),
             Playing => matches!(self, Paused | Buffering | Resolving | Idle | Error(_)),
             Paused => matches!(self, Playing | Resolving | Idle | Error(_)),
             Error(_) => matches!(self, Resolving | Playing | Idle),
@@ -59,7 +61,7 @@ impl Status {
     }
 
     /// Playing is the one status whose clock runs.
-    fn runs_clock(self) -> bool {
+    pub(crate) fn runs_clock(self) -> bool {
         matches!(self, Status::Playing)
     }
 }
@@ -244,7 +246,6 @@ mod tests {
             (Status::Idle, Status::Paused),        // nothing is loaded
             (Status::Idle, Status::Buffering),     // must resolve or play first
             (Status::Resolving, Status::Paused),   // not started yet
-            (Status::Buffering, Status::Resolving),// backwards
             (Status::Paused, Status::Buffering),   // resume, don't re-buffer
             (Status::Error(ErrorKind::Io), Status::Paused), // recover first
         ];
