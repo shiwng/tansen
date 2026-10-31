@@ -39,6 +39,8 @@ pub struct AudioPipeline {
     frames: Arc<AtomicU64>,
     /// Sample rate of the currently loaded source (for ms conversion).
     sample_rate: Arc<AtomicU64>,
+    /// Duration of the current media (0 = unknown).
+    duration_ms: Arc<AtomicU64>,
 }
 
 impl AudioPipeline {
@@ -48,13 +50,14 @@ impl AudioPipeline {
     pub fn spawn(cache: Option<Arc<StreamCache>>) -> Result<Self, String> {
         let frames = Arc::new(AtomicU64::new(0));
         let sample_rate = Arc::new(AtomicU64::new(44_100));
+        let duration_ms = Arc::new(AtomicU64::new(0));
         let (tx, rx) = mpsc::channel::<Request>();
-        let (frames_t, rate_t) = (frames.clone(), sample_rate.clone());
+        let (frames_t, rate_t, dur_t) = (frames.clone(), sample_rate.clone(), duration_ms.clone());
         std::thread::Builder::new()
             .name("pipeline-audio".into())
-            .spawn(move || audio_thread(rx, cache, frames_t, rate_t))
+            .spawn(move || audio_thread(rx, cache, frames_t, rate_t, dur_t))
             .map_err(|e| format!("pipeline thread: {e}"))?;
-        Ok(Self { tx: Some(tx), frames, sample_rate })
+        Ok(Self { tx: Some(tx), frames, sample_rate, duration_ms })
     }
 
     /// Opens `path` as the sink's sole content and starts it. Blocking until
@@ -101,6 +104,14 @@ impl AudioPipeline {
         self.frames.load(Ordering::Relaxed).saturating_mul(1000) / rate
     }
 
+    /// Duration of the current media; `None` when unknown.
+    pub fn duration_ms(&self) -> Option<u64> {
+        match self.duration_ms.load(Ordering::Relaxed) {
+            0 => None,
+            d => Some(d),
+        }
+    }
+
     fn fire(&self, req: Request) {
         if let Some(tx) = self.tx.as_ref() {
             let _ = tx.send(req);
@@ -121,6 +132,7 @@ fn audio_thread(
     cache: Option<Arc<StreamCache>>,
     frames: Arc<AtomicU64>,
     sample_rate: Arc<AtomicU64>,
+    duration_ms: Arc<AtomicU64>,
 ) {
     // The stream lives here forever: `OutputStream` is not `Send`.
     let mut slot: Option<OutputStream> = None;
@@ -156,6 +168,11 @@ fn audio_thread(
                     sink.clear();
                     sample_rate.store(u64::from(source.sample_rate()), Ordering::Relaxed);
                     frames.store(0, Ordering::Relaxed);
+                    let total = source
+                        .total_duration()
+                        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+                        .unwrap_or(0);
+                    duration_ms.store(total, Ordering::Relaxed);
                     let channels = source.channels().max(1);
                     sink.append(FrameCounted { inner: source, channels, samples: 0, frames: frames.clone() });
                     sink.set_volume(volume);

@@ -325,6 +325,47 @@ Verification: `cargo test --workspace` **43 passed / 0 failed / 2 ignored**
 (playback 15 → 16 with the frame-counting test); demo run green (transcript
 above); workspace builds with zero unused warnings.
 
+## M8 — queue semantics + end-of-track deadline in the Engine (2026-10-31)
+
+- **Queue**: entries stay addressed by `EntryId` (body lives inside the task,
+  never in `PlaybackState`). `queue_rev` now increments on **any** queue
+  change — Enqueue (body) and every cursor move (Play/Next/Prev land in the
+  same path) — one bump per command. The M6 test pinning the old
+  enqueue-only count was updated (1 → 5 in its scenario).
+- **Track end**: when a publish lands on `Playing` and the factory reports a
+  duration, the task arms **ONE one-shot deadline** for the remaining time —
+  never periodic. On fire it confirms against `position_ms()` (the
+  frames counter): really at the end (within 250 ms slack) → advance to the
+  next entry, or fall to `Idle` when the queue is exhausted (entry cleared);
+  anchor moved / decoder stalled → **re-arm** from the reported position,
+  publishing nothing; no position truth → stand down. Pause, seek and skips
+  cancel the deadline implicitly (the arm is recomputed from the status after
+  every command).
+- **Trait**: `PipelineFactory` gains `position_ms()` / `duration_ms()` —
+  still the one seam. The rodio pipeline reports duration from the decoder at
+  load; the fake gets settable truth for tests. tokio gained the
+  milestone-named `test-util` feature for the paused clock.
+
+Tests (5 new, `#[tokio::test(start_paused = true)]`, fake pipeline): auto-
+advance to the next entry; exhausted queue → Idle with entry cleared; pause
+cancels (10 s of virtual time, zero publishes); seek cancels and the
+re-armed deadline (not the pre-seek one) does the advancing; a fire with a
+stale position re-arms silently. `flush()` drains via `yield_now` only —
+time sleeps would fire the very deadline under test.
+
+Live proof (engine_demo, two generated 30 s WAVs, real audio): seek to 29 s →
+`rev=9 Playing pos=29000` (re-armed) → **`rev=12 Playing entry=1`** — the
+deadline fired, frames confirmed, the engine advanced. Earlier prints: 2 s →
+frames 85 545 (pos 1939 ms); pause Δ35 frames frozen; resume+seek(1 s) →
+frames 176 006 = pos 3991 ms.
+
+Graphify per request: `query "Queue Enqueue"` (84-node neighborhood) +
+`explain Queue` (18 connections — the production `queue.rs` apply pattern,
+which this engine reimplements in its task-owned form).
+
+Verification: `cargo test --workspace` **48 passed / 0 failed / 2 ignored**
+(app-core 17 → 22); demo deterministic and green; zero new warnings.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

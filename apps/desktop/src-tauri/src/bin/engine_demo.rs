@@ -82,20 +82,56 @@ impl PipelineFactory for RodioFactory {
             }
         }
     }
+
+    fn position_ms(&self) -> Option<u64> {
+        let guard = self.pipeline.lock().ok()?;
+        guard.as_ref().map(|p| p.pos_ms())
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        let guard = self.pipeline.lock().ok()?;
+        guard.as_ref().and_then(|p| p.duration_ms())
+    }
 }
 
+/// Two 30 s WAVs: long enough that every transport measurement happens far
+/// from the track end, then auto-advance is demonstrated by seeking to
+/// 29 s. Generated on first run; explicit args override.
 fn default_fixtures() -> Vec<String> {
-    let dir = "/tmp/tansen-stress-lib";
-    let mut files: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.path().extension().is_some_and(|x| x == "wav"))
-                .filter_map(|e| e.path().to_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    files.sort();
-    files.into_iter().take(4).collect()
+    let paths = ["/tmp/tansen-demo-a.wav", "/tmp/tansen-demo-b.wav"];
+    for path in paths {
+        if std::path::Path::new(path).is_file() {
+            continue;
+        }
+        let rate = 44_100;
+        write_wav(path, rate, rate * 30);
+    }
+    paths.iter().map(|p| p.to_string()).collect()
+}
+
+/// Minimal mono 16-bit WAV writer (std only; hound is not a dependency).
+fn write_wav(path: &str, sample_rate: usize, samples: usize) {
+    use std::io::Write;
+    let data_len = samples * 2;
+    let mut f = std::fs::File::create(path).expect("demo fixture create");
+    let mut buf = Vec::with_capacity(44 + data_len);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+    buf.extend_from_slice(b"WAVEfmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&(sample_rate as u32).to_le_bytes());
+    buf.extend_from_slice(&((sample_rate * 2) as u32).to_le_bytes());
+    buf.extend_from_slice(&2u16.to_le_bytes());
+    buf.extend_from_slice(&16u16.to_le_bytes());
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for i in 0..samples {
+        let v = (9000.0 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / sample_rate as f64).sin()) as i16;
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    let _ = f.write_all(&buf);
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -135,15 +171,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await;
         engine.send(Command::Play { entry: EntryId(0) }).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let (f0, pos0) = factory.frames();
-        println!("after 3 s: frames={f0} pos_ms={pos0}");
+        println!("after 2 s: frames={f0} pos_ms={pos0}");
 
         engine.send(Command::Pause).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let (f1, _) = factory.frames();
         println!(
-            "after pause (1 s): frames={f1} (Δ={}; a playing pipeline gains ~44100/s)",
+            "after pause (0.5 s): frames={f1} (Δ={}; a playing pipeline gains ~44100/s)",
             f1.saturating_sub(f0)
         );
 
@@ -154,8 +190,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (f2, pos2) = factory.frames();
         println!("after resume+seek(1s)+vol(0.4): frames={f2} pos_ms={pos2} (seek reset the counter to ~44100)");
 
+        // Auto-advance demo: seek near the 30 s end; the deadline fires,
+        // the frames confirm, and the engine walks into entry 1.
+        engine.send(Command::Seek { ms: 29_000 }).await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
         let last = rx.borrow().clone();
-        println!("final status={:?} rate={} volume={}", last.status, last.anchor.rate, last.volume);
+        println!(
+            "final status={:?} entry={:?} rate={} (auto-advance expected to entry 1)",
+            last.status, last.entry, last.anchor.rate
+        );
     });
     Ok(())
 }

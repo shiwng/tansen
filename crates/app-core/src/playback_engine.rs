@@ -39,7 +39,18 @@ pub trait PipelineFactory: Send + Sync + 'static {
 
     /// Drive transport/gain on the pipeline (M7).
     fn transport(&self, action: Transport);
+
+    /// Delivered position of the current media, if any (M8) — the truth the
+    /// end-of-track deadline is confirmed against. Milliseconds.
+    fn position_ms(&self) -> Option<u64>;
+
+    /// Duration of the current media, if known (M8). `None` disables
+    /// auto-advance for that entry.
+    fn duration_ms(&self) -> Option<u64>;
 }
+
+/// How close to the reported duration counts as "the track ended".
+const END_SLACK_MS: u64 = 250;
 
 /// Handle to the playback task. Cheap to clone; the task dies when the
 /// sender side is dropped everywhere.
@@ -161,8 +172,12 @@ impl Core {
                         factory.release(prev);
                     }
                 }
+                let cursor_moves = self.cursor != Some(entry);
                 self.cursor = Some(entry);
-                push(self, Some(Status::Resolving), Some(Some(entry)), None, None, false);
+                // Any queue change bumps queue_rev: body (Enqueue) and the
+                // cursor (Play/Next/Prev land here). The body itself never
+                // enters PlaybackState.
+                push(self, Some(Status::Resolving), Some(Some(entry)), None, None, cursor_moves);
                 match factory.prepare(entry) {
                     Ok(()) => {
                         push(self, Some(Status::Buffering), None, None, None, false);
@@ -228,6 +243,16 @@ impl Core {
         published
     }
 
+    /// The queue is exhausted after this entry: fall to Idle. Playing → Idle
+    /// is a legal edge; nothing current remains.
+    fn finish(&mut self) -> Vec<PlaybackState> {
+        self.state.rev += 1;
+        self.state.status = Status::Idle;
+        self.state.entry = None;
+        self.state.anchor.rate = 0;
+        vec![self.state.clone()]
+    }
+
     /// Queue position of the cursor, if it is still in the queue.
     fn cursor_pos_in_queue(&self) -> Option<usize> {
         let cursor = self.cursor?;
@@ -253,16 +278,72 @@ async fn run(
     journal: Arc<Mutex<VecDeque<PlaybackState>>>,
 ) {
     let mut core = Core { state: initial, queue: Vec::new(), cursor: None };
-    while let Some(cmd) = cmd_rx.recv().await {
-        for st in core.apply(factory.as_ref(), cmd) {
-            if let Ok(mut j) = journal.lock() {
-                j.push_back(st.clone());
-                while j.len() > JOURNAL_CAP {
-                    j.pop_front();
+    // The ONE outstanding end-of-track deadline (tokio Instant). None = not
+    // armed. Re-armed from the anchor after every command, confirmed against
+    // frames (position_ms) when it fires, never periodic.
+    let mut deadline: Option<tokio::time::Instant> = None;
+    loop {
+        // Arm/re-arm: when Playing with a known duration, one shot at the
+        // remaining time. Anything else cancels.
+        deadline = if core.state.status == Status::Playing {
+            factory
+                .duration_ms()
+                .map(|d| {
+                    let rest = d.saturating_sub(core.state.anchor.pos_ms);
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(rest)
+                })
+        } else {
+            None
+        };
+
+        tokio::select! {
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else { break };
+                publish(&core.apply(factory.as_ref(), cmd), &state_tx, &journal);
+            }
+            _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                let fired = tokio::time::Instant::now();
+                let _ = fired;
+                let dur = factory.duration_ms();
+                let pos = factory.position_ms();
+                match (dur, pos) {
+                    // Confirm against the frames: really at the end → advance.
+                    (Some(d), Some(p)) if p.saturating_add(END_SLACK_MS) >= d => {
+                        let next = core.neighbor(true).map(|n| core.apply(factory.as_ref(), Command::Play { entry: n }));
+                        match next {
+                            Some(pubs) => publish(&pubs, &state_tx, &journal),
+                            None => publish(&core.finish(), &state_tx, &journal),
+                        }
+                    }
+                    // The anchor moved (seek) or the decoder stalled: re-arm
+                    // from the reported position — nothing publishes.
+                    (Some(d), Some(p)) => {
+                        let rest = d.saturating_sub(p);
+                        deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(rest));
+                    }
+                    // No position truth available: stand down rather than
+                    // guess.
+                    _ => deadline = None,
                 }
             }
-            let _ = state_tx.send(st);
         }
+    }
+}
+
+/// Push published states to the journal + the watch channel.
+fn publish(
+    states: &[PlaybackState],
+    state_tx: &watch::Sender<PlaybackState>,
+    journal: &Mutex<VecDeque<PlaybackState>>,
+) {
+    for st in states {
+        if let Ok(mut j) = journal.lock() {
+            j.push_back(st.clone());
+            while j.len() > JOURNAL_CAP {
+                j.pop_front();
+            }
+        }
+        let _ = state_tx.send(st.clone());
     }
 }
 
@@ -278,6 +359,14 @@ mod tests {
     struct FakePipelines {
         fail: HashSet<EntryId>,
         calls: Mutex<Vec<String>>,
+        /// Truth the end-of-track deadline confirms against (M8).
+        clock: Mutex<Clock>,
+    }
+
+    #[derive(Default)]
+    struct Clock {
+        position_ms: Option<u64>,
+        duration_ms: Option<u64>,
     }
 
     impl FakePipelines {
@@ -285,7 +374,13 @@ mod tests {
             Self {
                 fail: fail.iter().map(|e| EntryId(*e)).collect(),
                 calls: Mutex::new(Vec::new()),
+                clock: Mutex::new(Clock::default()),
             }
+        }
+        fn set_media(&self, position_ms: Option<u64>, duration_ms: Option<u64>) {
+            let mut c = self.clock.lock().unwrap();
+            c.position_ms = position_ms;
+            c.duration_ms = duration_ms;
         }
     }
 
@@ -303,6 +398,12 @@ mod tests {
         }
         fn transport(&self, action: Transport) {
             self.calls.lock().unwrap().push(format!("transport:{action:?}"));
+        }
+        fn position_ms(&self) -> Option<u64> {
+            self.clock.lock().ok().and_then(|c| c.position_ms)
+        }
+        fn duration_ms(&self) -> Option<u64> {
+            self.clock.lock().ok().and_then(|c| c.duration_ms)
         }
     }
 
@@ -446,7 +547,9 @@ mod tests {
 
         let last = engine.subscribe().borrow().clone();
         assert_eq!(last.entry, Some(EntryId(11)));
-        assert_eq!(last.queue_rev, 1);
+        // M8 semantics: every queue change bumps queue_rev — the Enqueue (1)
+        // plus each cursor move (Play, Next, Next, Prev) = 5.
+        assert_eq!(last.queue_rev, 5);
         assert_invariants(&engine.journal());
     }
 
@@ -466,6 +569,132 @@ mod tests {
             let journal = drive(seed, 200, 8).await;
             assert_invariants(&journal);
         }
+    }
+
+    // ---- M8: the one-shot end-of-track deadline, paused tokio clock ----
+
+    /// Deterministic drain for the current-thread runtime — no time sleeps
+    /// (virtual time would fire the very deadline under test).
+    async fn flush() {
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn track_end_auto_advances_to_the_next_entry() {
+        let fake = Arc::new(FakePipelines::new(&[]));
+        let engine = Engine::start(fake.clone());
+        fake.set_media(Some(0), Some(1000));
+        engine
+            .send(Command::Enqueue { tracks: vec![EntryId(1), EntryId(2)], placement: Placement::Append })
+            .await;
+        engine.send(Command::Play { entry: EntryId(1) }).await;
+        flush().await;
+        assert_eq!(engine.subscribe().borrow().status, Status::Playing);
+        assert_eq!(engine.subscribe().borrow().entry, Some(EntryId(1)));
+
+        // The track really ends: the frames confirm at the deadline.
+        fake.set_media(Some(1000), Some(1000));
+        tokio::time::advance(std::time::Duration::from_millis(1000)).await;
+        flush().await;
+        let last = engine.subscribe().borrow().clone();
+        assert_eq!(last.status, Status::Playing);
+        assert_eq!(last.entry, Some(EntryId(2)), "auto-advanced");
+        assert_invariants(&engine.journal());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_queue_falls_to_idle() {
+        let fake = Arc::new(FakePipelines::new(&[]));
+        let engine = Engine::start(fake.clone());
+        fake.set_media(Some(0), Some(1000));
+        engine
+            .send(Command::Enqueue { tracks: vec![EntryId(5)], placement: Placement::Append })
+            .await;
+        engine.send(Command::Play { entry: EntryId(5) }).await;
+        flush().await;
+
+        fake.set_media(Some(1000), Some(1000));
+        tokio::time::advance(std::time::Duration::from_millis(1000)).await;
+        flush().await;
+        let last = engine.subscribe().borrow().clone();
+        assert_eq!(last.status, Status::Idle);
+        assert_eq!(last.entry, None);
+        assert_invariants(&engine.journal());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pause_cancels_the_deadline() {
+        let fake = Arc::new(FakePipelines::new(&[]));
+        let engine = Engine::start(fake.clone());
+        fake.set_media(Some(0), Some(1000));
+        engine.send(Command::Play { entry: EntryId(1) }).await;
+        flush().await;
+        engine.send(Command::Pause).await;
+        flush().await;
+        let rev_before = engine.subscribe().borrow().rev;
+
+        // Even with the frames at the end, nothing may fire: paused.
+        fake.set_media(Some(1000), Some(1000));
+        tokio::time::advance(std::time::Duration::from_secs(10)).await;
+        flush().await;
+        let last = engine.subscribe().borrow().clone();
+        assert_eq!(last.rev, rev_before, "no publish after pause");
+        assert_eq!(last.status, Status::Paused);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn seek_cancels_and_the_deadline_rearms_from_the_new_anchor() {
+        let fake = Arc::new(FakePipelines::new(&[]));
+        let engine = Engine::start(fake.clone());
+        fake.set_media(Some(0), Some(1000));
+        engine
+            .send(Command::Enqueue { tracks: vec![EntryId(1), EntryId(2)], placement: Placement::Append })
+            .await;
+        engine.send(Command::Play { entry: EntryId(1) }).await;
+        flush().await;
+        engine.send(Command::Seek { ms: 600 }).await; // cancel + re-arm: rest = 400 ms
+        flush().await;
+        let rev_after_seek = engine.subscribe().borrow().rev;
+
+        // The pre-seek deadline (t0+1000) must not govern; nothing at t0+300.
+        tokio::time::advance(std::time::Duration::from_millis(300)).await;
+        flush().await;
+        assert_eq!(engine.subscribe().borrow().rev, rev_after_seek, "no premature fire");
+
+        fake.set_media(Some(1000), Some(1000));
+        tokio::time::advance(std::time::Duration::from_millis(400)).await;
+        flush().await;
+        let last = engine.subscribe().borrow().clone();
+        assert_eq!(last.entry, Some(EntryId(2)), "advanced on the re-armed deadline");
+        assert_invariants(&engine.journal());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fire_with_a_stale_position_rearms_instead_of_advancing() {
+        let fake = Arc::new(FakePipelines::new(&[]));
+        let engine = Engine::start(fake.clone());
+        fake.set_media(Some(0), Some(1000));
+        engine
+            .send(Command::Enqueue { tracks: vec![EntryId(1), EntryId(2)], placement: Placement::Append })
+            .await;
+        engine.send(Command::Play { entry: EntryId(1) }).await;
+        flush().await;
+        let rev_playing = engine.subscribe().borrow().rev;
+
+        // The deadline fires but the frames say the track is nowhere near
+        // done (seek happened on the media side): re-arm, publish nothing.
+        tokio::time::advance(std::time::Duration::from_millis(1000)).await;
+        flush().await;
+        assert_eq!(engine.subscribe().borrow().rev, rev_playing, "re-arm publishes nothing");
+        assert_eq!(engine.subscribe().borrow().entry, Some(EntryId(1)));
+
+        fake.set_media(Some(1000), Some(1000));
+        tokio::time::advance(std::time::Duration::from_millis(1000)).await;
+        flush().await;
+        assert_eq!(engine.subscribe().borrow().entry, Some(EntryId(2)), "advanced on the second fire");
+        assert_invariants(&engine.journal());
     }
 
     #[tokio::test]
