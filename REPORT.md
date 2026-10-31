@@ -291,6 +291,40 @@ Verification: `cargo test --workspace` **42 passed / 0 failed / 2 ignored**
 production app drives this engine yet — it is the core-crate sibling the real
 audio engine will migrate onto.
 
+## M7 — PipelineFactory over the real rodio playback (2026-10-31)
+
+Three pieces:
+- **`crates/playback/src/pipeline.rs`** — the rodio-backed media path: one
+  dedicated audio thread owns the `OutputStream` (not `Send`), std-mpsc
+  commands (Load-with-ack / Play / Pause / SeekMs / Volume / Clear / Quit),
+  sticky volume across loads, `try_seek` with the frame counter jumping to
+  the target. **`frames_played` is a lock-free `AtomicU64` incremented by the
+  `FrameCounted` source wrapper on the feeder path** — one increment per
+  channel-group, no locks, no allocation. `pos_ms()` = frames ÷ sample rate.
+  The production `engine.rs` path is untouched (removed in M10); the only
+  change there is `open_output_stream` becoming `pub(crate)` for reuse.
+- **The M6 seam grew `transport`** (`Transport` {Play, Pause, Seek, Volume});
+  the engine routes pause/resume/seek/volume through it after publishing, and
+  the M6 fake records the calls. Still one trait.
+- **`apps/desktop/src-tauri/src/bin/engine_demo.rs`** — the debug binary
+  exercising the whole chain end to end: `Engine` + `RodioFactory` over four
+  local WAVs, printing every published state and the frame counter. Measured
+  run (macOS, real audio out, 44.1 kHz): 3 s play → frames 128 297 =
+  pos 2909 ms; pause 1 s → Δ +183 frames (buffer drain, then frozen);
+  resume + seek(1 s) → counter reset to 44 100, then 47 908 = 1086 ms;
+  volume 0.4 honored; every published state satisfied the M5/M6 laws
+  (rev monotonic, rate 1 iff Playing).
+
+Known M7 limitations (documented, deferred): `prepare` is synchronous on the
+engine task, so remote URLs would block it (fixtures are local); the engine
+anchor's `pos_ms` updates only on explicit `Seek` commands — the frame
+counter is the real clock and syncing them is a later milestone; queue
+auto-advance on track end is not wired yet.
+
+Verification: `cargo test --workspace` **43 passed / 0 failed / 2 ignored**
+(playback 15 → 16 with the frame-counting test); demo run green (transcript
+above); workspace builds with zero unused warnings.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

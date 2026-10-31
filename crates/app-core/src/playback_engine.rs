@@ -16,9 +16,19 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 
+/// Transport + gain actions for the pipeline as a whole (M7). The factory
+/// maps them onto whatever entry is current on its side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Transport {
+    Play,
+    Pause,
+    Seek { ms: u64 },
+    Volume(f32),
+}
+
 /// The only seam between the playback task and the outside world. The real
-/// implementation (future milestone) wraps the audio engine; tests install a
-/// fake. No other I/O happens in this module.
+/// implementation wraps the rodio playback; tests install a fake. No other
+/// I/O happens in this module.
 pub trait PipelineFactory: Send + Sync + 'static {
     /// Resolve + open media for this entry. `Ok(())` means the pipeline is
     /// ready to be audible; the `ErrorKind` says which stage failed.
@@ -26,6 +36,9 @@ pub trait PipelineFactory: Send + Sync + 'static {
 
     /// The entry stops being current: tear its pipeline down.
     fn release(&self, entry: EntryId);
+
+    /// Drive transport/gain on the pipeline (M7).
+    fn transport(&self, action: Transport);
 }
 
 /// Handle to the playback task. Cheap to clone; the task dies when the
@@ -161,11 +174,13 @@ impl Core {
             Command::Pause => {
                 if self.state.status == Status::Playing {
                     push(self, Some(Status::Paused), None, Some(self.state.anchor.pos_ms), None, false);
+                    factory.transport(Transport::Pause);
                 }
             }
             Command::Resume => {
                 if self.state.status == Status::Paused {
                     push(self, Some(Status::Playing), None, Some(self.state.anchor.pos_ms), None, false);
+                    factory.transport(Transport::Play);
                 }
             }
             Command::Next | Command::Prev => {
@@ -178,11 +193,13 @@ impl Core {
             Command::Seek { ms } => {
                 if self.state.entry.is_some() {
                     push(self, None, None, Some(ms), None, false);
+                    factory.transport(Transport::Seek { ms });
                 }
             }
             Command::SetVolume(v) => {
                 let clamped = v.clamp(0.0, 1.0);
                 push(self, None, None, None, Some(clamped), false);
+                factory.transport(Transport::Volume(clamped));
             }
             Command::Enqueue { tracks, placement } => {
                 let at = self.cursor_pos_in_queue();
@@ -283,6 +300,9 @@ mod tests {
         }
         fn release(&self, entry: EntryId) {
             self.calls.lock().unwrap().push(format!("release:{entry:?}"));
+        }
+        fn transport(&self, action: Transport) {
+            self.calls.lock().unwrap().push(format!("transport:{action:?}"));
         }
     }
 

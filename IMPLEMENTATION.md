@@ -96,6 +96,7 @@ the lock; `user_version` migrations are append-only.
 | `src/cache.rs` | `StreamCache`: bounded (512 MiB LRU) disk cache for streamed tracks, sha1-of-URL keyed, complete-file-only. The engine plays cached copies from disk; the resolve-ahead service prefetches the next track into it. |
 | `src/probe.rs` | `decode_rms(reader, window)`: Symphonia decode without a device — the test oracle for "this stream contains sound". |
 | `src/metrics.rs` | Audio reliability counters (M4, debug builds only): cpal stream-error count (via `OutputStreamBuilder::with_error_callback`), decoder read-latency histogram (`MeasuredSource` wraps every decoder in the engine's `append`), slowest read, quantized p50/p99; `TANSEN_STALL_MS`/`TANSEN_STALL_EVERY` env hook sleeps on rodio's feeder thread mid-track. Release passes decoders through untouched. |
+| `src/pipeline.rs` | The rodio-backed pipeline the M6 `PipelineFactory` drives (M7): one dedicated audio thread owns the `OutputStream` (not `Send`), std-mpsc commands (Load-with-ack / Play / Pause / SeekMs / Volume / Clear / Quit), sticky volume across loads, `try_seek` with the frame counter jumping to the target. `FrameCounted` wraps every appended decoder and bumps `frames_played` (lock-free `AtomicU64`, one increment per channel-group — no locks, no allocation on the feeder path); `pos_ms()` derives from frames ÷ sample rate. Parallel path: production still runs `engine.rs` until M10 removes it. |
 
 Event → consumer map:
 
@@ -136,7 +137,7 @@ drains with a 100 ms timeout so ticks still run). Decoders erase to
 |---|---|
 | `src/state.rs` | `AppState`: owns Db, Engine, Scanner, Media, scan_events channel, cached `YtHandle`. Every service the UI drives lives here (folders/tracks/scan/playlists/settings/play_remote/…). `restore_playback()` re-loads the saved queue paused at the saved index (dead local files dropped, remote entries kept). `migrate_legacy_data_dir()` renames pre-0.3.0 `bitchord-desktop` → `tansen` once. |
 | `src/playback_types.rs` | Normalized playback types (M5, pure — no I/O, no Tauri, no serde yet): `EntryId` (queue identity, never an index), `Status` {Idle/Resolving/Buffering/Playing/Paused/Error(kind)}, `Anchor` {pos_ms, rate 0\|1}, `PlaybackState` {rev, status, entry, queue_rev, anchor, volume}, `Command` {Play/Pause/Resume/Next/Prev/Seek/SetVolume/Enqueue{tracks, placement}}, and `validate_transition` — the pure law for status changes (explicit edge graph + the anchor rule: the clock runs only while `Playing`). Groundwork for a future engine rework; nothing calls it yet. |
-| `src/playback_engine.rs` | The task-based playback engine (M6): one tokio task owns the `PlaybackState`; commands arrive on a bounded mpsc (64, backpressure), every published change goes out on a `tokio::sync::watch` with `rev` +1. `PipelineFactory` is the only seam (`prepare`/`release`; a fake backs the tests — no real audio). The engine also holds the play-order queue (storage only — addressing stays by `EntryId`) and walks the M5 edge graph, refusing illegal commands silently. A bounded journal records every publish (watch coalesces; tests assert over the complete history). The real audio factory is a future milestone. |
+| `src/playback_engine.rs` | The task-based playback engine (M6): one tokio task owns the `PlaybackState`; commands arrive on a bounded mpsc (64, backpressure), every published change goes out on a `tokio::sync::watch` with `rev` +1. `PipelineFactory` is the only seam (`prepare`/`release`; a fake backs the tests — no real audio). The engine also holds the play-order queue (storage only — addressing stays by `EntryId`) and walks the M5 edge graph, refusing illegal commands silently. A bounded journal records every publish (watch coalesces; tests assert over the complete history). M7: `PipelineFactory` grew `transport` (Play/Pause/Seek/Volume) and the engine routes pause/resume/seek/volume through it; the real factory lives in the `engine_demo` debug binary. |
 | `src/media.rs` | souvlaki wrapper: created/attached on the main thread (macOS requirement), updated from any thread, OS pushes throttled to 2 Hz. |
 | `src/history.rs` | Plain thread over engine events; one `play_history` row per local track start (`id > 0`). |
 | `src/persist_state.rs` | Plain thread; flushes queue/index/position/repeat to `playback_state`. |
@@ -344,7 +345,7 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 
 | Suite | Count | What it proves |
 |---|---|---|
-| `cargo test` (playback) | 15 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction, metrics histogram bucketing |
+| `cargo test` (playback) | 16 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction, metrics histogram bucketing, pipeline frame counting (frames ≠ samples) |
 | `cargo test` (library/persistence/sources) | 10 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
 | `cargo test -p sources --test yt_sidecar -- --ignored` | 1 | The live path: sidecar launch → search → `prefer=aac` stream → 5 s decode through the ranged reader (needs network + built jar) |
 | `cargo test -p sources --test yt_measure -- --ignored` | 1 | M3 sidecar measurements: spawn→ready, JVM RSS, resolve p50/p95 over 30 calls, first-play latency (resolve → ranged reader → first audio). Measurement only, no assertions beyond sanity |
@@ -354,6 +355,10 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 | `scripts/bench/run.sh` | — | M1 baseline harness: release build, 5 runs of start→first-paint, memory footprint (app process; sidecar JVM when running), 60 s idle and 60 s playing CPU (median table). Env-gated autoplay hook, no behavior change. |
 
 Manual smoke: app launch, migration log, UI render (browser DOM capture).
+Debug end-to-end playback exercise (M7): `cargo run -p tansen --bin engine_demo`
+— the app-core Engine + rodio `PipelineFactory` over local WAVs, printing every
+published state and the `frames_played` counter through play/pause/resume/
+seek/volume.
 
 ---
 

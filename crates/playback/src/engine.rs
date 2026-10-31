@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 /// Opens the default output. Debug builds route cpal's error callback into
 /// the M4 reliability counters; release uses rodio's default behavior.
-fn open_output_stream() -> Result<OutputStream, rodio::StreamError> {
+pub(crate) fn open_output_stream() -> Result<OutputStream, rodio::StreamError> {
     #[cfg(debug_assertions)]
     {
         OutputStreamBuilder::from_default_device()

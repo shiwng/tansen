@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod engine;
 pub mod metrics;
+pub mod pipeline;
 pub mod probe;
 pub mod queue;
 pub mod remote;
