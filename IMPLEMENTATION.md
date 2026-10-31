@@ -262,6 +262,36 @@ SIGTERM-clean.
 Runtime chain for one stream:
 `YtMusicSource.stream → sidecar /track/{id}/stream?prefer=aac → StreamResolver.resolveForDownload → InnerTubeX client catalog (+ NewPipe fallback) → googlevideo URL → HttpRangeReader → Symphonia → rodio sink`.
 
+**The sidecar hands Rust a URL, never audio bytes.** All six HTTP routes
+(`/health`, `/search`, `/track`, `/album`, `/playlist`, `/lyrics`) answer
+JSON; the stream route serializes the resolved googlevideo URL as a string
+(`Main.kt:115`, `put("url", JsonPrimitive(stream.url))`). There is no
+byte-proxying route. Rust opens the URL itself through `HttpRangeReader`
+(512 KiB ranged GETs, moov seeks answered over the wire) — the JVM never
+touches audio payloads.
+
+### Sidecar measurements (M3, `#[ignore]` test `yt_measure.rs`)
+
+Measured on the app's own spawn path (`YtMusicSource::launch`, macOS arm64,
+dev jar, network live — 2026-10-31):
+
+| Metric | Value |
+|---|---|
+| Spawn → ready (`launch()` incl. health poll) | 476 ms |
+| Sidecar JVM RSS at ready | 79 MiB |
+| Sidecar JVM RSS after 30 resolves + search | 147 MiB |
+| Resolve latency (`/track/{id}/stream?prefer=aac`), 30 calls | cold 1728 ms, **p50 1837 ms, p95 2358 ms**, max 3172 ms |
+| First play (cold resolve → ranged reader open → first 0.25 s decoded audio) | 4233 ms total (resolve 1822 + reader open 2412) |
+
+Readings: JVM boot is cheap (~0.5 s incl. one 400 ms health-poll step), but
+**every resolve costs ~1.8 s** — the sidecar does a fresh Innertube round
+trip per stream, which is why the resolve-ahead service patches URLs and
+prefetches the next track while the current one plays. The reader-open phase
+(moov over ranged HTTP) is the other half of first-play latency. Percentiles
+are nearest-rank over the sorted 30 samples. Test scope excludes Tauri IPC,
+queue wiring and UI; the engine-path decode is exercised through the same
+`HttpRangeReader` + `probe` the player uses.
+
 ---
 
 ## 7. The command surface (Tauri ⇄ React)
@@ -314,6 +344,7 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 | `cargo test` (playback) | 14 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction |
 | `cargo test` (library/persistence/sources) | 10 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
 | `cargo test -p sources --test yt_sidecar -- --ignored` | 1 | The live path: sidecar launch → search → `prefer=aac` stream → 5 s decode through the ranged reader (needs network + built jar) |
+| `cargo test -p sources --test yt_measure -- --ignored` | 1 | M3 sidecar measurements: spawn→ready, JVM RSS, resolve p50/p95 over 30 calls, first-play latency (resolve → ranged reader → first audio). Measurement only, no assertions beyond sanity |
 | `cargo test` (app-core) | 3 | Watcher phases, restart persistence incl. remote-entry restore |
 | `pnpm test` (vitest) | 32 | Lyric parsers (15), LyricClock (10), repository selection (1), reorderMove (6) |
 | `pnpm build` | — | tsc strict + production bundle |

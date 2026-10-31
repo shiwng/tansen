@@ -166,6 +166,33 @@ Verification: `cargo build` clean (tansen crate zero warnings; 2 pre-existing
 quoted in IMPLEMENTATION.md §11). rustfmt is not installed on this
 toolchain (never used in this repo); code follows the file's existing style.
 
+## M3 — sidecar measurement (2026-10-31)
+
+New `#[ignore]` test `crates/sources/tests/yt_measure.rs` measures the app's
+own spawn path; numbers live in IMPLEMENTATION.md §6. Measured (macOS arm64,
+live network): **spawn→ready 476 ms; JVM RSS 79 MiB at ready → 147 MiB after
+30 resolves; resolve p50 1837 ms / p95 2358 ms over 30 calls (cold 1728,
+max 3172); first play (cold resolve → ranged reader open → first decoded
+audio) 4233 ms**, RMS 0.2173 (real audio).
+
+Two engineering facts the numbers pin down:
+- **The sidecar is a resolver, not a proxy** — all six routes answer JSON;
+  the stream route hands Rust the googlevideo URL (`Main.kt:115`). No audio
+  bytes ever cross the JVM↔Rust boundary; Rust ranges googlevideo directly.
+- **Resolve is ~1.8 s per call, every call.** The sidecar does a fresh
+  Innertube round trip per stream; nothing in the wire path is warm. This
+  quantifies why the resolve-ahead thread + StreamCache prefetch exist, and
+  makes resolve latency (not decode) the dominant first-play cost, with the
+  ranged moov fetch second (2.4 s reader open).
+
+No behavior change: the test is `#[ignore]`d and production code is
+untouched. Verification: test run green (`1 passed`, 68.9 s incl. network);
+`cargo test --workspace` still 27/0/1; `pnpm test` 32/32. Note: the older
+`yt_sidecar.rs` round-trip test hardcodes `../../../BitChord/…` and breaks
+whenever the sibling checkout moves (BitChord now lives at
+`~/Desktop/BitChord` again); `yt_measure.rs` instead uses the app's own jar
+discovery and is move-proof.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |
