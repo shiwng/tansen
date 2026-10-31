@@ -24,6 +24,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
+    tracing::info!(target: "bench", stage = "process-start", "bench: process start");
 
     let art_root = data_dir().join("art");
 
@@ -39,6 +40,28 @@ fn main() {
             tracing::info!(dir = %dir.display(), "app data dir");
             let state = Arc::new(AppState::open(&dir).expect("app state init"));
             let _ = state.restore_playback();
+
+            // M1 bench hook (env-gated, never active in normal runs): start
+            // playing a local file for the 60 s "playing" measurement.
+            if let Ok(path) = std::env::var("TANSEN_BENCH_PLAY") {
+                use playback::QueueOp;
+                let track = persistence::models::TrackRef {
+                    id: 0,
+                    title: "Bench".into(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration_sec: 0.0,
+                    art_path: None,
+                    path,
+                    video_id: None,
+                };
+                state.engine.send(playback::Command::Apply(QueueOp::Load {
+                    tracks: vec![track],
+                    index: 0,
+                    play: true,
+                }));
+                tracing::info!(target: "bench", stage = "autoplay-started", "bench: playback started");
+            }
 
             // Packaged builds ship the sidecar jar as a bundle resource
             // (Tauri keeps the config-relative directory: Resources/resources/).
@@ -63,6 +86,9 @@ fn main() {
 
             app.manage(state);
             Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            tracing::info!(target: "bench", event = ?payload.event(), url = ?webview.url().ok().map(|u| u.to_string()), "page load");
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
@@ -101,6 +127,7 @@ fn main() {
             commands::playlist_delete,
             commands::history_get,
             commands::proxy_get,
+            commands::bench_marker,
             commands::yt_search,
             commands::player_play_remote,
             commands::sources_get,

@@ -363,6 +363,13 @@ pub struct RemoteTrackDto {
     pub thumbnail_url: Option<String>,
 }
 
+/// M1 bench instrumentation: the frontend's first painted frame calls this;
+/// the log timestamp is the startup→first-paint endpoint.
+#[command]
+pub fn bench_marker(stage: String) {
+    tracing::info!(target: "bench", stage, "bench marker");
+}
+
 #[command]
 pub async fn yt_search(state: StateHandle<'_>, query: String) -> Result<Vec<app_core::yt_handle::CatalogRow>, String> {
     let yt = state.yt().map_err(err)?;

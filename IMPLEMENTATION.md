@@ -59,7 +59,8 @@ Two workspace facts worth knowing:
 
 ## 3. The Rust core (`crates/`)
 
-Five crates, one dependency direction:
+Five crates, one dependency direction. Role map (M1 baseline):
+**core = app-core · audio = playback · library = library · catalogue = sources · app = persistence** (app data/state).
 
 ```
 app-core ──► playback, sources, library, persistence
@@ -310,11 +311,12 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 
 | Suite | Count | What it proves |
 |---|---|---|
-| `cargo test` (playback) | 11 | Queue algebra (moves/repeat/next-prev), range reader read/seek/length, decode of ranged-only audio |
-| `cargo test` (persistence/library/sources) | 11 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
+| `cargo test` (playback) | 14 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction |
+| `cargo test` (library/persistence/sources) | 10 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
 | `cargo test -p sources --test yt_sidecar -- --ignored` | 1 | The live path: sidecar launch → search → `prefer=aac` stream → 5 s decode through the ranged reader (needs network + built jar) |
-| `cargo test` (app-core) | 2 | Watcher phases, restart persistence |
+| `cargo test` (app-core) | 3 | Watcher phases, restart persistence incl. remote-entry restore |
 | `pnpm test` (vitest) | 32 | Lyric parsers (15), LyricClock (10), repository selection (1), reorderMove (6) |
 | `pnpm build` | — | tsc strict + production bundle |
+| `scripts/bench/run.sh` | — | M1 baseline harness: release build, 5 runs of start→first-paint, memory footprint (app process; sidecar JVM when running), 60 s idle and 60 s playing CPU (median table). Env-gated autoplay hook, no behavior change. |
 
 Manual smoke: app launch, migration log, UI render (browser DOM capture).

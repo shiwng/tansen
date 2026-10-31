@@ -57,7 +57,7 @@ checkout at `~/Downloads/BitChord` (sibling — the sidecar builds against its
 | Settings | ✅ reached | Every visible control wired or explicitly labeled "not yet implemented" |
 | Watch folders | ✅ reached | Auto-rescan, 2 s debounce, initial scan, toggle honored |
 | Reproducible sidecar builds | ✅ reached | Pinned-tag build script from repo overlay; jar bundled + discovered inside packaged `.app` (verified) |
-| App icon | ✅ reached (uncommitted) | Original artwork; full format set; icns verified down to per-chunk artwork match; bundle + Info.plist agree |
+| App icon | ✅ reached | Original artwork; full format set; icns verified down to per-chunk artwork match; bundle + Info.plist agree |
 | Data migration | ✅ reached | `bitchord-desktop` → `tansen` verified live |
 
 ---
@@ -80,11 +80,10 @@ checkout at `~/Downloads/BitChord` (sibling — the sidecar builds against its
 | Word-level lyric timings over the sidecar | 🟨 | Upstream model has them; sidecar exports line-level only |
 | Dynamic page tint on search/home | 🟨 | Album/playlist pages tinted; others pending |
 | Artwork orphan GC | 🟨 | `prune_orphans` exists; not scheduled |
-| First-play latency | 🟨 | Start-track resolve is 1–2 s; fetch-to-cache would smooth it (transition race itself fixed in `facf82a`) |
+| First-play latency | 🟨 | Uncached remote start still resolves in 1–2 s; StreamCache + next-track prefetch (2026-10-31) removes repeat-play and queued-next latency |
 | Library search is client-side | 🟨 | Fine at thousands of tracks; SQL FTS when libraries grow |
 | SF Pro Display lyrics font | 🟨 | Apple-proprietary face shipped by upstream; flagged for distribution review |
 | Single sidecar handle per process | 🟨 | One JVM; re-launched on next use after a crash; no watchdog/health UI |
-| App icon session | 🟨 | Working tree uncommitted, pending review |
 
 ## Spotifast reference study (2026-10-31)
 
@@ -103,6 +102,41 @@ descriptions intentionally skipped for a reference codebase).
 **What Tansen adopted (own implementation):** bounded stream disk cache + next-track prefetch (fixes first-play latency and gives gapless-from-disk), degraded engine start + RetryOutput instead of crash-or-skip, 24 h lyrics response cache in the Rust proxy, dynamic tick cadence.
 
 **What Tansen already did better:** strict crate layering (Spotifast is one 138 kLOC crate with 10–33 kLOC god-files `app.rs`/`backend.rs`), pure unit-tested queue model, SQLite with versioned migrations, process-isolated sidecar instead of an in-process SDK, 57 automated tests incl. a live network canary.
+
+## M1 baseline metrics (2026-10-31)
+
+`scripts/bench/run.sh`: release build with the frontend embedded
+(`custom-protocol`), 5 runs, medians. macOS (darwin 27, arm64), machine-local —
+these are baselines to diff future changes against, not absolutes.
+
+| Metric (5 runs, release) | Median |
+|---|---|
+| Process start → first paint | 498 ms |
+| Memory idle — app process | 49 MiB |
+| Memory playing — app process | 49 MiB |
+| CPU 60 s idle (paused) | 0.74 % |
+| CPU 60 s playing | 2.03 % |
+| Wakeups | skipped (powermetrics needs sudo) |
+
+Raw: paints 459–517 ms; idle CPU 0.72–1.23 % (one warm-run outlier); playing
+CPU 1.99–2.04 %; idle memory 31–49 MiB (one run captured before the web view
+helpers settled); playing memory 46–49 MiB. Memory covers the app process
+(the sidecar JVM starts lazily and was not up during these runs); WKWebView
+helper processes are launchd-spawned and excluded — their footprint sits in
+separate processes. The "playing" phase is a generated 75 s WAV driven by an
+env-gated autoplay hook (`TANSEN_BENCH_PLAY`); normal runs are unaffected.
+
+Two real release bugs the harness exposed, both fixed:
+- CSP had no `connect-src ipc: http://ipc.localhost` — every `invoke()` failed
+  silently in release builds (dev mode worked because Tauri relaxes CSP for
+  the dev server).
+- `cargo build --release` without the `custom-protocol` feature pointed the
+  binary at devUrl — a "release" run was silently a dev-config run.
+
+Reading: idle ≈ 0.7 % CPU matches the 500 ms idle tick cadence; playing adds
+decode and lands ≈ 2 %; memory is flat idle→playing (the StreamCache is
+empty on this path — the local fixture does not fill it; remote tracks fill
+it up to the 512 MiB bound).
 
 ## 5. Blocked (with reasons — never simulated)
 
@@ -150,10 +184,14 @@ cargo test -p sources --test yt_sidecar -- --ignored --nocapture
 pnpm --dir apps/desktop install && pnpm --dir apps/desktop test
 pnpm --dir apps/desktop build
 
+# M1 baseline metrics: 5-run release measurement, medians table
+scripts/bench/run.sh
+
 # packaged app: Tansen.app + dmg, sidecar jar inside Resources
 pnpm --dir apps/desktop tauri build
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same steps on macOS on every push.
-Last full run locally: 25 Rust + 32 vitest green, bundle produced and
-inspected (icon icns per-chunk match, sidecar jar sha256 match, 2026-10-29).
+Last full run locally: 27 Rust (+1 ignored live canary) + 32 vitest green;
+M1 bench 5× release run recorded (2026-10-31). Bundle inspection (icon icns
+per-chunk match, sidecar jar sha256 match): 2026-10-29.
