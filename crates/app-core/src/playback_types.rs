@@ -152,6 +152,10 @@ pub enum Command {
     SetVolume(f32),
     /// Add entries to the queue; `queue_rev` bumps, playback does not change.
     Enqueue { tracks: Vec<EntryId>, placement: Placement },
+    /// Empty the queue and stop (M10: the frontend's "play X now" replaces
+    /// the queue — ClearQueue + Enqueue + Play; the old path's Load did it in
+    /// one op). Amends the M5 set; the UI cannot replace queues without it.
+    ClearQueue,
 }
 
 /// Why a transition was refused.

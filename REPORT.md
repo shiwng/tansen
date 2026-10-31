@@ -394,6 +394,58 @@ Verification: app smoke run logs `playback engine started` at startup;
 idle in the app — nothing in the frontend sends it commands yet, by design
 until M10.
 
+## M10 — the frontend rides the new engine; the old playback path is gone (2026-10-31)
+
+The switch the M-series built toward:
+- **Frontend** (`state/player.ts`, store contract unchanged — every component
+  keeps its shape): actions forward as `Command`s over `engine_command`
+  (`ClearQueue` + `Enqueue` + `Play` for "play this album now"); the UI state
+  comes from the `playback_state` event; **position is interpolated locally**
+  (`pos_ms + (now − receivedAt) × rate` — the engine publishes on change only,
+  no polling timers anywhere, as the M2 inventory already noted). The store
+  keeps the queue mirror (the body never crosses IPC) and persists it to
+  localStorage: restart restore re-seeds the engine (Enqueue + Play + Pause +
+  Seek — the Command set has no load-paused, so the blip is milliseconds).
+- **Removed**: the legacy rodio engine (`playback/src/engine.rs`) and its
+  pure queue algebra (`queue.rs`, 10 tests); app-core's `remote.rs`
+  (resolve-ahead), `persist_state.rs`, `history.rs` threads; 16 superseded
+  IPC commands (`player_load`…`queue_clear`, `player_play_remote` — 46 → 31)
+  and the `player://event` broadcast. `open_output_stream` moved into
+  `pipeline.rs` and the M4 reliability instrumentation now rides the new
+  path. `ClearQueue` was added to the Command set (amendment flagged: the UI
+  cannot replace queues without it).
+- **Rewired**: OS media keys issue engine commands (`try_send`); the watch→
+  event task feeds souvlaki metadata + one `play_history` row per local
+  track start (library lookups refuse hash entries); the bench autoplay hook
+  drives the new engine; the rodio factory resolves entry ids against the
+  live library (scans included) with the stream disk cache attached.
+
+Measured proof: app smoke with `TANSEN_BENCH_PLAY` — the real app plays
+through the new path (autoplay marker, then **428,073 decoded reads in the
+10 s metrics window, stream_errors=0**, M4 histogram riding the pipeline);
+`engine_demo` still auto-advances (`Playing entry=1`); tsc strict + vite +
+32 vitest green; `cargo test --workspace` **37 passed / 0 failed / 2 ignored**
+(the delta: −10 queue-algebra, −2 old-restore integration, +1 ClearQueue).
+
+**Honest regressions** (all documented, none hidden):
+- **YouTube row playback is offline** — the old path carried remote
+  streaming, and the sidecar resolve cannot run inside the engine task yet
+  (M7 documented the blocking constraint). Catalogue browsing, sources
+  settings and the sidecar itself are untouched; remote rebuilds on the new
+  pipeline next.
+- **Repeat** lost its engine wiring (the old queue algebra owned it); the
+  button persists a preference only. Shuffle was already preference-only.
+- **Up Next remove/move** have no queue-edit commands yet; the controls stay
+  visible (layout unchanged) and log honestly instead of acting.
+- The SQLite `playback_state` table is no longer written (schema stays;
+  restore is the frontend mirror now). In-playlist reorder, artwork GC and
+  the other standing gaps are unchanged.
+
+Graphify per request: `explain player.ts` (degree 50 — the store contract
+had to survive intact) + `path player.ts → Engine` (no directed path in the
+checked-in graph, which predates M9's wiring — the new edge is the one this
+milestone created).
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

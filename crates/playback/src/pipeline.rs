@@ -9,13 +9,30 @@
 
 use crate::cache::StreamCache;
 use crate::remote::HttpRangeReader;
-use rodio::{Decoder, OutputStream, Sink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
+
+/// Opens the default output. Debug builds route cpal's error callback into
+/// the M4 reliability counters; release uses rodio's default behavior.
+fn open_output_stream() -> Result<OutputStream, rodio::StreamError> {
+    #[cfg(debug_assertions)]
+    {
+        OutputStreamBuilder::from_default_device()
+            .and_then(|b| {
+                b.with_error_callback(|e| crate::metrics::audio::record_stream_error(&e.to_string()))
+                    .open_stream()
+            })
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        OutputStreamBuilder::open_default_stream()
+    }
+}
 
 enum Request {
     /// Replace the sink's content with this path and start playing.
@@ -143,7 +160,7 @@ fn audio_thread(
     macro_rules! ensure_open {
         () => {
             if slot.is_none() {
-                match crate::engine::open_output_stream() {
+                match open_output_stream() {
                     Ok(stream) => {
                         let s = Sink::connect_new(stream.mixer());
                         s.pause();
@@ -164,7 +181,10 @@ fn audio_thread(
                 ensure_open!();
                 let answer = (|| -> Result<(), String> {
                     let sink = sink.as_ref().ok_or_else(|| "no audio output device".to_string())?;
-                    let source = open_source(&path, cache.as_ref())?;
+                    // M4 reliability instrumentation rides the new path too
+                    // (debug builds only; release passes through).
+                    let source =
+                        crate::metrics::audio::wrap_source(open_source(&path, cache.as_ref())?);
                     sink.clear();
                     sample_rate.store(u64::from(source.sample_rate()), Ordering::Relaxed);
                     frames.store(0, Ordering::Relaxed);

@@ -7,17 +7,21 @@ use app_core::playback_engine::{PipelineFactory, Transport};
 use app_core::playback_types::{EntryId, ErrorKind};
 use playback::pipeline::AudioPipeline;
 use playback::StreamCache;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub struct RodioFactory {
-    resolve: HashMap<u64, String>,
+    /// EntryId → media path/URL. Library lookups happen live (scans add
+    /// files); the M1 bench sentinel resolves through the env hook.
+    resolve: Box<dyn Fn(u64) -> Option<String> + Send + Sync>,
     pipeline: Mutex<Option<AudioPipeline>>,
     cache: Option<Arc<StreamCache>>,
 }
 
 impl RodioFactory {
-    pub fn new(resolve: HashMap<u64, String>, cache: Option<Arc<StreamCache>>) -> Self {
+    pub fn new(
+        resolve: Box<dyn Fn(u64) -> Option<String> + Send + Sync>,
+        cache: Option<Arc<StreamCache>>,
+    ) -> Self {
         Self { resolve, pipeline: Mutex::new(None), cache }
     }
 
@@ -35,7 +39,7 @@ impl RodioFactory {
 
 impl PipelineFactory for RodioFactory {
     fn prepare(&self, entry: EntryId) -> Result<(), ErrorKind> {
-        let path = self.resolve.get(&entry.0).ok_or(ErrorKind::Resolve)?.clone();
+        let path = (self.resolve)(entry.0).ok_or(ErrorKind::Resolve)?;
         let mut guard = self.pipeline.lock().map_err(|_| ErrorKind::Device)?;
         if guard.is_none() {
             *guard = Some(AudioPipeline::spawn(self.cache.clone()).map_err(|_| ErrorKind::Device)?);

@@ -92,6 +92,12 @@ impl Engine {
         let _ = self.tx.send(command).await;
     }
 
+    /// Queue a command from a sync context (OS media-key handler). `false`
+    /// when the channel is full or the task is gone.
+    pub fn try_send(&self, command: Command) -> bool {
+        self.tx.try_send(command).is_ok()
+    }
+
     /// Subscribe to published playback states.
     pub fn subscribe(&self) -> watch::Receiver<PlaybackState> {
         self.state_rx.clone()
@@ -215,6 +221,21 @@ impl Core {
                 let clamped = v.clamp(0.0, 1.0);
                 push(self, None, None, None, Some(clamped), false);
                 factory.transport(Transport::Volume(clamped));
+            }
+            Command::ClearQueue => {
+                if let Some(cur) = self.cursor {
+                    factory.release(cur);
+                }
+                let active = !matches!(self.state.status, Status::Idle);
+                self.queue.clear();
+                self.cursor = None;
+                if active {
+                    // Every active status has a legal edge to Idle.
+                    push(self, Some(Status::Idle), Some(None), Some(0), None, true);
+                } else {
+                    // Already idle: the body still changed, so publish.
+                    push(self, None, Some(None), None, None, true);
+                }
             }
             Command::Enqueue { tracks, placement } => {
                 let at = self.cursor_pos_in_queue();
@@ -694,6 +715,31 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_millis(1000)).await;
         flush().await;
         assert_eq!(engine.subscribe().borrow().entry, Some(EntryId(2)), "advanced on the second fire");
+        assert_invariants(&engine.journal());
+    }
+
+    #[tokio::test]
+    async fn clear_queue_stops_and_empties_then_the_queue_rebuilds() {
+        let engine = Engine::start(Arc::new(FakePipelines::new(&[])));
+        engine
+            .send(Command::Enqueue { tracks: vec![EntryId(1), EntryId(2)], placement: Placement::Append })
+            .await;
+        engine.send(Command::Play { entry: EntryId(1) }).await;
+        flush().await;
+        engine.send(Command::ClearQueue).await;
+        flush().await;
+        let last = engine.subscribe().borrow().clone();
+        assert_eq!(last.status, Status::Idle);
+        assert_eq!(last.entry, None);
+
+        // A fresh queue works afterwards: Enqueue + Play + Next.
+        engine
+            .send(Command::Enqueue { tracks: vec![EntryId(7), EntryId(8)], placement: Placement::Append })
+            .await;
+        engine.send(Command::Play { entry: EntryId(7) }).await;
+        engine.send(Command::Next).await;
+        flush().await;
+        assert_eq!(engine.subscribe().borrow().entry, Some(EntryId(8)));
         assert_invariants(&engine.journal());
     }
 

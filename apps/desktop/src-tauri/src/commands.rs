@@ -2,7 +2,6 @@
 //! maps errors to strings for the JS bridge.
 
 use crate::StateHandle;
-use playback::QueueSnapshot;
 use persistence::models::{Folder, Track, TrackRef};
 use sources::MusicSource as _;
 use tauri::{command, Emitter};
@@ -73,106 +72,6 @@ pub async fn scan_start(
     let _ = forwarder.await;
     let _ = app.emit("scan://done", res);
     Ok(res)
-}
-
-// ---- Playback -------------------------------------------------------------
-
-#[command]
-pub fn player_load(state: StateHandle<'_>, ids: Vec<i64>, start: usize, play: bool) -> Result<(), String> {
-    state.play(&ids, start, play).map_err(err)
-}
-
-#[command]
-pub fn player_toggle(state: StateHandle<'_>) -> Result<(), String> {
-    state.toggle_play();
-    Ok(())
-}
-
-#[command]
-pub fn player_pause(state: StateHandle<'_>) -> Result<(), String> {
-    state.pause();
-    Ok(())
-}
-
-#[command]
-pub fn player_resume(state: StateHandle<'_>) -> Result<(), String> {
-    state.resume();
-    Ok(())
-}
-
-#[command]
-pub fn player_stop(state: StateHandle<'_>) -> Result<(), String> {
-    state.stop();
-    Ok(())
-}
-
-#[command]
-pub fn player_next(state: StateHandle<'_>) -> Result<(), String> {
-    state.next();
-    Ok(())
-}
-
-#[command]
-pub fn player_previous(state: StateHandle<'_>) -> Result<(), String> {
-    state.previous();
-    Ok(())
-}
-
-#[command]
-pub fn player_seek(state: StateHandle<'_>, sec: f64) -> Result<(), String> {
-    state.seek(sec);
-    Ok(())
-}
-
-#[command]
-pub fn player_volume(state: StateHandle<'_>, level: f64) -> Result<(), String> {
-    state.set_volume(level);
-    Ok(())
-}
-
-#[command]
-pub fn player_repeat(state: StateHandle<'_>, mode: String) -> Result<(), String> {
-    let r = match mode.as_str() {
-        "all" => playback::Repeat::All,
-        "one" => playback::Repeat::One,
-        _ => playback::Repeat::Off,
-    };
-    state.set_repeat(r);
-    Ok(())
-}
-
-#[command]
-pub fn queue_snapshot(state: StateHandle<'_>) -> QueueSnapshot {
-    state.queue_snapshot()
-}
-
-#[command]
-pub fn queue_insert(state: StateHandle<'_>, ids: Vec<i64>, at: Option<usize>) -> Result<(), String> {
-    state.queue_insert(&ids, at).map_err(err)
-}
-
-#[command]
-pub fn queue_remove(state: StateHandle<'_>, index: usize) -> Result<(), String> {
-    state.queue_remove(index);
-    Ok(())
-}
-
-#[command]
-pub fn queue_jump(state: StateHandle<'_>, index: usize) -> Result<(), String> {
-    state.queue_jump(index);
-    Ok(())
-}
-
-#[command]
-pub fn queue_move(state: StateHandle<'_>, from: usize, to: usize) -> Result<(), String> {
-    state.queue_move(from, to);
-    Ok(())
-}
-
-#[command]
-pub fn queue_clear(state: StateHandle<'_>) -> Result<(), String> {
-    state.queue_clear();
-    Ok(())
 }
 
 // ---- Playlists ------------------------------------------------------------
@@ -348,20 +247,7 @@ pub async fn proxy_get(state: StateHandle<'_>, url: String, patient: Option<bool
 
 // ---- Catalogue search + remote playback -----------------------------------
 
-#[derive(serde::Deserialize)]
-pub struct RemoteTrackDto {
-    #[serde(rename = "videoId")]
-    pub video_id: String,
-    pub title: String,
-    #[serde(default)]
-    pub artist: String,
-    #[serde(default)]
-    pub album: Option<String>,
-    #[serde(default)]
-    pub duration_sec: f64,
-    #[serde(default, rename = "thumbnailUrl")]
-    pub thumbnail_url: Option<String>,
-}
+// ---- Catalogue search + remote playback -----------------------------------
 
 /// M9: forwards one playback `Command` into the task-based engine channel.
 /// Rides beside the legacy command surface until M10 swaps the paths.
@@ -390,47 +276,6 @@ pub async fn yt_search(state: StateHandle<'_>, query: String) -> Result<Vec<app_
         .await
         .map_err(err)?
 }
-
-#[derive(serde::Deserialize)]
-pub struct PlayRemoteArgs {
-    pub tracks: Vec<RemoteTrackDto>,
-    #[serde(default = "default_start")]
-    pub start: usize,
-    #[serde(default)]
-    pub mode: String,
-}
-
-fn default_start() -> usize {
-    0
-}
-
-#[command]
-pub async fn player_play_remote(state: StateHandle<'_>, args: PlayRemoteArgs) -> Result<(), String> {
-    let mode = match args.mode.as_str() {
-        "insert-next" => app_core::yt_handle::PlayMode::InsertNext,
-        "append" => app_core::yt_handle::PlayMode::Append,
-        _ => app_core::yt_handle::PlayMode::Load,
-    };
-    let state2 = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let tracks: Vec<app_core::yt_handle::RemoteTrack> = args
-            .tracks
-            .into_iter()
-            .map(|t| app_core::yt_handle::RemoteTrack {
-                video_id: t.video_id,
-                title: t.title,
-                artist: t.artist,
-                album: t.album,
-                duration_sec: t.duration_sec,
-                thumbnail_url: t.thumbnail_url,
-            })
-            .collect();
-        state2.play_remote(&tracks, args.start, mode).map_err(err)
-    })
-    .await
-    .map_err(err)?
-}
-
 // ---- Sources (phase 4, addon protocol first) -------------------------------
 
 #[command]

@@ -90,28 +90,16 @@ the lock; `user_version` migrations are append-only.
 
 | File | Role |
 |---|---|
-| `src/queue.rs` | **Pure** queue state: `Queue`, `QueueOp` (Load/Insert/RemoveAt/Move/Jump/Next/Prev/SetRepeat/Clear), `QueueEffect` (what the engine must do), `QueueSnapshot` (what the UI sees). Repeat modes, history for Previous, index tracking through moves. Fully unit-tested without audio. |
-| `src/engine.rs` | The audio thread. Owns rodio `OutputStream` (not `Send` — it must be created and kept on this thread; `Sink` is Send+Sync). Applies `QueueOp`s, emits `EngineEvent`s on a tokio broadcast channel, ticks at 10 Hz for position/gapless, preloads the next decoder ~2 s before track end (gapless), detects the handoff by a position drop, pauses/plays/seek/volume, `PatchUrl` for remote rows. |
 | `src/remote.rs` | `HttpRangeReader`: `Read + Seek` over HTTP using 512 KiB `Range` chunks (googlevideo throttles unbounded reads; ranges run at line rate). MP4 `moov` seeks answered over the wire. Must be created/dropped off the async runtime (the audio thread qualifies). |
 | `src/cache.rs` | `StreamCache`: bounded (512 MiB LRU) disk cache for streamed tracks, sha1-of-URL keyed, complete-file-only. The engine plays cached copies from disk; the resolve-ahead service prefetches the next track into it. |
 | `src/probe.rs` | `decode_rms(reader, window)`: Symphonia decode without a device — the test oracle for "this stream contains sound". |
 | `src/metrics.rs` | Audio reliability counters (M4, debug builds only): cpal stream-error count (via `OutputStreamBuilder::with_error_callback`), decoder read-latency histogram (`MeasuredSource` wraps every decoder in the engine's `append`), slowest read, quantized p50/p99; `TANSEN_STALL_MS`/`TANSEN_STALL_EVERY` env hook sleeps on rodio's feeder thread mid-track. Release passes decoders through untouched. |
 | `src/pipeline.rs` | The rodio-backed pipeline the M6 `PipelineFactory` drives (M7): one dedicated audio thread owns the `OutputStream` (not `Send`), std-mpsc commands (Load-with-ack / Play / Pause / SeekMs / Volume / Clear / Quit), sticky volume across loads, `try_seek` with the frame counter jumping to the target. `FrameCounted` wraps every appended decoder and bumps `frames_played` (lock-free `AtomicU64`, one increment per channel-group — no locks, no allocation on the feeder path); `pos_ms()` derives from frames ÷ sample rate. Parallel path: production still runs `engine.rs` until M10 removes it. |
 
-Event → consumer map:
-
-```
-EngineEvent (broadcast, 128 slots)
- ├─► src-tauri forwarder ─► webview "player://event"  (UI store updates)
- ├─► src-tauri forwarder ─► souvlaki (Now Playing metadata + 2 Hz position)
- ├─► history.rs thread    ─► play_history rows (local tracks only)
- ├─► persist_state thread ─► playback_state table (≤0.8 s after change, or ≥2 s position drift)
- └─► resolve-ahead thread ─► Command::PatchUrl (remote placeholders → real URLs)
-```
-
-Commands enter via `Engine::send`/`command_tx` (an mpsc the audio thread
-drains with a 100 ms timeout so ticks still run). Decoders erase to
-`Box<dyn Source<Item = f32> + Send>` so local and remote tracks share one queue.
+M10 removed the legacy rodio engine and its pure queue algebra
+(`engine.rs`, `queue.rs`): playback state lives in the app-core task engine,
+which drives `pipeline` through the `PipelineFactory` seam. The shell's
+watch→event task carries metadata to the webview, the OS and `play_history`.
 
 ### 3.3 `library` — folders to rows
 
@@ -135,7 +123,7 @@ drains with a 100 ms timeout so ticks still run). Decoders erase to
 
 | File | Role |
 |---|---|
-| `src/state.rs` | `AppState`: owns Db, Engine, Scanner, Media, scan_events channel, cached `YtHandle`. Every service the UI drives lives here (folders/tracks/scan/playlists/settings/play_remote/…). `restore_playback()` re-loads the saved queue paused at the saved index (dead local files dropped, remote entries kept). `migrate_legacy_data_dir()` renames pre-0.3.0 `bitchord-desktop` → `tansen` once. |
+| `src/state.rs` | `AppState`: owns Db, Scanner, Media, scan_events channel, cached `YtHandle` (folders/tracks/scan/playlists/settings/yt). M10 removed the playback surface — the engine lives in the shell, restore moved to the frontend mirror. `migrate_legacy_data_dir()` renames pre-0.3.0 `bitchord-desktop` → `tansen` once. |
 | `src/playback_types.rs` | Normalized playback types (M5, pure — no I/O, no Tauri, no serde yet): `EntryId` (queue identity, never an index), `Status` {Idle/Resolving/Buffering/Playing/Paused/Error(kind)}, `Anchor` {pos_ms, rate 0\|1}, `PlaybackState` {rev, status, entry, queue_rev, anchor, volume}, `Command` {Play/Pause/Resume/Next/Prev/Seek/SetVolume/Enqueue{tracks, placement}}, and `validate_transition` — the pure law for status changes (explicit edge graph + the anchor rule: the clock runs only while `Playing`). Groundwork for a future engine rework; nothing calls it yet. |
 | `src/playback_engine.rs` | The task-based playback engine (M6): one tokio task owns the `PlaybackState`; commands arrive on a bounded mpsc (64, backpressure), every published change goes out on a `tokio::sync::watch` with `rev` +1. `PipelineFactory` is the only seam (`prepare`/`release`; a fake backs the tests — no real audio). The engine also holds the play-order queue (storage only — addressing stays by `EntryId`) and walks the M5 edge graph, refusing illegal commands silently. A bounded journal records every publish (watch coalesces; tests assert over the complete history). M7: `PipelineFactory` grew `transport` (Play/Pause/Seek/Volume); M8 added `position_ms`/`duration_ms` reads and the **one-shot end-of-track deadline**: armed once when Playing with a known duration, confirmed against `position_ms` (frames) on fire — advance to the next entry, re-arm if the anchor moved, cancel on pause/seek/skip — never periodic. Queue changes (body *and* cursor moves) bump `queue_rev`; the body itself never enters `PlaybackState`. The real factory lives in the `engine_demo` debug binary. |
 | `src/media.rs` | souvlaki wrapper: created/attached on the main thread (macOS requirement), updated from any thread, OS pushes throttled to 2 Hz. |
@@ -209,10 +197,14 @@ AppShell (grid rows: content / player pill)
 ### 5.3 State
 
 - `state/player.ts` — the player store. Mirrors the upstream store contract
-  (flat fields the shell reads) but is backed by Tauri: actions are `invoke`
-  calls; `player://event`s mutate it; `getPlayhead()` interpolates the 10 Hz
-  engine ticks. Remote detection: any track whose `videoId` is not `local:`
-  routes play/next/queue to `player_play_remote`.
+  (flat fields the shell reads) but is backed by the task engine: actions are
+  `engine_command` calls; `playback_state` events mutate it;
+  `getPlayhead()` interpolates the published anchor locally
+  (`pos_ms + (now − receivedAt) × rate` — no polling). The store keeps the
+  queue mirror (the body never crosses IPC) and persists it to localStorage
+  for restart restore. Repeat/shuffle persist as preferences; queue editing
+  awaits queue-edit commands; catalogue rows report the honest unavailable
+  state until remote lands on the new path.
 - `state/ui.ts` — side panel, fullscreen, drawer, banner flags (upstream file).
 - `state/video.ts` — stub (video is a catalogue feature, honestly absent).
 - `lib/queryClient.ts` + `pageRegistry.tsx` + `routes.tsx` — lazy routes with
@@ -300,9 +292,9 @@ queue wiring and UI; the engine-path decode is exercised through the same
 
 ## 7. The command surface (Tauri ⇄ React)
 
-Groups: settings, library (folders/scan/tracks), playback (load/toggle/seek/volume/repeat/next/prev/stop), queue (snapshot/insert/move/remove/jump/clear), playlists (CRUD + reorder), views (albums/artists/album_tracks/artist_tracks/history), lyrics proxy (`proxy_get`, host-allowlisted), catalogue (`yt_search`, `player_play_remote`), sources (CRUD + health).
+Groups (31 commands after M10): settings, library (folders/scan/tracks), playlists (CRUD + reorder), views (albums/artists/album_tracks/artist_tracks/history), lyrics proxy (`proxy_get`, host-allowlisted), catalogue (`yt_search`), sources (CRUD + health), bench marker, and `engine_command` — the one bridge into the task-based playback engine (`Command` over serde).
 
-Events back: `player://event`, `scan://progress`, `scan://done`,
+Events back: `playback_state` (every engine publish), `scan://progress`, `scan://done`. The legacy `player://event` broadcast is gone.
 `playback_state` (M9: every change of the task-based engine's watch channel;
 payload is the full `PlaybackState`).
 
@@ -347,11 +339,11 @@ payload is the full `PlaybackState`).
 
 | Suite | Count | What it proves |
 |---|---|---|
-| `cargo test` (playback) | 16 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction, metrics histogram bucketing, pipeline frame counting (frames ≠ samples) |
+| `cargo test` (playback) | 6 | Range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction, metrics histogram bucketing, pipeline frame counting (frames ≠ samples). The legacy queue algebra (10 tests) retired with the old path in M10 |
 | `cargo test` (library/persistence/sources) | 10 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
 | `cargo test -p sources --test yt_sidecar -- --ignored` | 1 | The live path: sidecar launch → search → `prefer=aac` stream → 5 s decode through the ranged reader (needs network + built jar) |
 | `cargo test -p sources --test yt_measure -- --ignored` | 1 | M3 sidecar measurements: spawn→ready, JVM RSS, resolve p50/p95 over 30 calls, first-play latency (resolve → ranged reader → first audio). Measurement only, no assertions beyond sanity |
-| `cargo test` (app-core) | 22 | Watcher phases, restart persistence incl. remote-entry restore, playback-type transition law (6), playback task engine (13: lifecycle walk, refused commands, factory failure→Error→recovery, rate law, queue walking + queue_rev-on-any-change, volume clamp, **3 seeded-random 200-command sequences** (std LCG) asserting rev monotonicity + legal edges + rate rule, validator self-check, and 5 **paused-clock** deadline tests: auto-advance, exhausted queue→Idle, pause cancels, seek cancels+re-arms, stale-position re-arms) |
+| `cargo test` (app-core) | 21 | Watcher phases (1), playback-type transition law (6), playback task engine (14: lifecycle walk, refused commands, factory failure→Error→recovery, rate law, queue walking + queue_rev-on-any-change, volume clamp, **3 seeded-random 200-command sequences** (std LCG) asserting rev monotonicity + legal edges + rate rule, validator self-check, ClearQueue stops+empties+rebuilds, and 5 **paused-clock** deadline tests) — the old restore integration test retired with the old path |
 | `pnpm test` (vitest) | 32 | Lyric parsers (15), LyricClock (10), repository selection (1), reorderMove (6) |
 | `pnpm build` | — | tsc strict + production bundle |
 | `scripts/bench/run.sh` | — | M1 baseline harness: release build, 5 runs of start→first-paint, memory footprint (app process; sidecar JVM when running), 60 s idle and 60 s playing CPU (median table). Env-gated autoplay hook, no behavior change. |
@@ -428,6 +420,11 @@ thread, event-driven, ≤0.8 s); `play_history` is written only by the history
 thread; the resolve-ahead thread writes `Command::PatchUrl` + StreamCache
 fills. OS media keys call AppState methods directly — not IPC, not counted by
 the command counters.
+
+> M10 superseded part of this inventory: the legacy playback/queue commands
+> (16 of the 45) and the `player://event` broadcast are gone; `engine_command`
+> and `playback_state` took their place. The table above stands as the M2
+> snapshot.
 
 ### Per-command call counters (M2 instrumentation)
 

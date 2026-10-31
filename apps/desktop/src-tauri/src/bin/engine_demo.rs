@@ -69,7 +69,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let resolve: HashMap<u64, String> =
         files.iter().enumerate().map(|(i, p)| (i as u64, p.clone())).collect();
-    let factory = Arc::new(RodioFactory::new(resolve, None));
+    let factory = Arc::new(RodioFactory::new(
+        Box::new(move |id: u64| resolve.get(&id).cloned()),
+        None,
+    ));
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async move {

@@ -1,17 +1,14 @@
-//! Playback crate: audio engine + pure queue model.
+//! Playback crate: audio media pipeline + queue persistence primitives.
 //!
-//! Deliberately small for phase 3: local file playback, transport, volume,
-//! seek, gapless advance. Crossfade (two-sink mixing), speed, skip-silence and
-//! the DSP chain land in phase 6 as sinks wrapped around the same decoder.
+//! M10 removed the legacy rodio engine (`engine.rs` + `queue.rs`): playback
+//! state now lives in the app-core task engine (`app_core::playback_engine`),
+//! which drives this crate's `pipeline` through the `PipelineFactory` seam.
+//! The stream opener that used to live in engine.rs is part of pipeline now.
 
 pub mod cache;
-pub mod engine;
 pub mod metrics;
 pub mod pipeline;
 pub mod probe;
-pub mod queue;
 pub mod remote;
 
 pub use cache::StreamCache;
-pub use engine::{Command, Engine, EngineEvent};
-pub use queue::{Queue, QueueOp, QueueSnapshot, Repeat};

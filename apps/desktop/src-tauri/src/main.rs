@@ -53,29 +53,6 @@ fn main() {
             let dir = data_dir();
             tracing::info!(dir = %dir.display(), "app data dir");
             let state = Arc::new(AppState::open(&dir).expect("app state init"));
-            let _ = state.restore_playback();
-
-            // M1 bench hook (env-gated, never active in normal runs): start
-            // playing a local file for the 60 s "playing" measurement.
-            if let Ok(path) = std::env::var("TANSEN_BENCH_PLAY") {
-                use playback::QueueOp;
-                let track = persistence::models::TrackRef {
-                    id: 0,
-                    title: "Bench".into(),
-                    artist: String::new(),
-                    album: String::new(),
-                    duration_sec: 0.0,
-                    art_path: None,
-                    path,
-                    video_id: None,
-                };
-                state.engine.send(playback::Command::Apply(QueueOp::Load {
-                    tracks: vec![track],
-                    index: 0,
-                    play: true,
-                }));
-                tracing::info!(target: "bench", stage = "autoplay-started", "bench: playback started");
-            }
 
             // M4 stress driver (env-gated, debug only): while playback runs,
             // hammer the backend the way heavy UI use would — repeated
@@ -130,36 +107,84 @@ fn main() {
                 state.set_sidecar_hint(jar);
             }
 
-            attach_media_keys(&state);
-            spawn_event_forwarder(app.handle().clone(), state.engine_events());
-            // Catalogue rows ride placeholders until this loop swaps in real
-            // stream URLs, then prefetches the next track into the disk cache.
-            spawn_resolve_ahead(app.handle().clone(), state.engine_events(), state.engine_tx(), state.stream_cache());
             // Watcher-driven rescans surface as the same `scan://done` event
             // the manual scan path uses, so library views refresh.
             spawn_scan_event_forwarder(app.handle().clone(), state.scan_events.clone());
 
-            app.manage(state);
-
-            // M9: the task-based playback engine (app-core) starts here, its
-            // media seam backed by the rodio factory. Entry→media resolution
-            // arrives with the frontend integration, so the map starts
-            // empty. The legacy playback path is untouched until M10.
+            // M10: the task-based playback engine is THE playback path. The
+            // factory resolves entry ids against the live library (and the
+            // bench sentinel through its env hook) and shares the stream disk
+            // cache for http(s) sources.
+            let resolve_state = state.clone();
+            let resolve = Box::new(move |id: u64| -> Option<String> {
+                if id == u64::MAX {
+                    return std::env::var("TANSEN_BENCH_PLAY").ok();
+                }
+                resolve_state
+                    .tracks()
+                    .ok()?
+                    .into_iter()
+                    .find(|t| t.id as u64 == id && !t.missing)
+                    .map(|t| t.path)
+            });
             let engine = tauri::async_runtime::block_on(async {
                 app_core::playback_engine::Engine::start(Arc::new(rodio_factory::RodioFactory::new(
-                    std::collections::HashMap::new(),
-                    None,
+                    resolve,
+                    Some(state.stream_cache()),
                 )))
             });
-            // Every watch change → `playback_state` event to the frontend.
+
+            // Every watch change → `playback_state` event to the frontend,
+            // plus OS Now Playing metadata and one play_history row per local
+            // track start (library lookups refuse hash entries).
             let mut engine_rx = engine.subscribe();
             let emitter = app.handle().clone();
+            let media_state = state.clone();
             tauri::async_runtime::spawn(async move {
+                let mut last_entry: Option<app_core::playback_types::EntryId> = None;
                 while engine_rx.changed().await.is_ok() {
-                    let state = engine_rx.borrow().clone();
-                    let _ = emitter.emit("playback_state", &state);
+                    let st = engine_rx.borrow().clone();
+                    if st.entry != last_entry {
+                        last_entry = st.entry;
+                        let track = st
+                            .entry
+                            .filter(|e| e.0 != 0)
+                            .and_then(|e| persistence::repo::get_track(&media_state.db, e.0 as i64).ok().flatten())
+                            .filter(|t| !t.missing)
+                            .map(persistence::models::TrackRef::from);
+                        media_state.media.update_track(track.as_ref());
+                        if st.status != app_core::playback_types::Status::Idle {
+                            if let Some(id) = st.entry.filter(|e| e.0 != 0) {
+                                let _ = persistence::repo::record_play(
+                                    &media_state.db,
+                                    id.0 as i64,
+                                    library::scanner::now_secs(),
+                                );
+                            }
+                        }
+                    }
+                    media_state
+                        .media
+                        .update_playback(st.anchor.rate == 1, Some(st.anchor.pos_ms as f64 / 1000.0));
+                    let _ = emitter.emit("playback_state", &st);
                 }
             });
+
+            // M1 bench hook (env-gated, never active in normal runs): start
+            // playing the fixture for the 60 s "playing" measurement.
+            if std::env::var("TANSEN_BENCH_PLAY").is_ok() {
+                use app_core::playback_types::{Command, EntryId, Placement};
+                tauri::async_runtime::block_on(async {
+                    engine
+                        .send(Command::Enqueue { tracks: vec![EntryId(u64::MAX)], placement: Placement::Append })
+                        .await;
+                    engine.send(Command::Play { entry: EntryId(u64::MAX) }).await;
+                });
+                tracing::info!(target: "bench", stage = "autoplay-started", "bench: playback started");
+            }
+
+            attach_media_keys(state.clone(), engine.clone());
+            app.manage(state);
             app.manage(engine);
             tracing::info!("playback engine started");
             Ok(())
@@ -181,22 +206,6 @@ fn main() {
             commands::folders_get,
             commands::tracks_get,
             commands::scan_start,
-            commands::player_load,
-            commands::player_toggle,
-            commands::player_pause,
-            commands::player_resume,
-            commands::player_stop,
-            commands::player_next,
-            commands::player_previous,
-            commands::player_seek,
-            commands::player_volume,
-            commands::player_repeat,
-            commands::queue_snapshot,
-            commands::queue_insert,
-            commands::queue_remove,
-            commands::queue_jump,
-            commands::queue_move,
-            commands::queue_clear,
             commands::playlist_create,
             commands::playlists_get,
             commands::playlist_tracks_get,
@@ -213,7 +222,6 @@ fn main() {
             commands::bench_marker,
             commands::engine_command,
             commands::yt_search,
-            commands::player_play_remote,
             commands::sources_get,
             commands::sources_get_with_health,
             commands::source_add,
@@ -230,100 +238,72 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-/// OS media keys: commands flow into the engine, engine state flows back via
-/// the same forwarder that feeds the UI. Attached on the main thread
-/// (souvlaki's macOS backend requires it).
-fn attach_media_keys(state: &Arc<AppState>) {
-    let state_for_handler = state.clone();
+/// OS media keys: commands flow into the task-based engine; engine state
+/// flows back via the same task that feeds the UI. Attached on the main
+/// thread (souvlaki's macOS backend requires it). Relative seeks anchor on
+/// the last published position — updates arrive per state change, not on a
+/// timer, so long plays drift by the seconds since the last publish.
+fn attach_media_keys(state: Arc<AppState>, engine: app_core::playback_engine::Engine) {
+    use app_core::playback_types::{Command, Status};
+    let state_for_keys = state.clone();
     state.media.attach(move |ev: MediaControlEvent| {
-        let st = state_for_handler.clone();
+        let engine = engine.clone();
+        let snap = engine.subscribe().borrow().clone();
+        let current = snap.entry.filter(|e| e.0 != 0);
+        let seek_to = |sec: f64| engine.try_send(Command::Seek { ms: (sec.max(0.0) * 1000.0) as u64 });
         tracing::debug!(?ev, "media key");
         match ev {
-            MediaControlEvent::Play => st.resume(),
-            MediaControlEvent::Pause => st.pause(),
-            MediaControlEvent::Toggle => st.toggle_play(),
-            MediaControlEvent::Next => st.next(),
-            MediaControlEvent::Previous => st.previous(),
-            MediaControlEvent::Stop => st.stop(),
+            MediaControlEvent::Play => {
+                if snap.status == Status::Paused {
+                    engine.try_send(Command::Resume);
+                } else if let Some(e) = current {
+                    engine.try_send(Command::Play { entry: e });
+                }
+            }
+            MediaControlEvent::Pause => {
+                engine.try_send(Command::Pause);
+            }
+            MediaControlEvent::Toggle => match snap.status {
+                Status::Playing => {
+                    engine.try_send(Command::Pause);
+                }
+                Status::Paused => {
+                    engine.try_send(Command::Resume);
+                }
+                _ => {
+                    if let Some(e) = current {
+                        engine.try_send(Command::Play { entry: e });
+                    }
+                }
+            },
+            MediaControlEvent::Next => {
+                engine.try_send(Command::Next);
+            }
+            MediaControlEvent::Previous => {
+                engine.try_send(Command::Prev);
+            }
+            MediaControlEvent::Stop => {
+                engine.try_send(Command::ClearQueue);
+            }
             MediaControlEvent::Seek(dir) => {
                 let delta = match dir {
                     SeekDirection::Forward => 10.0,
                     SeekDirection::Backward => -10.0,
                 };
-                st.seek((st.media.position() + delta).max(0.0));
+                seek_to(state_for_keys.media.position() + delta);
             }
             MediaControlEvent::SeekBy(dir, d) => {
                 let delta = match dir {
                     SeekDirection::Forward => d.as_secs_f64(),
                     SeekDirection::Backward => -d.as_secs_f64(),
                 };
-                st.seek((st.media.position() + delta).max(0.0));
+                seek_to(state_for_keys.media.position() + delta);
             }
-            MediaControlEvent::SetPosition(pos) => st.seek(pos.0.as_secs_f64()),
+            MediaControlEvent::SetPosition(pos) => {
+                seek_to(pos.0.as_secs_f64());
+            }
             _ => {}
         }
-    });
-}
-
-/// Engine events → webview + OS media controls. Position updates reach the OS
-/// at 2 Hz (throttled inside `Media`), the UI at full rate.
-fn spawn_event_forwarder(
-    app: tauri::AppHandle,
-    events: tokio::sync::broadcast::Sender<playback::EngineEvent>,
-) {
-    let mut rx = events.subscribe();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    if let Some(st) = app.try_state::<Arc<AppState>>().map(|s| s.inner().clone()) {
-                        match &ev {
-                            playback::EngineEvent::TrackChanged { track } => {
-                                st.media.update_track(track.as_ref());
-                                if track.is_some() {
-                                    st.media.set_playing(true);
-                                }
-                            }
-                            playback::EngineEvent::Position { sec, playing, .. } => {
-                                st.media.update_playback(*playing, Some(*sec));
-                            }
-                            playback::EngineEvent::QueueChanged { snapshot } => {
-                                st.media.set_playing(snapshot.playing);
-                            }
-                            _ => {}
-                        }
-                    }
-                    let _ = app.emit("player://event", &ev);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "event forwarder lagged");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-}
-
-fn spawn_resolve_ahead(
-    app: tauri::AppHandle,
-    events: tokio::sync::broadcast::Sender<playback::EngineEvent>,
-    engine_tx: std::sync::mpsc::Sender<playback::Command>,
-    stream_cache: Arc<playback::StreamCache>,
-) {
-    tauri::async_runtime::spawn_blocking(move || {
-        // Cloned out so the closure owns the state for 'static. The resolver
-        // reads the cached sidecar handle when the catalogue flag is on; with
-        // the flag off the loop stays idle because rows never get placeholders.
-        let state = app.state::<Arc<AppState>>().inner().clone();
-        app_core::remote::spawn_resolve_ahead(
-            events,
-            engine_tx,
-            Arc::new(move |video_id: &str| {
-                let yt = state.yt().map_err(|e| e.to_string())?;
-                yt.stream_blocking(video_id).map(|s| s.url)
-            }),
-            stream_cache,
-        );
     });
 }
 
