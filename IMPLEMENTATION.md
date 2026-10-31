@@ -95,6 +95,7 @@ the lock; `user_version` migrations are append-only.
 | `src/remote.rs` | `HttpRangeReader`: `Read + Seek` over HTTP using 512 KiB `Range` chunks (googlevideo throttles unbounded reads; ranges run at line rate). MP4 `moov` seeks answered over the wire. Must be created/dropped off the async runtime (the audio thread qualifies). |
 | `src/cache.rs` | `StreamCache`: bounded (512 MiB LRU) disk cache for streamed tracks, sha1-of-URL keyed, complete-file-only. The engine plays cached copies from disk; the resolve-ahead service prefetches the next track into it. |
 | `src/probe.rs` | `decode_rms(reader, window)`: Symphonia decode without a device — the test oracle for "this stream contains sound". |
+| `src/metrics.rs` | Audio reliability counters (M4, debug builds only): cpal stream-error count (via `OutputStreamBuilder::with_error_callback`), decoder read-latency histogram (`MeasuredSource` wraps every decoder in the engine's `append`), slowest read, quantized p50/p99; `TANSEN_STALL_MS`/`TANSEN_STALL_EVERY` env hook sleeps on rodio's feeder thread mid-track. Release passes decoders through untouched. |
 
 Event → consumer map:
 
@@ -341,7 +342,7 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 
 | Suite | Count | What it proves |
 |---|---|---|
-| `cargo test` (playback) | 14 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction |
+| `cargo test` (playback) | 15 | Queue algebra (moves/repeat/next-prev), placeholder patching, range reader read/seek/length, decode of ranged-only audio, StreamCache disk replay + LRU eviction, metrics histogram bucketing |
 | `cargo test` (library/persistence/sources) | 10 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
 | `cargo test -p sources --test yt_sidecar -- --ignored` | 1 | The live path: sidecar launch → search → `prefer=aac` stream → 5 s decode through the ranged reader (needs network + built jar) |
 | `cargo test -p sources --test yt_measure -- --ignored` | 1 | M3 sidecar measurements: spawn→ready, JVM RSS, resolve p50/p95 over 30 calls, first-play latency (resolve → ranged reader → first audio). Measurement only, no assertions beyond sanity |
@@ -436,3 +437,46 @@ That window is real startup data: `proxy_get` is by far the hottest command
 (lyrics providers racing for the restored track), everything else is one-shot
 startup. No behavior change — the wrapper adds one atomic increment (debug) or
 an inlined no-op (release) per command call.
+
+---
+
+## 12. Audio reliability baseline (M4)
+
+`crates/playback/src/metrics.rs` + `scripts/stress/run.sh`, debug builds only.
+
+What rodio 0.21 exposes and what it does not:
+- **Stream errors — exposed.** rodio forwards cpal's error callback through
+  `OutputStreamBuilder::with_error_callback`; the engine routes it into
+  `audio::record_stream_error`. CoreAudio never surfaces buffer underruns as
+  cpal errors (verified below — even a 200 ms feeder gap counts zero), so the
+  counter means "no device-level failure", not "provably glitchless".
+- **Data-callback timing — not exposed.** cpal's render callback is owned by
+  rodio; its timing is unreachable without replacing the output stack. The
+  nearest proxy, used here: `MeasuredSource` times every decoder `next()` on
+  rodio's feeder thread — the latency we control, and the thing that starves
+  the real buffer when it exceeds it. Reported as a coarse ns histogram with
+  quantized p50/p99.
+
+The stress script (`scripts/stress/run.sh [seconds]`) plays a long local WAV
+while an env-gated driver (`TANSEN_STRESS=1`, debug only) registers a 30-file
+library, rescans it every 30 s, and runs library + history queries every 2 s
+(and a catalogue search every 30 s when the sidecar answers). Every 10 s the
+logger prints one `audio-metrics` line.
+
+Measured, macOS arm64, debug build — **5-minute stress run (2026-10-31):**
+
+| Metric | Value |
+|---|---|
+| cpal stream errors | **0** over the whole run |
+| Decoder reads timed | 25,552,610 |
+| p50 / p99 read latency | **<1 µs / <1 µs** (99.97 % of reads sub-µs) |
+| Slowest read | **0.7 ms** |
+| Histogram | <1µs 25,517,273 · 1–10µs 24,169 · 10–100µs 78 · 0.1–1ms 11,090 |
+| Stress driver | 10 library rescans + continuous 2 s query rounds during playback |
+
+Stall-hook validation (`TANSEN_STALL_MS`/`TANSEN_STALL_EVERY`, debug only):
+- 40 ms sleep every ~0.6 s, 30 s: `>10ms` bucket 32, slowest 40.1 ms,
+  stream_errors 0 — CoreAudio rode through.
+- 200 ms sleep every 1 s, 15 s: slowest 200.0 ms, 8 reads >10 ms,
+  **stream_errors still 0** — audible gaps are invisible to cpal's error
+  callback on macOS, confirming the read histogram is the glitch signal.

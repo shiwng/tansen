@@ -23,6 +23,23 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+/// Opens the default output. Debug builds route cpal's error callback into
+/// the M4 reliability counters; release uses rodio's default behavior.
+fn open_output_stream() -> Result<OutputStream, rodio::StreamError> {
+    #[cfg(debug_assertions)]
+    {
+        OutputStreamBuilder::from_default_device()
+            .and_then(|b| {
+                b.with_error_callback(|e| crate::metrics::audio::record_stream_error(&e.to_string()))
+                    .open_stream()
+            })
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        OutputStreamBuilder::open_default_stream()
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
@@ -122,7 +139,7 @@ impl Worker {
         if self.output.is_some() {
             return true;
         }
-        match OutputStreamBuilder::open_default_stream() {
+        match open_output_stream() {
             Ok(stream) => {
                 let sink = Sink::connect_new(stream.mixer());
                 sink.pause();
@@ -206,7 +223,9 @@ impl Worker {
         } else if track.duration_sec > 0.0 {
             self.duration_hint = track.duration_sec;
         }
-        sink.append(source);
+        // M4: debug builds time every decode read and honor the stall env
+        // hook; release passes the decoder through untouched.
+        sink.append(crate::metrics::audio::wrap_source(source));
         Ok(())
     }
 
@@ -415,7 +434,7 @@ impl Engine {
                 // The output stream must outlive everything in this loop, and
                 // it cannot cross threads — so it lives in this slot here.
                 let mut stream_slot: Option<OutputStream> = None;
-                match OutputStreamBuilder::open_default_stream() {
+                match open_output_stream() {
                     Ok(stream) => {
                         let sink = Sink::connect_new(stream.mixer());
                         sink.pause(); // start silent; a Load command starts sound

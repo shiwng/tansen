@@ -35,6 +35,7 @@ fn main() {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(10));
             metrics::cmd::log_window();
+            tracing::info!(target: "audio-metrics", "{}", playback::metrics::audio::summary());
         }
     });
 
@@ -73,6 +74,47 @@ fn main() {
                     play: true,
                 }));
                 tracing::info!(target: "bench", stage = "autoplay-started", "bench: playback started");
+            }
+
+            // M4 stress driver (env-gated, debug only): while playback runs,
+            // hammer the backend the way heavy UI use would — repeated
+            // library queries every 2 s, a rescan every 30 s, a catalogue
+            // search every 30 s when the sidecar is available.
+            #[cfg(debug_assertions)]
+            if std::env::var("TANSEN_STRESS").as_deref() == Ok("1") {
+                let stress_state = state.clone();
+                let stress_lib = std::env::var("TANSEN_STRESS_LIB").ok();
+                std::thread::spawn(move || {
+                    if let Some(lib) = &stress_lib {
+                        let _ = stress_state.add_folder(lib);
+                        tracing::info!(target: "stress", lib = %lib, "stress library registered");
+                    }
+                    let mut round: u64 = 0;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        round += 1;
+                        let _ = stress_state.tracks();
+                        let _ = persistence::views::albums(&stress_state.db);
+                        let _ = persistence::views::history(&stress_state.db, 50);
+                        if round % 15 == 1 {
+                            if let Some(lib) = stress_lib.clone() {
+                                let scan_state = stress_state.clone();
+                                std::thread::spawn(move || {
+                                    let _ = scan_state.scan(|_| {});
+                                });
+                                tracing::info!(target: "stress", round, "scan started");
+                            }
+                        }
+                        if round % 15 == 8 {
+                            match stress_state.yt() {
+                                Ok(yt) => {
+                                    let _ = yt.search(&format!("stress {round}"), 5);
+                                }
+                                Err(_) => {} // catalogue off: nothing to search
+                            }
+                        }
+                    }
+                });
             }
 
             // Packaged builds ship the sidecar jar as a bundle resource

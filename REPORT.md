@@ -193,6 +193,35 @@ whenever the sibling checkout moves (BitChord now lives at
 `~/Desktop/BitChord` again); `yt_measure.rs` instead uses the app's own jar
 discovery and is move-proof.
 
+## M4 — audio reliability baseline (2026-10-31)
+
+`crates/playback/src/metrics.rs` (debug only) + `scripts/stress/run.sh`.
+Rodio 0.21 exposes cpal's **error** callback (`with_error_callback`) — counted.
+Rodio does **not** expose the data-callback timing, so the timing signal is a
+decoder read histogram on rodio's feeder thread (quantized p50/p99). Documented
+in IMPLEMENTATION.md §12.
+
+Measured (macOS arm64, debug): **5-minute stress — playback running while 10
+library rescans and continuous 2 s query rounds hammer the backend:**
+`stream_errors=0`, 25,552,610 reads, **p50 <1 µs, p99 <1 µs, slowest 0.7 ms**.
+99.97 % of reads are sub-microsecond; the 0.1–1 ms bucket (11,090 reads) is
+normal WAV buffer refills.
+
+Stall hook validated end-to-end: 40 ms feeder gaps every ~0.6 s for 30 s →
+slowest read 40.1 ms, `>10ms` bucket 32, errors 0; a deliberate 200 ms gap
+every second → slowest 200.0 ms, errors **still 0**. Conclusion measured, not
+assumed: **CoreAudio never reports underruns through cpal's error callback** —
+even audible gaps count zero — so the read histogram is the real glitch
+detector and the error counter means "no device-level failure".
+
+Debug-only surface: `TANSEN_STALL_MS`/`TANSEN_STALL_EVERY` env hook (sleeps on
+rodio's feeder thread mid-track), `TANSEN_STRESS=1` + `TANSEN_STRESS_LIB` driver.
+Release builds compile all of it to pass-through no-ops.
+
+Verification: `cargo test --workspace` 28/0/2 (playback 15 incl. the new
+histogram test); stress script green at 300 s, 30 s and 15 s; tansen + playback
+builds clean.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |
