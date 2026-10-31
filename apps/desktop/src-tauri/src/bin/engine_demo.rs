@@ -10,93 +10,16 @@
 //! With no arguments it picks four WAVs from the M4 stress fixtures.
 //! Needs an audio device; not part of `cargo test`.
 
-use app_core::playback_engine::{Engine, PipelineFactory, Transport};
-use app_core::playback_types::{Command, EntryId, ErrorKind, Placement};
-use playback::pipeline::AudioPipeline;
-use playback::StreamCache;
+#[path = "../rodio_factory.rs"]
+mod rodio_factory;
+
+use app_core::playback_engine::Engine;
+use app_core::playback_types::{Command, EntryId, Placement};
+use rodio_factory::RodioFactory;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-/// The real `PipelineFactory` over the playback crate's rodio pipeline: one
-/// audio thread + one sink; `prepare` swaps the sink's content, `release`
-/// silences it, `transport` drives pause/resume/seek/volume. Lives in this
-/// demo binary for M7; the production wiring migrates in M8+.
-struct RodioFactory {
-    resolve: HashMap<u64, String>,
-    pipeline: Mutex<Option<AudioPipeline>>,
-    cache: Option<Arc<StreamCache>>,
-}
-
-impl RodioFactory {
-    fn new(resolve: HashMap<u64, String>, cache: Option<Arc<StreamCache>>) -> Self {
-        Self { resolve, pipeline: Mutex::new(None), cache }
-    }
-
-    /// (frames_played, pos_ms) of the live pipeline, for the demo prints.
-    fn frames(&self) -> (u64, u64) {
-        match self.pipeline.lock() {
-            Ok(g) => match g.as_ref() {
-                Some(p) => (p.frames_played(), p.pos_ms()),
-                None => (0, 0),
-            },
-            Err(_) => (0, 0),
-        }
-    }
-}
-
-impl PipelineFactory for RodioFactory {
-    fn prepare(&self, entry: EntryId) -> Result<(), ErrorKind> {
-        let path = self.resolve.get(&entry.0).ok_or(ErrorKind::Resolve)?.clone();
-        let mut guard = self.pipeline.lock().map_err(|_| ErrorKind::Device)?;
-        if guard.is_none() {
-            *guard = Some(AudioPipeline::spawn(self.cache.clone()).map_err(|_| ErrorKind::Device)?);
-        }
-        let pipeline = guard.as_ref().ok_or(ErrorKind::Device)?;
-        pipeline.load(&path).map_err(|e| {
-            if e.contains("no audio output device") {
-                ErrorKind::Device
-            } else {
-                ErrorKind::Decode
-            }
-        })
-    }
-
-    fn release(&self, _entry: EntryId) {
-        if let Ok(guard) = self.pipeline.lock() {
-            if let Some(p) = guard.as_ref() {
-                p.clear();
-            }
-        }
-    }
-
-    fn transport(&self, action: Transport) {
-        if let Ok(guard) = self.pipeline.lock() {
-            if let Some(p) = guard.as_ref() {
-                match action {
-                    Transport::Play => p.play(),
-                    Transport::Pause => p.pause(),
-                    Transport::Seek { ms } => p.seek_ms(ms),
-                    Transport::Volume(v) => p.set_volume(v),
-                }
-            }
-        }
-    }
-
-    fn position_ms(&self) -> Option<u64> {
-        let guard = self.pipeline.lock().ok()?;
-        guard.as_ref().map(|p| p.pos_ms())
-    }
-
-    fn duration_ms(&self) -> Option<u64> {
-        let guard = self.pipeline.lock().ok()?;
-        guard.as_ref().and_then(|p| p.duration_ms())
-    }
-}
-
-/// Two 30 s WAVs: long enough that every transport measurement happens far
-/// from the track end, then auto-advance is demonstrated by seeking to
-/// 29 s. Generated on first run; explicit args override.
 fn default_fixtures() -> Vec<String> {
     let paths = ["/tmp/tansen-demo-a.wav", "/tmp/tansen-demo-b.wav"];
     for path in paths {

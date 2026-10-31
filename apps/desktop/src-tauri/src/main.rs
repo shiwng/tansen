@@ -3,6 +3,7 @@
 
 mod commands;
 mod metrics;
+mod rodio_factory;
 
 use app_core::{AppState, MediaControlEvent, SeekDirection};
 
@@ -139,6 +140,28 @@ fn main() {
             spawn_scan_event_forwarder(app.handle().clone(), state.scan_events.clone());
 
             app.manage(state);
+
+            // M9: the task-based playback engine (app-core) starts here, its
+            // media seam backed by the rodio factory. Entry→media resolution
+            // arrives with the frontend integration, so the map starts
+            // empty. The legacy playback path is untouched until M10.
+            let engine = tauri::async_runtime::block_on(async {
+                app_core::playback_engine::Engine::start(Arc::new(rodio_factory::RodioFactory::new(
+                    std::collections::HashMap::new(),
+                    None,
+                )))
+            });
+            // Every watch change → `playback_state` event to the frontend.
+            let mut engine_rx = engine.subscribe();
+            let emitter = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while engine_rx.changed().await.is_ok() {
+                    let state = engine_rx.borrow().clone();
+                    let _ = emitter.emit("playback_state", &state);
+                }
+            });
+            app.manage(engine);
+            tracing::info!("playback engine started");
             Ok(())
         })
         .on_page_load(|webview, payload| {
@@ -188,6 +211,7 @@ fn main() {
             commands::history_get,
             commands::proxy_get,
             commands::bench_marker,
+            commands::engine_command,
             commands::yt_search,
             commands::player_play_remote,
             commands::sources_get,

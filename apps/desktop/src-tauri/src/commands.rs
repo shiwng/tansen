@@ -363,6 +363,19 @@ pub struct RemoteTrackDto {
     pub thumbnail_url: Option<String>,
 }
 
+/// M9: forwards one playback `Command` into the task-based engine channel.
+/// Rides beside the legacy command surface until M10 swaps the paths.
+#[command]
+pub async fn engine_command(
+    engine: tauri::State<'_, app_core::playback_engine::Engine>,
+    cmd: app_core::playback_types::Command,
+) -> Result<(), String> {
+    // send only fails when the engine task is gone (app shutdown) — nothing
+    // actionable for the caller.
+    engine.send(cmd).await;
+    Ok(())
+}
+
 /// M1 bench instrumentation: the frontend's first painted frame calls this;
 /// the log timestamp is the startup→first-paint endpoint.
 #[command]

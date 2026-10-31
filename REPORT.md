@@ -366,6 +366,34 @@ which this engine reimplements in its task-owned form).
 Verification: `cargo test --workspace` **48 passed / 0 failed / 2 ignored**
 (app-core 17 → 22); demo deterministic and green; zero new warnings.
 
+## M9 — the task-based engine starts in the app (2026-10-31)
+
+Wiring only; every existing command, event and polling path untouched, zero
+frontend changes:
+- **Setup**: the shell now starts the app-core playback `Engine` at Tauri
+  setup (`tauri::async_runtime::block_on`, so `tokio::spawn` has a runtime
+  context), with the shared rodio `RodioFactory` as its media seam. The
+  EntryId→media resolve map starts empty — entries cannot name real files
+  until the frontend integration milestone, and that is stated rather than
+  faked. `RodioFactory` moved out of the demo binary into
+  `src-tauri/src/rodio_factory.rs` so shell and demo share one
+  implementation (`#[path]` include in the bin — the shell is a bin crate).
+- **One new command**: `engine_command(cmd: Command)` forwards a
+  `playback_types::Command` into the engine's bounded channel. This opened
+  the M5 serde gate exactly as planned: the playback types now carry
+  `Serialize`/`Deserialize` (the milestone note said "derive only if existing
+  IPC needs it" — now it does). Command count 45 → 46; the M2 counters see
+  the new command automatically.
+- **One new event task**: subscribes to the engine's watch channel and emits
+  `playback_state` (full `PlaybackState` payload) on every published change.
+
+Verification: app smoke run logs `playback engine started` at startup;
+`engine_demo` (now sharing the factory) still ends with
+`Playing entry=1` via the M8 auto-advance; `cargo test --workspace`
+**48 passed / 0 failed / 2 ignored**; build clean. The engine is live but
+idle in the app — nothing in the frontend sends it commands yet, by design
+until M10.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

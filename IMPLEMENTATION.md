@@ -153,7 +153,7 @@ drains with a 100 ms timeout so ticks still run). Decoders erase to
 
 | File | Role |
 |---|---|
-| `src/main.rs` | Tracing init → legacy data-dir migration → Builder: dialog plugin, `art://` protocol (serves cached artwork bytes, CORS header so the canvas can read pixels), setup (AppState::open, restore, media keys on the main thread, event forwarders), 30+ registered commands. The lyrics proxy disk-caches cacheable provider responses for 24 h (token endpoints excluded). |
+| `src/main.rs` | Tracing init → legacy data-dir migration → Builder: dialog plugin, `art://` protocol (serves cached artwork bytes, CORS header so the canvas can read pixels), setup (AppState::open, restore, media keys on the main thread, event forwarders), 30+ registered commands. The lyrics proxy disk-caches cacheable provider responses for 24 h (token endpoints excluded). M9: the task-based playback engine also starts here (rodio `PipelineFactory` behind it), every watch change is forwarded to the frontend as the `playback_state` event, and `engine_command` rides beside the legacy surface. |
 | `src/commands.rs` | The whole command surface (§7). Each is thin: call app-core, map errors to strings. Async commands use `spawn_blocking` for anything blocking. |
 | `tauri.conf.json` | Product `Tansen`, identifier `app.tansen.desktop`, window/title, CSP, dev/build commands (`pnpm dev` / `pnpm build`), bundler config. |
 | `capabilities/default.json` | Core event/window permissions + dialog. |
@@ -302,7 +302,9 @@ queue wiring and UI; the engine-path decode is exercised through the same
 
 Groups: settings, library (folders/scan/tracks), playback (load/toggle/seek/volume/repeat/next/prev/stop), queue (snapshot/insert/move/remove/jump/clear), playlists (CRUD + reorder), views (albums/artists/album_tracks/artist_tracks/history), lyrics proxy (`proxy_get`, host-allowlisted), catalogue (`yt_search`, `player_play_remote`), sources (CRUD + health).
 
-Events back: `player://event`, `scan://progress`, `scan://done`.
+Events back: `player://event`, `scan://progress`, `scan://done`,
+`playback_state` (M9: every change of the task-based engine's watch channel;
+payload is the full `PlaybackState`).
 
 ---
 
@@ -358,7 +360,8 @@ Manual smoke: app launch, migration log, UI render (browser DOM capture).
 Debug end-to-end playback exercise (M7): `cargo run -p tansen --bin engine_demo`
 — the app-core Engine + rodio `PipelineFactory` over local WAVs, printing every
 published state and the `frames_played` counter through play/pause/resume/
-seek/volume.
+seek/volume. The factory implementation is shared with the app shell
+(`src/rodio_factory.rs`); M9 started the same engine inside the app.
 
 ---
 

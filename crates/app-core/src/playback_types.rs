@@ -8,17 +8,21 @@
 //! progress is an [`Anchor`] (position + rate), not a wall clock. [`Status`]
 //! is the lifecycle the engine walks; [`validate_transition`] is the pure
 //! law for walking it.
+//!
+//! Serde: M5 shipped these without derives because nothing crossed IPC.
+//! M9 put `Command` on the Tauri bridge and `PlaybackState` into an event,
+//! so the types now carry `Serialize`/`Deserialize`.
 
 /// Identity of one queue entry. Deliberately not an index: queue edits
 /// renumber positions, never identities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EntryId(pub u64);
 
 /// The class of a playback failure, mirroring the engine's existing load /
 /// append error paths: no output device (`Device`), an unresolved
 /// `sidecar://` placeholder (`Resolve`), a decoder that would not open
 /// (`Decode`), or a filesystem error (`Io`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ErrorKind {
     Device,
     Resolve,
@@ -26,7 +30,7 @@ pub enum ErrorKind {
     Io,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     /// Nothing loaded.
     Idle,
@@ -69,7 +73,7 @@ impl Status {
 /// Playback progress: a position in milliseconds and the rate the clock runs
 /// at (0 = stopped clock, 1 = real time). A speed-control future widens the
 /// rate domain; today it is exactly 0 or 1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Anchor {
     pub pos_ms: u64,
     pub rate: u8,
@@ -86,7 +90,7 @@ impl Anchor {
 }
 
 /// The full playback state the engine owns and everyone else reads.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlaybackState {
     /// Bumped on every accepted transition; readers use it to drop stale
     /// renders instead of diffing fields.
@@ -127,7 +131,7 @@ impl PlaybackState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Placement {
     /// Right after the current entry.
     Next,
@@ -135,7 +139,7 @@ pub enum Placement {
     Append,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     /// Make this entry the current one (load + start).
     Play { entry: EntryId },
