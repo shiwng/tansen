@@ -5,11 +5,17 @@
 //! not `Send` and dropping it stops audio. Commands arrive over an mpsc
 //! channel; state changes go out on a tokio broadcast channel that the app
 //! layer forwards to the frontend.
+//!
+//! Device handling follows the Spotifast pattern (reimplemented, not copied):
+//! the engine starts even when no output device is available, retries the
+//! device on demand, and reports honest errors instead of dying. While no
+//! device is open the engine is idle-cheap and never burns through the queue.
 
+use crate::cache::StreamCache;
 use crate::queue::{Queue, QueueOp, QueueSnapshot};
 use crate::remote::HttpRangeReader;
 use persistence::models::TrackRef;
-use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -42,6 +48,8 @@ pub enum Command {
     /// Replaces a queued track's source path — how remote tracks get their
     /// real stream URL after the resolve-ahead task fetches one.
     PatchUrl { index: usize, url: String },
+    /// Try to open the audio output again after it was unavailable.
+    RetryOutput,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,7 +65,11 @@ const PRELOAD_AHEAD_SEC: f64 = 2.0;
 
 struct Worker {
     queue: Queue,
-    sink: Sink,
+    /// Handle to the open output. The `OutputStream` itself lives beside this
+    /// in `STREAM_SLOT` on the audio thread — it is not `Send`, so it cannot
+    /// be part of `Worker` (the worker is created off-thread and moved in).
+    output: Option<Sink>,
+    cache: Option<Arc<StreamCache>>,
     events: tokio::sync::broadcast::Sender<EngineEvent>,
     volume: f64,
     /// Queue index appended ahead of time (gapless), `SOME_SENTINEL` after a
@@ -89,9 +101,41 @@ struct PendingLoad {
 /// not wedge the player).
 const PLACEHOLDER_WAIT: Duration = Duration::from_secs(10);
 
+/// Tick cadence: fast while audible, slow otherwise. The old fixed 100 ms
+/// loop woke ten times a second even with nothing loaded.
+const TICK_ACTIVE_MS: u64 = 100;
+const TICK_IDLE_MS: u64 = 500;
+
 impl Worker {
     fn is_placeholder(path: &str) -> bool {
         path.starts_with("sidecar://")
+    }
+
+    fn sink(&self) -> Option<&Sink> {
+        self.output.as_ref()
+    }
+
+    /// Opens the default output if not already open. False when the device
+    /// still is not available. `stream_slot` keeps the `OutputStream` alive;
+    /// it lives on the audio thread because `OutputStream` is not `Send`.
+    fn ensure_output(&mut self, stream_slot: &mut Option<OutputStream>) -> bool {
+        if self.output.is_some() {
+            return true;
+        }
+        match OutputStreamBuilder::open_default_stream() {
+            Ok(stream) => {
+                let sink = Sink::connect_new(stream.mixer());
+                sink.pause();
+                *stream_slot = Some(stream);
+                self.output = Some(sink);
+                tracing::info!("audio output opened");
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "no audio output device");
+                false
+            }
+        }
     }
 }
 
@@ -101,36 +145,54 @@ impl Worker {
     }
 
     fn emit_queue(&self) {
-        let snap = self.queue.snapshot(self.playing && !self.sink.is_paused());
+        let audible = self.playing && self.sink().map(|s| !s.is_paused()).unwrap_or(false);
+        let snap = self.queue.snapshot(audible);
         self.emit(EngineEvent::QueueChanged { snapshot: snap });
     }
 
-    fn emit_position(&self) {
-        let pos = self.sink.get_pos().as_secs_f64();
+    fn emit_position(&mut self) {
+        let Some(sink) = self.sink() else { return };
+        let pos = sink.get_pos().as_secs_f64();
+        let playing = self.playing && !sink.is_paused();
         self.emit(EngineEvent::Position {
             sec: pos,
             duration: self.duration_hint,
-            playing: self.playing && !self.sink.is_paused(),
+            playing,
         });
     }
 
     fn clear_sink(&mut self) {
-        self.sink.clear();
+        if let Some(sink) = self.sink() {
+            sink.clear();
+        }
         self.preloaded = None;
         self.last_pos = 0.0;
         self.manual_until = Instant::now() + Duration::from_millis(250);
     }
 
     /// Opens and appends `track`'s decoder to the sink without clearing.
-    /// Local files open straight from disk; http(s) paths stream through the
-    /// range reader; `sidecar://` placeholders that were never patched (a
-    /// manual next before the resolve-ahead finished) error and skip.
+    /// Cached remote tracks play straight from disk; other http(s) paths
+    /// stream through the range reader; `sidecar://` placeholders that were
+    /// never patched (a manual next before the resolve-ahead finished) error
+    /// and skip.
     fn append(&mut self, track: &TrackRef) -> Result<(), String> {
+        let sink = self
+            .output
+            .as_ref()
+            .ok_or_else(|| "no audio output device available".to_string())?;
         // Local and remote decoders are different concrete types; the sink
         // takes any Source, so each branch erases to the same trait object.
         let source: Box<dyn Source<Item = f32> + Send> =
-            if track.path.starts_with("http://") || track.path.starts_with("https://") {
-                let reader = HttpRangeReader::new(track.path.clone(), vec![]).map_err(|e| e.to_string())?;
+            if let Some(path) = self
+                .cache
+                .as_ref()
+                .and_then(|c| c.get(&track.path))
+            {
+                let file = File::open(&path).map_err(|e| e.to_string())?;
+                Box::new(Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?)
+            } else if track.path.starts_with("http://") || track.path.starts_with("https://") {
+                let reader =
+                    HttpRangeReader::new(track.path.clone(), vec![]).map_err(|e| e.to_string())?;
                 Box::new(Decoder::new(BufReader::new(reader)).map_err(|e| e.to_string())?)
             } else if track.path.starts_with("sidecar://") {
                 return Err("stream not resolved yet".into());
@@ -144,7 +206,7 @@ impl Worker {
         } else if track.duration_sec > 0.0 {
             self.duration_hint = track.duration_sec;
         }
-        self.sink.append(source);
+        sink.append(source);
         Ok(())
     }
 
@@ -152,14 +214,21 @@ impl Worker {
         self.clear_sink();
         if let Err(e) = self.append(track) {
             tracing::warn!(track = %track.path, error = %e, "failed to open track");
-            self.emit(EngineEvent::TrackError { track: track.clone(), message: e });
+            self.emit(EngineEvent::TrackError { track: track.clone(), message: e.clone() });
+            // Degraded engine (no output device): stay on the row so the queue
+            // is not burned error-by-error; RetryOutput re-opens the device.
+            if self.output.is_none() {
+                return;
+            }
             self.advance_past_current();
             return;
         }
         if play {
-            self.sink.play();
-        } else {
-            self.sink.pause();
+            if let Some(sink) = self.sink() {
+                sink.play();
+            }
+        } else if let Some(sink) = self.sink() {
+            sink.pause();
         }
         self.playing = play;
         self.emit(EngineEvent::TrackChanged { track: Some(track.clone()) });
@@ -223,8 +292,12 @@ impl Worker {
             }
         }
 
-        let pos = self.sink.get_pos().as_secs_f64();
-        let empty = self.sink.empty();
+        // Degraded engine: nothing audible can happen. RetryOutput re-opens
+        // the device; until then stay quiet and cheap.
+        let (pos, empty, paused) = match self.sink() {
+            Some(s) => (s.get_pos().as_secs_f64(), s.empty(), s.is_paused()),
+            None => return,
+        };
 
         if empty {
             if Instant::now() >= self.manual_until {
@@ -250,7 +323,7 @@ impl Worker {
         }
         self.last_pos = pos;
 
-        if self.playing && !self.sink.is_paused() {
+        if self.playing && !paused {
             self.emit_position();
 
             let remaining = (self.duration_hint - pos).max(0.0);
@@ -301,12 +374,14 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Spawns the audio worker. Fails only if no output device exists.
+    /// Spawns the audio worker. Never fails: when no output device is
+    /// available the engine starts degraded and retries on demand, so the app
+    /// (library, settings, lyrics) still works and playback reports honestly.
     ///
     /// `cpal::Stream` (inside rodio's `OutputStream`) is not `Send`, so the
     /// stream is created and kept on the audio thread itself; the caller only
     /// ever holds channels and the `Send`+`Sync` `Sink`.
-    pub fn spawn() -> Result<Self, EngineError> {
+    pub fn spawn(cache: Option<Arc<StreamCache>>) -> Self {
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let (tx, rx) = std::sync::mpsc::channel::<Command>();
         let (events, _) = tokio::sync::broadcast::channel(128);
@@ -321,7 +396,8 @@ impl Engine {
 
         let mut worker = Worker {
             queue: Queue::default(),
-            sink: Sink::new().0, // replaced once the stream is open on-thread
+            output: None,
+            cache,
             events: events.clone(),
             volume: 1.0,
             preloaded: None,
@@ -336,38 +412,53 @@ impl Engine {
         std::thread::Builder::new()
             .name("audio-engine".into())
             .spawn(move || {
-                // The output stream must outlive everything in this loop.
-                let stream = match OutputStreamBuilder::open_default_stream() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = init_tx.send(Err(e.to_string()));
-                        return;
+                // The output stream must outlive everything in this loop, and
+                // it cannot cross threads — so it lives in this slot here.
+                let mut stream_slot: Option<OutputStream> = None;
+                match OutputStreamBuilder::open_default_stream() {
+                    Ok(stream) => {
+                        let sink = Sink::connect_new(stream.mixer());
+                        sink.pause(); // start silent; a Load command starts sound
+                        worker.output = Some(sink);
+                        stream_slot = Some(stream);
                     }
-                };
-                worker.sink = Sink::connect_new(stream.mixer());
-                worker.sink.pause(); // start silent; a Load command starts sound
+                    Err(e) => {
+                        // Degraded start: Command::RetryOutput re-opens.
+                        tracing::warn!(error = %e, "starting without audio output");
+                    }
+                }
                 let _ = init_tx.send(Ok(()));
 
                 loop {
-                    match rx.recv_timeout(Duration::from_millis(100)) {
-                        Ok(cmd) => worker.handle(cmd),
+                    // Fast ticks while audible; slow ticks otherwise.
+                    let audible = worker.playing
+                        && worker.sink().map(|s| !s.is_paused()).unwrap_or(false);
+                    let timeout = Duration::from_millis(if audible {
+                        TICK_ACTIVE_MS
+                    } else {
+                        TICK_IDLE_MS
+                    });
+                    match rx.recv_timeout(timeout) {
+                        Ok(cmd) => worker.handle(cmd, &mut stream_slot),
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => worker.tick(),
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     }
-                    *snap_out.write().unwrap() =
-                        worker.queue.snapshot(worker.playing && !worker.sink.is_paused());
+                    let audible = worker.playing
+                        && worker.sink().map(|s| !s.is_paused()).unwrap_or(false);
+                    *snap_out.write().unwrap() = worker.queue.snapshot(audible);
                     *vol_out.lock().unwrap() = worker.volume;
                 }
                 tracing::info!("audio engine stopped");
             })
-            .map_err(|e| EngineError::Output(e.to_string()))?;
+            .expect("audio thread spawn");
 
         init_rx
             .recv()
-            .map_err(|_| EngineError::Output("audio thread died during init".into()))?
-            .map_err(EngineError::Output)?;
+            .map_err(|_| EngineError::Output("audio thread died during init".into()))
+            .and_then(|r| r.map_err(EngineError::Output))
+            .expect("audio engine init");
 
-        Ok(Self { tx, events, snapshot, volume })
+        Self { tx, events, snapshot, volume }
     }
 
     pub fn send(&self, cmd: Command) {
@@ -399,16 +490,14 @@ impl Worker {
         match effect.load {
             Some((t, play)) if Self::is_placeholder(&t.path) => {
                 if let Some(index) = self.queue.current_index() {
-                    if play {
-                        self.pending = Some(PendingLoad { index, play, since: Instant::now() });
-                        self.emit_queue();
-                    } else {
-                        // A removal-style load (play=false): quiet while waiting.
-                        self.sink.pause();
+                    if !play {
+                        if let Some(sink) = self.sink() {
+                            sink.pause();
+                        }
                         self.playing = false;
-                        self.pending = Some(PendingLoad { index, play, since: Instant::now() });
-                        self.emit_queue();
                     }
+                    self.pending = Some(PendingLoad { index, play, since: Instant::now() });
+                    self.emit_queue();
                 }
             }
             Some((t, play)) => self.load(&t, play),
@@ -417,7 +506,7 @@ impl Worker {
         }
     }
 
-    fn handle(&mut self, cmd: Command) {
+    fn handle(&mut self, cmd: Command, stream_slot: &mut Option<OutputStream>) {
         match cmd {
             Command::Apply(op) => {
                 let effect = self.queue.apply(op);
@@ -427,25 +516,37 @@ impl Worker {
                 if self.queue.current().is_none() {
                     return;
                 }
-                if self.sink.is_paused() {
-                    self.sink.play();
-                    self.playing = true;
-                } else {
-                    self.sink.pause();
-                    self.playing = false;
+                if self.output.is_none() && !self.ensure_output(stream_slot) {
+                    return;
+                }
+                if let Some(sink) = self.sink() {
+                    if sink.is_paused() {
+                        sink.play();
+                        self.playing = true;
+                    } else {
+                        sink.pause();
+                        self.playing = false;
+                    }
                 }
                 self.emit_queue();
                 self.emit_position();
             }
             Command::Pause => {
-                self.sink.pause();
+                if let Some(sink) = self.sink() {
+                    sink.pause();
+                }
                 self.playing = false;
                 self.emit_queue();
                 self.emit_position();
             }
             Command::Resume => {
                 if self.queue.current().is_some() {
-                    self.sink.play();
+                    if self.output.is_none() && !self.ensure_output(stream_slot) {
+                        return;
+                    }
+                    if let Some(sink) = self.sink() {
+                        sink.play();
+                    }
                     self.playing = true;
                     self.emit_queue();
                     self.emit_position();
@@ -460,28 +561,41 @@ impl Worker {
             }
             Command::Seek(sec) => {
                 let target = Duration::from_secs_f64(sec.max(0.0));
-                if self.preloaded.is_some() {
+                if self.output.is_none() {
+                    return;
+                }
+                let preloaded = self.preloaded.is_some();
+                if preloaded {
                     // A pending append would receive the seeked position of
                     // the *old* track; start over from the current one.
                     if let Some(cur) = self.queue.current().cloned() {
                         self.clear_sink();
                         if self.append(&cur).is_ok() {
-                            let _ = self.sink.try_seek(target);
+                            if let Some(sink) = self.sink() {
+                                let _ = sink.try_seek(target);
+                            }
                         }
                     }
-                } else {
-                    let _ = self.sink.try_seek(target);
+                } else if let Some(sink) = self.sink() {
+                    let _ = sink.try_seek(target);
                 }
                 self.emit_position();
             }
             Command::SetVolume(v) => {
                 let v = v.clamp(0.0, 1.0);
-                self.sink.set_volume(v as f32);
+                if let Some(sink) = self.sink() {
+                    sink.set_volume(v as f32);
+                }
                 self.volume = v;
                 self.emit(EngineEvent::Volume { level: v });
             }
             Command::PatchUrl { index, url } => {
                 self.queue.patch_path(index, &url);
+            }
+            Command::RetryOutput => {
+                if self.ensure_output(stream_slot) {
+                    self.emit_queue();
+                }
             }
         }
     }

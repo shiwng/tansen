@@ -92,6 +92,7 @@ the lock; `user_version` migrations are append-only.
 | `src/queue.rs` | **Pure** queue state: `Queue`, `QueueOp` (Load/Insert/RemoveAt/Move/Jump/Next/Prev/SetRepeat/Clear), `QueueEffect` (what the engine must do), `QueueSnapshot` (what the UI sees). Repeat modes, history for Previous, index tracking through moves. Fully unit-tested without audio. |
 | `src/engine.rs` | The audio thread. Owns rodio `OutputStream` (not `Send` — it must be created and kept on this thread; `Sink` is Send+Sync). Applies `QueueOp`s, emits `EngineEvent`s on a tokio broadcast channel, ticks at 10 Hz for position/gapless, preloads the next decoder ~2 s before track end (gapless), detects the handoff by a position drop, pauses/plays/seek/volume, `PatchUrl` for remote rows. |
 | `src/remote.rs` | `HttpRangeReader`: `Read + Seek` over HTTP using 512 KiB `Range` chunks (googlevideo throttles unbounded reads; ranges run at line rate). MP4 `moov` seeks answered over the wire. Must be created/dropped off the async runtime (the audio thread qualifies). |
+| `src/cache.rs` | `StreamCache`: bounded (512 MiB LRU) disk cache for streamed tracks, sha1-of-URL keyed, complete-file-only. The engine plays cached copies from disk; the resolve-ahead service prefetches the next track into it. |
 | `src/probe.rs` | `decode_rms(reader, window)`: Symphonia decode without a device — the test oracle for "this stream contains sound". |
 
 Event → consumer map:
@@ -136,7 +137,7 @@ drains with a 100 ms timeout so ticks still run). Decoders erase to
 | `src/history.rs` | Plain thread over engine events; one `play_history` row per local track start (`id > 0`). |
 | `src/persist_state.rs` | Plain thread; flushes queue/index/position/repeat to `playback_state`. |
 | `src/watcher.rs` | notify watcher over library roots: 2 s debounce, initial scan on subscribe (pre-existing files fire no events), resubscribes when the folder list changes, honors the `watch_folders` setting, yields when a manual scan holds the lock, reports summaries on `scan_events`. |
-| `src/remote.rs` | Placeholder helpers + resolve-ahead thread: on `QueueChanged`, resolves the next 2 `sidecar://` rows via the sidecar and patches the engine. 1 h cache. |
+| `src/remote.rs` | Placeholder helpers + resolve-ahead thread: on `QueueChanged`, resolves the next 2 `sidecar://` rows via the sidecar, patches the engine, then prefetches the immediate next track into the stream disk cache. 1 h URL cache. |
 | `src/yt_handle.rs` | `YtHandle` (sidecar launched once per process) + `RemoteTrack`/`PlayMode`/`CatalogRow` DTOs + `await_sync` helper (one-shot runtime; callers are sync commands / plain threads). |
 | `tests/restore_playback.rs` | Restart persistence end-to-end (needs an audio device; skips gracefully). |
 | `tests/library_watcher.rs` | Watcher integration: add file → indexed; setting off → stops. |
@@ -147,7 +148,7 @@ drains with a 100 ms timeout so ticks still run). Decoders erase to
 
 | File | Role |
 |---|---|
-| `src/main.rs` | Tracing init → legacy data-dir migration → Builder: dialog plugin, `art://` protocol (serves cached artwork bytes, CORS header so the canvas can read pixels), setup (AppState::open, restore, media keys on the main thread, event forwarders), 30+ registered commands. |
+| `src/main.rs` | Tracing init → legacy data-dir migration → Builder: dialog plugin, `art://` protocol (serves cached artwork bytes, CORS header so the canvas can read pixels), setup (AppState::open, restore, media keys on the main thread, event forwarders), 30+ registered commands. The lyrics proxy disk-caches cacheable provider responses for 24 h (token endpoints excluded). |
 | `src/commands.rs` | The whole command surface (§7). Each is thin: call app-core, map errors to strings. Async commands use `spawn_blocking` for anything blocking. |
 | `tauri.conf.json` | Product `Tansen`, identifier `app.tansen.desktop`, window/title, CSP, dev/build commands (`pnpm dev` / `pnpm build`), bundler config. |
 | `capabilities/default.json` | Core event/window permissions + dialog. |

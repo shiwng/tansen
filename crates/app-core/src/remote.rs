@@ -37,12 +37,13 @@ pub fn spawn_resolve_ahead(
     events: broadcast::Sender<EngineEvent>,
     engine_tx: std::sync::mpsc::Sender<Command>,
     resolve: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+    stream_cache: Arc<playback::StreamCache>,
 ) {
     let mut rx = events.subscribe();
     std::thread::Builder::new()
         .name("resolve-ahead".into())
         .spawn(move || {
-            let mut cache: HashMap<String, (Instant, String)> = HashMap::new();
+            let mut url_cache: HashMap<String, (Instant, String)> = HashMap::new();
             let mut patching: std::collections::HashSet<usize> = std::collections::HashSet::new();
             loop {
                 // QueueChanged carries the whole queue + index; other events
@@ -55,21 +56,30 @@ pub fn spawn_resolve_ahead(
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
 
-                cache.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
+                url_cache.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
                 let start = snapshot.index.unwrap_or(0);
                 for (offset, track) in snapshot.tracks.iter().enumerate().skip(start).take(AHEAD + 1) {
                     let Some(video_id) = video_id_of(&track.path) else { continue };
                     if !is_placeholder(&track.path) {
                         continue;
                     }
-                    if let Some((_, url)) = cache.get(video_id) {
+                    if let Some((_, url)) = url_cache.get(video_id) {
                         let _ = engine_tx.send(Command::PatchUrl { index: offset, url: url.clone() });
                         continue;
                     }
                     match resolve(video_id) {
                         Ok(url) => {
-                            cache.insert(video_id.to_string(), (Instant::now(), url.clone()));
-                            let _ = engine_tx.send(Command::PatchUrl { index: offset, url });
+                            url_cache.insert(video_id.to_string(), (Instant::now(), url.clone()));
+                            let _ = engine_tx.send(Command::PatchUrl { index: offset, url: url.clone() });
+                            // Spotifast-pattern prefetch: the immediate next
+                            // track downloads fully into the disk cache while
+                            // the current one plays, so its replay (and
+                            // gapless preload) comes from disk.
+                            if offset == start + 1 && stream_cache.get(&url).is_none() {
+                                if let Err(e) = stream_cache.fetch(&url) {
+                                    tracing::warn!(error = %e, "prefetch failed");
+                                }
+                            }
                         }
                         Err(e) => {
                             // Leave the placeholder; the engine's preload

@@ -13,8 +13,6 @@ use std::sync::Arc;
 pub enum CoreError {
     #[error("db: {0}")]
     Db(#[from] persistence::DbError),
-    #[error("audio: {0}")]
-    Audio(#[from] playback::EngineError),
     #[error("track {0} not found")]
     TrackMissing(i64),
     #[error("{0}")]
@@ -35,12 +33,21 @@ pub struct AppState {
     yt: std::sync::Mutex<Option<Arc<crate::yt_handle::YtHandle>>>,
     /// Jar path found by the shell (Tauri resource dir). Checked first.
     sidecar_hint: std::sync::Mutex<Option<PathBuf>>,
+    /// Disk cache for streamed tracks, shared by the engine (reads) and the
+    /// resolve-ahead service (writes).
+    stream_cache: Arc<playback::StreamCache>,
+    /// Root data directory (for caches the shell owns, like lyrics).
+    pub data_dir: PathBuf,
 }
 
 impl AppState {
     pub fn open(data_dir: &std::path::Path) -> Result<Self, CoreError> {
         let db = Arc::new(Db::open(&data_dir.join("tansen.db"))?);
-        let engine = Engine::spawn()?;
+        let stream_cache = Arc::new(playback::StreamCache::new(
+            data_dir.join("stream-cache"),
+            512 * 1024 * 1024,
+        ));
+        let engine = Engine::spawn(Some(stream_cache.clone()));
         let scanner = Scanner::new(data_dir.join("art"));
         let (scan_events, _) = tokio::sync::broadcast::channel(16);
         crate::history::spawn_recorder(db.clone(), engine.events.clone());
@@ -55,6 +62,8 @@ impl AppState {
             scan_lock: std::sync::Mutex::new(()),
             yt: std::sync::Mutex::new(None),
             sidecar_hint: std::sync::Mutex::new(None),
+            stream_cache,
+            data_dir: data_dir.to_path_buf(),
         })
     }
 
@@ -195,6 +204,18 @@ impl AppState {
     /// Checked before env/settings/discovery.
     pub fn set_sidecar_hint(&self, jar: PathBuf) {
         *self.sidecar_hint.lock().unwrap() = Some(jar);
+    }
+
+    /// The stream disk cache, for services that prefetch outside app-core.
+    pub fn stream_cache(&self) -> Arc<playback::StreamCache> {
+        self.stream_cache.clone()
+    }
+
+    /// Directory for the lyrics response cache (created on demand).
+    pub fn lyrics_cache_dir(&self) -> PathBuf {
+        let dir = self.data_dir.join("lyrics-cache");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
     }
 
     /// The catalogue flag plus a launched-once sidecar handle. Errors name the

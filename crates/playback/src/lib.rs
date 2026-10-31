@@ -4,10 +4,12 @@
 //! seek, gapless advance. Crossfade (two-sink mixing), speed, skip-silence and
 //! the DSP chain land in phase 6 as sinks wrapped around the same decoder.
 
+pub mod cache;
 pub mod engine;
 pub mod probe;
 pub mod queue;
 pub mod remote;
 
-pub use engine::{Command, Engine, EngineError, EngineEvent};
+pub use cache::StreamCache;
+pub use engine::{Command, Engine, EngineEvent};
 pub use queue::{Queue, QueueOp, QueueSnapshot, Repeat};

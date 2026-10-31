@@ -265,19 +265,62 @@ const PROXY_ALLOWED_HOSTS: &[&str] = &[
     "genius.com",
 ];
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ProxyResponse {
     pub status: u16,
     pub body: String,
 }
 
+const LYRICS_CACHE_HOSTS: &[&str] = &[
+    "lrclib.net",
+    "lyrics-api.binimum.org",
+    "lyrics-api.boidu.dev",
+    "unison.boidu.dev",
+    "lyricsplus.prjktla.my.id",
+    "lyricsplus.binimum.org",
+    "mobileservice.kugou.com",
+    "lyrics.kugou.com",
+    "apic.musixmatch.com",
+    "www.musixmatch.com",
+    "genius.com",
+    "lyrics.paxsenix.org",
+];
+const LYRICS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 #[command]
-pub async fn proxy_get(url: String, patient: Option<bool>) -> Result<Option<ProxyResponse>, String> {
+pub async fn proxy_get(state: StateHandle<'_>, url: String, patient: Option<bool>) -> Result<Option<ProxyResponse>, String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("bad url: {e}"))?;
     let host = parsed.host_str().ok_or("url has no host")?;
     if parsed.scheme() != "https" || !PROXY_ALLOWED_HOSTS.contains(&host) {
         return Err(format!("host not allowed: {host}"));
     }
+
+    // Lyrics content is immutable per track, so successful responses for the
+    // cacheable hosts are disk-cached for 24 h (sha1-keyed, Spotifast-pattern).
+    // Token endpoints and Apple's token scrape are never cached.
+    let cacheable = LYRICS_CACHE_HOSTS.contains(&host) && !url.contains("token");
+    let cache_file = state
+        .lyrics_cache_dir()
+        .join(format!("{:x}.json", {
+            use sha1::Digest as _;
+            let mut h = sha1::Sha1::new();
+            h.update(url.as_bytes());
+            h.finalize()
+        }));
+    if cacheable {
+        if let Ok(meta) = std::fs::metadata(&cache_file) {
+            if let Ok(modified) = meta.modified() {
+                if modified.elapsed().unwrap_or(LYRICS_CACHE_TTL) < LYRICS_CACHE_TTL {
+                    if let Ok(cached) = std::fs::read(&cache_file) {
+                        if let Ok(response) = serde_json::from_slice::<ProxyResponse>(&cached) {
+                            return Ok(Some(response));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let timeout = std::time::Duration::from_secs(if patient.unwrap_or(false) { 15 } else { 6 });
     let client = reqwest::Client::builder()
         .timeout(timeout)
@@ -290,101 +333,17 @@ pub async fn proxy_get(url: String, patient: Option<bool>) -> Result<Option<Prox
         return Ok(None);
     }
     let body = resp.text().await.map_err(|e| e.to_string())?;
-    Ok(Some(ProxyResponse { status, body }))
-}
+    let response = ProxyResponse { status, body };
 
-// ---- Sources (phase 4, addon protocol first) -------------------------------
-
-#[command]
-pub fn sources_get(state: StateHandle<'_>) -> Result<Vec<sources::registry::SourceConfig>, String> {
-    sources::registry::load_configs(&state.db).map_err(err)
-}
-
-#[derive(serde::Serialize)]
-pub struct SourceWithHealth {
-    #[serde(flatten)]
-    pub config: sources::registry::SourceConfig,
-    pub health: sources::SourceHealth,
-}
-
-/// All configured sources with a live health read each, checked concurrently
-/// (each check carries its own timeout).
-#[command]
-pub async fn sources_get_with_health(state: StateHandle<'_>) -> Result<Vec<SourceWithHealth>, String> {
-    let db = state.db.clone();
-    let configs =
-        tauri::async_runtime::spawn_blocking(move || sources::registry::load_configs(&db).map_err(err))
-            .await
-            .map_err(err)??;
-    let mut set = tokio::task::JoinSet::new();
-    for config in configs {
-        set.spawn(async move {
-            let source = sources::addon::AddonSource::new(
-                config.config_id.clone(),
-                config.name.clone(),
-                config.base_url.clone(),
-            );
-            let health = match source.health().await {
-                Ok(h) => h,
-                Err(e) => sources::SourceHealth::Unreachable { reason: e.to_string() },
-            };
-            SourceWithHealth { config, health }
-        });
+    if cacheable {
+        if let Ok(json) = serde_json::to_vec(&response) {
+            let tmp = cache_file.with_extension("tmp");
+            if std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &cache_file)).is_err() {
+                // Cache write failures are never surfaced to lyrics.
+            }
+        }
     }
-    let mut out = Vec::new();
-    while let Some(result) = set.join_next().await {
-        out.push(result.map_err(err)?);
-    }
-    out.sort_by_key(|s| (s.config.kind.rank(), s.config.rank));
-    Ok(out)
-}
-
-#[derive(serde::Deserialize)]
-pub struct NewSource {
-    pub base_url: String,
-}
-
-/// Adds an addon source from a base URL: fetches the manifest to validate the
-/// protocol and derive a display name. A server that doesn't answer with a
-/// valid manifest is refused — a half-working source must not enter the list.
-#[command]
-pub async fn source_add(state: StateHandle<'_>, new: NewSource) -> Result<sources::registry::SourceConfig, String> {
-    let base = new.base_url.trim_end_matches('/').to_string();
-    if !base.starts_with("http://") && !base.starts_with("https://") {
-        return Err("Source URL must start with http:// or https://".into());
-    }
-    let source = sources::addon::AddonSource::new(base.clone(), base.clone(), base.clone());
-    let manifest = source
-        .probe_manifest()
-        .await
-        .map_err(|e| format!("Source did not answer with a valid manifest: {e}"))?;
-    let name = manifest.name.clone().unwrap_or_else(|| manifest.id.clone());
-    let config = sources::registry::SourceConfig {
-        config_id: format!("addon:{}", manifest.id),
-        kind: sources::SourceKind::Addon,
-        name,
-        base_url: base,
-        enabled: true,
-        rank: 0,
-    };
-    let _ = &manifest;
-    sources::registry::add_config(&state.db, config.clone()).map_err(err)?;
-    Ok(config)
-}
-
-#[command]
-pub fn source_remove(state: StateHandle<'_>, config_id: String) -> Result<(), String> {
-    sources::registry::remove_config(&state.db, &config_id).map_err(err)
-}
-
-#[command]
-pub fn source_set_enabled(state: StateHandle<'_>, config_id: String, enabled: bool) -> Result<(), String> {
-    sources::registry::set_enabled(&state.db, &config_id, enabled).map_err(err)
-}
-
-#[command]
-pub fn source_reorder(state: StateHandle<'_>, config_id: String, delta: i32) -> Result<(), String> {
-    sources::registry::reorder(&state.db, &config_id, delta).map_err(err)
+    Ok(Some(response))
 }
 
 // ---- Catalogue search + remote playback -----------------------------------
@@ -407,13 +366,9 @@ pub struct RemoteTrackDto {
 #[command]
 pub async fn yt_search(state: StateHandle<'_>, query: String) -> Result<Vec<app_core::yt_handle::CatalogRow>, String> {
     let yt = state.yt().map_err(err)?;
-    let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _ = db;
-        yt.search(&query, 30)
-    })
-    .await
-    .map_err(err)?
+    tauri::async_runtime::spawn_blocking(move || yt.search(&query, 30))
+        .await
+        .map_err(err)?
 }
 
 #[derive(serde::Deserialize)]
@@ -454,4 +409,95 @@ pub async fn player_play_remote(state: StateHandle<'_>, args: PlayRemoteArgs) ->
     })
     .await
     .map_err(err)?
+}
+
+// ---- Sources (phase 4, addon protocol first) -------------------------------
+
+#[command]
+pub fn sources_get(state: StateHandle<'_>) -> Result<Vec<sources::registry::SourceConfig>, String> {
+    sources::registry::load_configs(&state.db).map_err(err)
+}
+
+#[derive(serde::Serialize)]
+pub struct SourceWithHealth {
+    #[serde(flatten)]
+    pub config: sources::registry::SourceConfig,
+    pub health: sources::SourceHealth,
+}
+
+/// All configured sources with a live health read each, checked concurrently.
+#[command]
+pub async fn sources_get_with_health(state: StateHandle<'_>) -> Result<Vec<SourceWithHealth>, String> {
+    let db = state.db.clone();
+    let configs =
+        tauri::async_runtime::spawn_blocking(move || sources::registry::load_configs(&db).map_err(err))
+            .await
+            .map_err(err)??;
+    let mut set = tokio::task::JoinSet::new();
+    for config in configs {
+        set.spawn(async move {
+            let source = sources::addon::AddonSource::new(
+                config.config_id.clone(),
+                config.name.clone(),
+                config.base_url.clone(),
+            );
+            let health = match source.health().await {
+                Ok(h) => h,
+                Err(e) => sources::SourceHealth::Unreachable { reason: e.to_string() },
+            };
+            SourceWithHealth { config, health }
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(result) = set.join_next().await {
+        out.push(result.map_err(err)?);
+    }
+    out.sort_by_key(|s| (s.config.kind.rank(), s.config.rank));
+    Ok(out)
+}
+
+#[derive(serde::Deserialize)]
+pub struct NewSource {
+    pub base_url: String,
+}
+
+/// Adds an addon source from a base URL: fetches the manifest to validate the
+/// protocol and derive a display name.
+#[command]
+pub async fn source_add(state: StateHandle<'_>, new: NewSource) -> Result<sources::registry::SourceConfig, String> {
+    let base = new.base_url.trim_end_matches('/').to_string();
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err("Source URL must start with http:// or https://".into());
+    }
+    let source = sources::addon::AddonSource::new(base.clone(), base.clone(), base.clone());
+    let manifest = source
+        .probe_manifest()
+        .await
+        .map_err(|e| format!("Source did not answer with a valid manifest: {e}"))?;
+    let name = manifest.name.clone().unwrap_or_else(|| manifest.id.clone());
+    let config = sources::registry::SourceConfig {
+        config_id: format!("addon:{}", manifest.id),
+        kind: sources::SourceKind::Addon,
+        name,
+        base_url: base,
+        enabled: true,
+        rank: 0,
+    };
+    sources::registry::add_config(&state.db, config.clone()).map_err(err)?;
+    Ok(config)
+}
+
+#[command]
+pub fn source_remove(state: StateHandle<'_>, config_id: String) -> Result<(), String> {
+    sources::registry::remove_config(&state.db, &config_id).map_err(err)
+}
+
+#[command]
+pub fn source_set_enabled(state: StateHandle<'_>, config_id: String, enabled: bool) -> Result<(), String> {
+    sources::registry::set_enabled(&state.db, &config_id, enabled).map_err(err)
+}
+
+#[command]
+pub fn source_reorder(state: StateHandle<'_>, config_id: String, delta: i32) -> Result<(), String> {
+    sources::registry::reorder(&state.db, &config_id, delta).map_err(err)
 }
