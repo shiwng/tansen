@@ -222,6 +222,34 @@ Verification: `cargo test --workspace` 28/0/2 (playback 15 incl. the new
 histogram test); stress script green at 300 s, 30 s and 15 s; tansen + playback
 builds clean.
 
+## M5 — normalized playback types in the core crate (2026-10-31)
+
+New `crates/app-core/src/playback_types.rs` — pure types, no I/O, no Tauri
+deps, **no serde** (no existing IPC consumes them; the derive gets added the
+day one does). The vocabulary: `EntryId` (queue identity — an id, never a
+positional index), `Status` {Idle, Resolving, Buffering, Playing, Paused,
+Error(kind)} with `ErrorKind` {Device, Resolve, Decode, Io} mirroring the
+engine's existing failure classes, `Anchor` {pos_ms, rate 0|1},
+`PlaybackState` {rev, status, entry, queue_rev, anchor, volume}, and
+`Command` {Play{entry}, Pause, Resume, Next, Prev, Seek{ms}, SetVolume,
+Enqueue{tracks, placement}} with `Placement` {Next, Append} mirroring the
+existing `PlayMode` semantics.
+
+The centerpiece is `validate_transition(from, to) -> Result` — the pure law
+for status changes: an explicit legal-edge graph per status, **the anchor
+rule (rate 1 iff `Playing`, 0 otherwise) enforced on both endpoints**,
+monotonic `rev`, same-status refused, volume in [0,1]. Six unit tests cover
+the happy walk (idle→resolving→buffering→playing→paused→playing→idle), error
+recovery edges (resolving→error→resolving, playing→error), six illegal edges
+(idle→paused, resolving→paused, buffering→resolving, paused→buffering,
+error→paused, idle→buffering), same-status refusal, the rate rule in both
+directions, and rev/volume shape checks.
+
+Groundwork only — nothing calls it yet (the engine keeps its own state until
+a future milestone migrates it). Verification: `cargo test --workspace`
+**34 passed / 0 failed / 2 ignored** (app-core 3 → 9); builds clean; five-crate
+layout untouched.
+
 ## 5. Blocked (with reasons — never simulated)
 
 | Area | Reason |

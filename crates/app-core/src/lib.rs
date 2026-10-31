@@ -3,6 +3,7 @@
 pub mod history;
 pub mod media;
 pub mod persist_state;
+pub mod playback_types;
 pub mod remote;
 pub mod state;
 pub mod yt_handle;

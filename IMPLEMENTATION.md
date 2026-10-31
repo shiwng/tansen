@@ -135,6 +135,7 @@ drains with a 100 ms timeout so ticks still run). Decoders erase to
 | File | Role |
 |---|---|
 | `src/state.rs` | `AppState`: owns Db, Engine, Scanner, Media, scan_events channel, cached `YtHandle`. Every service the UI drives lives here (folders/tracks/scan/playlists/settings/play_remote/…). `restore_playback()` re-loads the saved queue paused at the saved index (dead local files dropped, remote entries kept). `migrate_legacy_data_dir()` renames pre-0.3.0 `bitchord-desktop` → `tansen` once. |
+| `src/playback_types.rs` | Normalized playback types (M5, pure — no I/O, no Tauri, no serde yet): `EntryId` (queue identity, never an index), `Status` {Idle/Resolving/Buffering/Playing/Paused/Error(kind)}, `Anchor` {pos_ms, rate 0\|1}, `PlaybackState` {rev, status, entry, queue_rev, anchor, volume}, `Command` {Play/Pause/Resume/Next/Prev/Seek/SetVolume/Enqueue{tracks, placement}}, and `validate_transition` — the pure law for status changes (explicit edge graph + the anchor rule: the clock runs only while `Playing`). Groundwork for a future engine rework; nothing calls it yet. |
 | `src/media.rs` | souvlaki wrapper: created/attached on the main thread (macOS requirement), updated from any thread, OS pushes throttled to 2 Hz. |
 | `src/history.rs` | Plain thread over engine events; one `play_history` row per local track start (`id > 0`). |
 | `src/persist_state.rs` | Plain thread; flushes queue/index/position/repeat to `playback_state`. |
@@ -346,7 +347,7 @@ Events back: `player://event`, `scan://progress`, `scan://done`.
 | `cargo test` (library/persistence/sources) | 10 | Migration-2 round-trip, album/artist grouping rules, scanner e2e on a real WAV incl. rescan dedupe + missing marking, addon protocol vs mock server, registry ordering |
 | `cargo test -p sources --test yt_sidecar -- --ignored` | 1 | The live path: sidecar launch → search → `prefer=aac` stream → 5 s decode through the ranged reader (needs network + built jar) |
 | `cargo test -p sources --test yt_measure -- --ignored` | 1 | M3 sidecar measurements: spawn→ready, JVM RSS, resolve p50/p95 over 30 calls, first-play latency (resolve → ranged reader → first audio). Measurement only, no assertions beyond sanity |
-| `cargo test` (app-core) | 3 | Watcher phases, restart persistence incl. remote-entry restore |
+| `cargo test` (app-core) | 9 | Watcher phases, restart persistence incl. remote-entry restore, playback-type transition law (6: happy walk, error recovery, illegal edges, same-status, rate rule, rev/volume) |
 | `pnpm test` (vitest) | 32 | Lyric parsers (15), LyricClock (10), repository selection (1), reorderMove (6) |
 | `pnpm build` | — | tsc strict + production bundle |
 | `scripts/bench/run.sh` | — | M1 baseline harness: release build, 5 runs of start→first-paint, memory footprint (app process; sidecar JVM when running), 60 s idle and 60 s playing CPU (median table). Env-gated autoplay hook, no behavior change. |
