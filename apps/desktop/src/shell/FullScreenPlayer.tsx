@@ -67,6 +67,25 @@ function Scrubber() {
 
 const transportButton =
   'grid place-items-center rounded-full transition-[background-color,scale] duration-100 ease-in enabled:hover:bg-quinary enabled:active:scale-90 disabled:opacity-40';
+/**
+ * F5: the sanctioned stream-info read-only query's UI — one text line under
+ * Up Next, shown only with the existing nerd-stats setting. Event-driven:
+ * the store fetches on entry change; this never polls.
+ */
+function StreamInfoLine() {
+  const show = usePlayer((s) => s.showNerdStats);
+  const info = usePlayer((s) => s.streamInfo);
+  if (!show || !info) return null;
+  const flags = [info.isFallback && 'fallback', info.belowRequest && 'below requested quality'].filter(Boolean);
+  return (
+    <p className="type-callout text-secondary">
+      {info.source}
+      {info.facts ? ` — ${info.facts}` : ''}
+      {flags.length > 0 ? ` · ${flags.join(' · ')}` : ''}
+    </p>
+  );
+}
+
 // Shuffle and repeat, when on: full white on the mesh, where red would clash.
 const toggle = `${transportButton} size-9 text-tertiary aria-pressed:text-primary`;
 const skip = `${transportButton} size-12 text-primary`;
@@ -136,6 +155,7 @@ export function FullScreenPlayer() {
   const { pathname } = useLocation();
   const openedAt = useRef(pathname);
   const playing = usePlayer((s) => s.status === 'playing' || s.status === 'buffering');
+  const fullScreen = useUi((s) => s.fullScreen);
   const setFullScreen = useUi((s) => s.setFullScreen);
   // Music-video playback is a catalogue feature, not implemented on desktop.
   const video = false;
@@ -204,7 +224,11 @@ export function FullScreenPlayer() {
     }
   };
 
-  if (!nowPlaying) return null;
+  // F5/F8: render only when the UI flag opens the overlay. Restoring a
+  // persisted queue sets nowPlaying at boot — without this gate the
+  // full-screen player would mount at launch over the whole window, and
+  // its close button (which only clears the flag) could never dismiss it.
+  if (!nowPlaying || !fullScreen) return null;
   const { videoId, title, artist } = nowPlaying;
   const album = track?.album ?? null;
   // With a right-hand column; on narrow windows that column fills the screen and the controls sit under it, without the artwork.
@@ -346,6 +370,7 @@ export function FullScreenPlayer() {
             aria-label="Up Next"
           >
             <UpNext />
+            <StreamInfoLine />
           </section>
         )}
       </div>
