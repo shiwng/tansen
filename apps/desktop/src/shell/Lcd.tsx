@@ -15,7 +15,7 @@ import { albumPageFor, artistPageFor } from './nowPlayingLinks';
 import { useScrubber } from './useScrubber';
 
 // The title and each artist: plain until hovered, then underlined on their own.
-export const pageLink = 'cursor-pointer text-start hover:underline focus-visible:underline aria-busy:cursor-progress';
+export const pageLink = 'cursor-default text-start hover:underline focus-visible:underline aria-busy:cursor-progress';
 
 /**
  * A name in the LCD that opens a page: a plain link when the page is known,
@@ -195,7 +195,7 @@ function Progress() {
   return (
     // The hit area: taller than the 2px line it carries.
     <div
-      className="group/scrub absolute inset-x-0 bottom-0 h-3.5 cursor-pointer touch-none"
+      className="group/scrub absolute inset-x-0 bottom-0 h-3.5 touch-none"
       data-scrubber
       data-dragging={dragging || undefined}
       {...handlers}

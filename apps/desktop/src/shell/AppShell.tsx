@@ -19,7 +19,7 @@ export function AppShell() {
     <div className="grid h-full grid-rows-[minmax(0,1fr)_auto]">
       <div className="relative min-h-0 overflow-hidden">
         <Sidebar />
-        <div className="absolute inset-0 flex flex-col pl-(--web-navigation-width) max-sm:pl-0">
+        <div className="absolute inset-0 flex flex-col bg-page bg-clip-content pl-(--web-navigation-width) max-sm:bg-clip-border max-sm:pl-0">
           <MobileTopBar />
           {/* Music's toolbar: the centred search field and the scope control. */}
           <Toolbar />

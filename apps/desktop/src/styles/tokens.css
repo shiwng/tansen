@@ -156,12 +156,14 @@
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+/* Dark is attribute-driven (html[data-theme], synced from the OS by
+   shell/chrome.ts) so both branches are testable without changing the
+   system appearance, and glisse's own data-theme handling agrees. */
+:root[data-theme='dark'] {
     color-scheme: dark;
 
-    --pageBG: #1f1f1f;
-    --pageBG-rgb: 31, 31, 31;
+    --pageBG: #1f1f22;
+    --pageBG-rgb: 31, 31, 34;
     --healthDot: #32d74b;
 
     --systemPrimary: #ffffffeb;
@@ -191,7 +193,7 @@
     --vibrantDivider: #ebebf530;
 
     --glassMaterialBackground: #26262899;
-    --pillMaterialBackground: var(--glassMaterialBackground);
+    --pillMaterialBackground: #212121;
     --glassMaterialShadowColor: #00000033;
     --glassMaterialInnerStroke: #ffffff;
     --glassMaterialInnerStrokeAlpha: 0.25;
@@ -200,7 +202,10 @@
     --systemStandardThickMaterialSover: #282828b3;
     --systemHeaderMaterialSover: #1e1e1ecc;
 
-    --navSidebarSelectedState: #ffffff0d;
+    /* Selection over vibrancy must be an alpha overlay: the material's own
+       colour varies with the wallpaper (run-1 measured #26262b, today
+       #444446). #434347 on the old sample ≈ white @ 11%. */
+    --navSidebarSelectedState: #ffffff1c;
     --tracklistHoverColor: #ffffff0f;
     --shelfBG: #ffffff0d;
     --opaqueShelfBG: #2b2b2b;
@@ -219,7 +224,6 @@
 
     --skeleton-fill: #ffffff12;
     --skeleton-shimmer: #ffffff14;
-  }
 }
 
 /* Increased contrast: drop the translucency, as Apple's _IC tokens do. */
@@ -232,8 +236,8 @@
   }
 }
 
-@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
-  :root {
+@media (prefers-contrast: more) {
+  :root[data-theme='dark'] {
     --glassMaterialBackground: #0e0e0e;
     --systemSecondary: #ffffffb3;
     --labelDivider: #ffffff4d;

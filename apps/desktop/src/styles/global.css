@@ -296,12 +296,25 @@
   body {
     font: var(--body);
     color: var(--systemPrimary);
-    background-color: var(--pageBG);
+    /* Transparent: the main content column paints --pageBG, and the sidebar
+       column stays clear so the native sidebar vibrancy shows through. */
+    background-color: transparent;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     /* Apple's player is an app, not a document: no rubber-band on the page. */
     overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* App chrome behaves like native controls, not document text. */
+  img {
+    -webkit-user-drag: none;
+  }
+
+  /* Inactive window: Music dims its chrome; traffic lights dim natively. */
+  html[data-window-inactive] .chrome-dim {
+    opacity: 0.6;
   }
 
   #root {
@@ -327,6 +340,8 @@
   a {
     color: inherit;
     text-decoration: none;
+    /* Rows and links use the arrow cursor, as in Music. */
+    cursor: default;
   }
 
   button {
@@ -336,8 +351,8 @@
     border: 0;
     padding: 0;
     margin: 0;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
+    /* Music shows the arrow cursor on rows and controls. */
+    cursor: default;
   }
 
   button:disabled {

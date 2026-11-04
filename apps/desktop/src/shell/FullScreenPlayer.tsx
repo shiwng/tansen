@@ -44,7 +44,7 @@ function Scrubber() {
   return (
     <div className="group/scrub mt-3.5" data-dragging={dragging || undefined}>
       {/* A taller hit area than the line it carries. */}
-      <div className="group/hit flex h-4 cursor-pointer touch-none items-center" {...handlers}>
+      <div className="group/hit flex h-4 touch-none items-center" {...handlers}>
         <div
           className="relative h-1 flex-1 overflow-hidden rounded-[999px] bg-quaternary transition-[height] duration-120 ease-in group-hover/hit:h-2 group-data-dragging/scrub:h-2"
           aria-hidden="true"

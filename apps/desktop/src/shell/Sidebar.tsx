@@ -70,11 +70,13 @@ export function Sidebar() {
     <>
       {/* Below 484px the sidebar is a drawer opened from the top bar's menu button. */}
       <nav
-        className="absolute inset-y-0 left-0 z-(--z-web-chrome) flex w-(--web-navigation-width) flex-col glass-material max-sm:w-[min(300px,82vw)] max-sm:-translate-x-full max-sm:shadow-glass max-sm:transition-transform max-sm:duration-(--duration-panel) max-sm:ease-panel max-sm:data-[open=true]:translate-none"
+        className="chrome-dim absolute inset-y-0 left-0 z-(--z-web-chrome) flex w-(--web-navigation-width) select-none flex-col max-sm:w-[min(300px,82vw)] max-sm:-translate-x-full max-sm:bg-page max-sm:shadow-glass max-sm:transition-transform max-sm:duration-(--duration-panel) max-sm:ease-panel max-sm:data-[open=true]:translate-none"
         data-open={drawerOpen}
         aria-label="Main"
       >
-        {/* The title bar is overlaid, so the first row sits below the traffic lights. */}
+        {/* The title bar is overlaid, so the first row sits below the traffic
+            lights; the empty band above the rows drags the window. */}
+        <div data-tauri-drag-region className="absolute inset-x-0 top-0 h-[52px]" />
         <div className="min-h-0 flex-1 overflow-y-auto pt-[52px] pr-3 pl-3 [scrollbar-width:none]">
           <NavList items={PRIMARY} onNavigate={close} />
           <h2 className={sectionHeader}>Library</h2>
