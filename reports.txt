@@ -969,3 +969,43 @@ Manual script:
    (screenshots read directly). Music.app state restored: YES (untouched;
    base capture only). AUDIBLE CONFIRMATION: PENDING OWNER. Stopped at the
    OWNER CHECKPOINT per the brief — waiting for "continue" to start Batch 1.
+
+## 2026-11-04 — UI REPLICA v3, BATCH 1 report (foundation; branch ui-replica, commit 59a91cb)
+
+1. Built: data-theme token system (index.html bootstrap + shell/chrome.ts:
+   OS sync, inactive-window state, PROD context-menu guard); native vibrancy
+   made visible (body transparent, main column bg-page + bg-clip-content,
+   sidebar glass-material removed); drag regions (Toolbar + 52pt sidebar
+   strip + core:window:allow-start-dragging); native-feel hygiene (arrow
+   cursors on controls/links, select-none on chrome roots only, img
+   user-drag none, tap-highlight, inactive dim); colour corrections (dark
+   pageBG #1f1f22, dark pill #212121, dark selection → white-alpha
+   #ffffff1c after the solid #434347 proved invisible on live vibrancy).
+   Files: tokens.css, global.css, chrome.ts (new), main.tsx, AppShell.tsx,
+   Sidebar.tsx, Toolbar.tsx, PlayerBar.tsx, index.html, capabilities.
+   Dependencies added: none.
+2. Verified by capture (2560×1640 window-only): dark branch — sidebar
+   vibrancy #444446 vs content #1f1f22, clean x208 boundary, pill #212121,
+   selection #59595a; light branch (forced data-theme, reverted) — content
+   #ffffff, pill #fefefe; inactive — material #444446→#28282b (native) +
+   label glyph #f0f0f0→#9f9fa0 (chrome-dim 0.6). Sidebar material value is
+   wallpaper-dependent by nature (run-1 note stands).
+3. Gates: vitest 16 files / 72 tests pass; tsc 0; pnpm build ✓;
+   check-release-lab.sh ✓; cargo check ✓ (capabilities changed).
+4. NOT RUN: interactive regression (search/covers/Play/Settings via clicks),
+   drag verification, selection spot-check — synthetic input (CGEvent) and
+   AX are both untrusted until the owner restarts the host; input.swift
+   gained a drag subcommand so these run first in the next session.
+   Light-branch capture used a temporary sync suspend (reverted; commit
+   clean). Viewport zoom lock omitted (no demonstrated requirement);
+   separator refinement omitted (logged); Batch-2 geometry tokens not added.
+5. Regression: no backend/IPC/engine change; production routes untouched
+   (lab guards still green); one installed app untouched (dev only).
+6. Owner items: restart ZCode → AX + synthetic input unblock (drag test,
+   interactive regression, live Music captures); light-appearance capture
+   still wanted once for the live-material pairing.
+7. Visual fidelity verified by: NUMERIC METRICS + VISION REVIEW (captures
+   read directly). Music.app state restored: YES (untouched).
+   AUDIBLE CONFIRMATION: PENDING OWNER. Batch 1 complete — STOP for owner
+   review; Batch 2 (shell: sidebar geometry, toolbar/search/scope, glass
+   player) on "continue".

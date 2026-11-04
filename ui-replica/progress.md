@@ -324,3 +324,51 @@ critical spike item unclosable).
 Next (after owner "continue"): Batch 1 foundation (tokens, window chrome,
 native-feel hygiene, sidebar vibrancy region), live captures once the host
 restart restores AX, then Batch 2 shell with the glass player.
+
+## Batch 1 — FOUNDATION (2026-11-04, commit 59a91cb on ui-replica)
+
+Theme system: tokens now attribute-driven — `:root[data-theme='dark']`
+replaces the dark media query; inline bootstrap in index.html sets the
+attribute before first paint; `shell/chrome.ts` (new) syncs it with the OS
+(follow-system, like Music), listens `tauri://focus`/`tauri://blur` for the
+inactive state (`data-window-inactive` → `.chrome-dim` at 0.6), and guards
+the default context menu in PROD builds only. Both token branches verified
+by captures without touching the owner's appearance: dark (system) + forced
+light (temporary sync suspend, reverted). glisse + tokens now agree on
+data-theme.
+
+Vibrancy: body transparent; main content column owns `--pageBG`
+(`bg-page bg-clip-content` — the bg-clip-content is essential: the column is
+inset-0 and would otherwise paint over the sidebar). Sidebar dropped
+`glass-material` — native Sidebar material shows (#444446 sampled over the
+current wallpaper, wallpaper-dependent; boundary at x208 clean). Found and
+fixed during verification: solid dark selection #434347 was invisible on
+today's material — replaced with white-alpha overlay #ffffff1c (the correct
+model over varying vibrancy; renders #59595a, verified).
+
+Chrome: drag regions on Toolbar root + a 52 pt sidebar strip
+(`data-tauri-drag-region`; `core:window:allow-start-dragging` added to
+capabilities); hygiene: select-none on the three chrome roots, arrow cursor
+on buttons/links/scrubbers (Music-native), img user-drag none, tap-highlight
+global, PROD-only context-menu guard (text fields exempt).
+
+Verified: dark branch (sidebar #444446 / content #1f1f22 / pill #212121 /
+selection #59595a), light branch (content #ffffff / pill #fefefe), inactive
+dim (glyph #f0f0f0→#9f9fa0 + material #444446→#28282b native), gates (vitest
+16/72, tsc 0, build ✓, release-lab gate ✓, cargo check ✓).
+
+NOT RUN / deferred (blockers + reasons):
+- Drag + selection + interactive regression (search/Play/settings): synthetic
+  input blocked — CGEvent post and AX both untrusted until the owner
+  restarts the host (grant is ON; trust cache stale). input.swift gained a
+  `drag` subcommand for next time.
+- Material/page theme coupling: vibrancy follows the OS; under the app's
+  follow-OS design they always pair. If an in-app theme override is ever
+  wanted, NSWindow appearance sync becomes a new item.
+- Light sidebar selection exactness: alpha over wallpaper-dependent material;
+  logged, not guessed.
+- Viewport zoom lock: omitted (no demonstrated requirement).
+- Separator #e5e5e5 refinement: omitted (systemGray5 is Apple's real palette
+  value; consumer split not established).
+- Batch-2 geometry tokens: deliberately not added (consumed when sidebar/
+  toolbar/pill geometry lands).
