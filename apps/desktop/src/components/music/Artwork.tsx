@@ -1,9 +1,59 @@
-import { useState, type CSSProperties } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { sizedArtwork } from '@/lib/artwork';
 
-function resolveSrc(src: string): string {
-  return src.startsWith('http') ? src : convertFileSrc(src, 'art');
+const remoteCache = new Map<string, string>();
+
+/**
+ * True for a URL that already points at the `art://` protocol: queue rows and
+ * library rows store the converted URL, so it must not be converted twice
+ * (a double conversion 404s in `serve_art`).
+ */
+export function isArtworkUrl(src: string): boolean {
+  return src.startsWith('art://') || src.startsWith('http://art.localhost/');
+}
+
+/** The local `art://` URL for cached artwork, or null when it is not ready. */
+export function useArtworkUrl(src: string | null): string | null {
+  const [resolved, setResolved] = useState<string | null>(() => {
+    if (!src) return null;
+    if (isArtworkUrl(src)) return src;
+    return src.startsWith('http') ? remoteCache.get(src) ?? null : convertFileSrc(src, 'art');
+  });
+  useEffect(() => {
+    if (!src) {
+      setResolved(null);
+      return;
+    }
+    if (isArtworkUrl(src)) {
+      setResolved(src);
+      return;
+    }
+    if (!src.startsWith('http')) {
+      setResolved(convertFileSrc(src, 'art'));
+      return;
+    }
+    const cached = remoteCache.get(src);
+    if (cached) {
+      setResolved(cached);
+      return;
+    }
+    let active = true;
+    void invoke<string>('fetch_artwork', { url: src })
+      .then((path) => {
+        if (!active) return;
+        const local = convertFileSrc(path, 'art');
+        remoteCache.set(src, local);
+        setResolved(local);
+      })
+      .catch(() => {
+        if (active) setResolved(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [src]);
+  return resolved;
 }
 
 interface ArtworkProps {
@@ -27,12 +77,12 @@ const frame = 'relative isolate w-full overflow-hidden bg-joe artwork-stroke';
  */
 export function Artwork({ src, displayWidth, aspect = 1, radius, className, eager }: ArtworkProps) {
   const [loaded, setLoaded] = useState(false);
-  // googleusercontent answers bursts with 429 (lib/artwork.ts). A failed load
-  // is retried once after a pause, then falls back to YouTube's own URL.
   const [attempt, setAttempt] = useState(0);
-  // Local artwork rides the art:// protocol; catalogue thumbnails are plain
-  // https URLs and pass through untouched.
-  const resolved = src ? resolveSrc(src) : null;
+  const resolved = useArtworkUrl(src);
+  useEffect(() => {
+    setLoaded(false);
+    setAttempt(0);
+  }, [src]);
   const sized = resolved ? sizedArtwork(resolved, displayWidth, aspect) : null;
   const url = attempt >= 2 || sized === resolved ? resolved : sized;
   return (
@@ -54,10 +104,7 @@ export function Artwork({ src, displayWidth, aspect = 1, radius, className, eage
           decoding="async"
           draggable={false}
           onLoad={() => setLoaded(true)}
-          onError={() => {
-            if (attempt === 0) setTimeout(() => setAttempt(1), 1500);
-            else if (attempt === 1 && url !== src) setAttempt(2);
-          }}
+          onError={() => setAttempt((value) => Math.min(value + 1, 2))}
         />
       )}
     </div>

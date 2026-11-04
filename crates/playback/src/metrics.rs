@@ -17,7 +17,7 @@ use std::time::Duration;
 #[cfg(debug_assertions)]
 pub mod audio {
     use super::Duration;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     /// Histogram bucket upper bounds in nanoseconds. The last bucket is open.
@@ -32,6 +32,8 @@ pub mod audio {
         pub reads: AtomicU64,
         pub buckets: [AtomicU64; 6],
         pub slowest_ns: AtomicU64,
+        /// G: |sample| bits of the loudest sample since the last drain.
+        pub peak_bits: AtomicU32,
     }
 
     static METRICS: OnceLock<AudioMetrics> = OnceLock::new();
@@ -43,6 +45,7 @@ pub mod audio {
             reads: AtomicU64::new(0),
             buckets: Default::default(),
             slowest_ns: AtomicU64::new(0),
+            peak_bits: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -72,6 +75,11 @@ pub mod audio {
 
     /// One-line summary for the periodic logger. Percentiles are quantized to
     /// histogram buckets — the honest resolution this proxy affords.
+    /// G: drain the sink peak (f32 |sample| bits) for evidence capture.
+    pub fn drain_peak() -> f32 {
+        f32::from_bits(metrics().peak_bits.swap(0, Ordering::Relaxed))
+    }
+
     pub fn summary() -> String {
         let m = metrics();
         let errors = m.stream_errors.load(Ordering::Relaxed);

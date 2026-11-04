@@ -9,7 +9,7 @@ pub mod models;
 pub mod repo;
 pub mod views;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -42,6 +42,16 @@ impl Db {
         let db = Self { conn: Mutex::new(conn) };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Opens an additional read-only connection to the same WAL database
+    /// (M11). Queries through it never contend with the writer for the
+    /// write lock. Open it after `open` — migrations run on the writer.
+    /// Writes through this handle fail at the SQLite level (READ_ONLY flag),
+    /// which is the guard, not the type system.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
     pub fn in_memory() -> Result<Self> {
@@ -143,6 +153,30 @@ const MIGRATIONS: &[&str] = &[
         position_sec REAL NOT NULL DEFAULT 0,
         repeat_mode  TEXT NOT NULL DEFAULT 'off',
         updated_at   INTEGER NOT NULL
+    );
+    "#,
+    // 3 — seed built-in source config (YouTube + Local, both enabled) so a
+    // fresh or pre-S2 database has a defined source roster. Forward-only.
+    r#"
+    INSERT OR IGNORE INTO settings(key, value) VALUES(
+        'sources_config',
+        '[{"config_id":"yt","kind":"youtube","name":"YouTube Music","base_url":"","enabled":true,"rank":0},{"config_id":"local","kind":"local","name":"Local Files","base_url":"","enabled":true,"rank":0}]'
+    );
+    "#,
+    // 4 — remote tracks (S6): metadata for source-keyed queue entries. The
+    // table is additive; local `tracks` semantics are untouched. Text
+    // columns are bounded by the upsert (S6).
+    r#"
+    CREATE TABLE remote_tracks (
+        id            INTEGER PRIMARY KEY,
+        key_source    TEXT NOT NULL,
+        key_id        TEXT NOT NULL,
+        title         TEXT NOT NULL DEFAULT '',
+        artist        TEXT NOT NULL DEFAULT '',
+        album         TEXT,
+        duration_sec  REAL NOT NULL DEFAULT 0,
+        artwork_url   TEXT,
+        UNIQUE(key_source, key_id)
     );
     "#,
 ];

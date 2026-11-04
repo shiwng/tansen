@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+netguard = { path = "../netguard" }
 persistence = { path = "../persistence" }
 rodio = { version = "0.21", features = ["symphonia-all"] }
 symphonia = { version = "0.5", features = ["all"] }

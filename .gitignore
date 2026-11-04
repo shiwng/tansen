@@ -8,3 +8,13 @@ apps/desktop/src-tauri/resources/
 # graphify artifacts (generated)
 graphify-out/
 raw/
+
+# UI replica: reference screenshots and study clones are local-only
+ui-reference/
+ui-replica/compare/
+ui-replica/captures/
+ui-study/
+
+# UI replica dev tooling
+ui-replica/.venv/
+ui-replica/ax/

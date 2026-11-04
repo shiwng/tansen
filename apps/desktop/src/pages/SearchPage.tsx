@@ -1,49 +1,114 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { invoke } from '@tauri-apps/api/core';
 import { Segmented } from '@/components/Segmented';
-import { SearchField } from '@/components/music/SearchField';
+import { LogoMark } from '@/components/icons/LogoMark';
 import { ShelfView } from '@/components/music/ShelfView';
 import { TrackList } from '@/components/music/TrackList';
+import { hrefFor } from '@/components/music/links';
 import { q, rowsToTracks, sourceFor } from '@/lib/rows';
-import type { Track } from '@/data/music/types';
+import {
+  type SearchTrackRow,
+} from '@/lib/searchGroups';
 
 /** Search: the local library by default; YouTube Music behind the catalogue flag. */
+/** Search: the browse page when idle, results for the query in the URL. */
 export function SearchPage() {
-  const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useState<'library' | 'youtube'>('library');
+  const [params] = useSearchParams();
+  const [filter, setFilter] = useState<DiscoveryFilter>('songs');
   const query = params.get('q') ?? '';
+  const libraryScope = params.get('scope') === 'library';
+
+  if (query.trim() === '') return <BrowseHome />;
 
   return (
     <div>
-      <div className="mx-(--body-gutter) pt-11 pb-5">
-        <div className="flex items-center gap-3">
-          <SearchField
-            initial={query}
-            onSearch={(v) => {
-              if (v) setParams({ q: v });
-              else setParams({});
-            }}
-          />
+      {!libraryScope && (
+        <div className="mx-(--body-gutter) max-w-full overflow-x-auto pt-2 pb-5">
           <Segmented
-            value={tab}
-            onChange={setTab}
+            value={filter}
+            onChange={setFilter}
             options={[
-              { value: 'library', label: 'Library' },
-              { value: 'youtube', label: 'YouTube Music' },
+              { value: 'songs', label: 'Songs' },
+              { value: 'videos', label: 'Videos' },
+              { value: 'albums', label: 'Albums' },
+              { value: 'artists', label: 'Artists' },
+              { value: 'playlists', label: 'Playlists' },
             ]}
           />
         </div>
-      </div>
-
-      {query.trim() === '' ? (
-        <p className="mx-(--body-gutter) type-body text-secondary">Type to search.</p>
-      ) : tab === 'library' ? (
-        <LibraryResults query={query} />
-      ) : (
-        <YouTubeResults query={query} />
       )}
+      {libraryScope ? <LibraryResults query={query} /> : <SourcesResults query={query} filter={filter} />}
+    </div>
+  );
+}
+
+/** Genre shortcuts: real searches, not catalogue artwork (see ui-replica/progress.md). */
+const CATEGORIES: Array<[string, string, string]> = [
+  ['Bollywood', '#8f5bd6', '#3f2a73'],
+  ['Punjabi', '#7d57c9', '#2f2450'],
+  ['Tamil', '#7a5bd0', '#33255c'],
+  ['Pop', '#ff375f', '#b3123a'],
+  ['Telugu', '#8f6bd8', '#3a2a6b'],
+  ['Charts', '#7f7a1f', '#3c3a0d'],
+  ['Rock', '#ff453a', '#8c1d16'],
+  ['Metal', '#e5484d', '#7c1618'],
+  ['Hip-Hop', '#b86bd6', '#4a2364'],
+  ['Dance', '#12b5a5', '#0a5d55'],
+  ['Love', '#ff6b8a', '#a52a41'],
+  ['Fitness', '#7ac943', '#2f5c14'],
+  ['Sleep', '#5a6bd8', '#25306b'],
+  ['Focus', '#e0a21a', '#7a5306'],
+  ['Jazz', '#c98a3a', '#5c3a12'],
+  ['Live Music', '#b8871f', '#543d0b'],
+  ['K-Pop', '#ff5d8f', '#a01f47'],
+  ['Indie', '#3fbf8f', '#155842'],
+];
+
+/** Browse Categories, drawn from genre names — every tile runs a real search. */
+function BrowseHome() {
+  const navigate = useNavigate();
+  const sources = useQuery({
+    queryKey: ['sources'],
+    queryFn: () => invoke<{ id: string; name: string; kind: string; enabled: boolean }[]>('sources_get'),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const catalogueOff = sources.isSuccess && !sources.data.some((source) => source.enabled && source.kind !== 'local');
+
+  return (
+    <div>
+      {catalogueOff && (
+        <div className="mx-(--body-gutter) mt-2 flex items-center gap-5 rounded-[12px] bg-[#0a6cff] px-6 py-3.5 text-white">
+          <LogoMark size={26} className="flex-none" />
+          <span className="h-8 w-px flex-none bg-white/30" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate type-body-emphasized">Catalogue search is off.</p>
+            <p className="truncate type-callout text-white/80">Turn on a source to search and play its music.</p>
+          </div>
+          <Link to="/settings" className="flex-none rounded-[6px] bg-white px-4 py-1.5 type-callout-emphasized text-black">
+            Open Settings
+          </Link>
+        </div>
+      )}
+      <div className="mx-(--body-gutter) pt-5">
+        <h1 className="mb-4 type-title-2-emphasized">Browse Categories</h1>
+        <div className="grid grid-cols-2 gap-[17px] md:grid-cols-3 lg:grid-cols-5">
+          {CATEGORIES.map(([label, from, to]) => (
+            <button
+              key={label}
+              onClick={() => navigate(`/search?q=${encodeURIComponent(label)}`)}
+              className="relative aspect-video overflow-hidden rounded-[8px] text-start"
+              style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
+            >
+              <span className="absolute bottom-2 left-3 type-body-emphasized text-white [text-shadow:0_1px_2px_#0006]">
+                {label}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -134,49 +199,138 @@ function LibraryResults({ query }: { query: string }) {
   );
 }
 
-/** One YouTube row from the sidecar's search. */
-interface YtRow {
-  video_id: string;
+type DiscoveryFilter = 'songs' | 'videos' | 'albums' | 'artists' | 'playlists';
+
+interface DiscoveryTrack {
+  key: { source: string; id: string };
   title: string;
   artist: string;
   album: string | null;
   duration_sec: number | null;
   thumbnail_url: string | null;
+  artists: Array<{ name: string; browse_id: string | null }>;
+  album_id: string | null;
+  is_video: boolean;
+  explicit: boolean;
+  playable: boolean;
 }
 
-function YouTubeResults({ query }: { query: string }) {
-  const yt = useQuery({
-    queryKey: ['yt', 'search', query],
-    queryFn: () => invoke<YtRow[]>('yt_search', { query }),
+interface DiscoveryCard {
+  kind: string;
+  browse_id: string;
+  title: string;
+  subtitle: string | null;
+  thumbnail_url: string | null;
+}
+
+interface DiscoverySearchPage {
+  tracks: DiscoveryTrack[];
+  cards: DiscoveryCard[];
+  queries: string[];
+  continuation: string | null;
+}
+
+interface SearchTrackResponse {
+  page: DiscoverySearchPage;
+  local: SearchTrackRow[];
+}
+
+/**
+ * F5 unified sources search: one query across every enabled source (local
+ * library included via the backend seam), rendered as per-source sections
+ * in rank order with unobtrusive per-source status.
+ */
+function SourcesResults({ query, filter }: { query: string; filter: DiscoveryFilter }) {
+  const [more, setMore] = useState<DiscoveryTrack[]>([]);
+  const [continuation, setContinuation] = useState<string | null>(null);
+  const search = useQuery({
+    queryKey: ['catalogue-search', query, filter],
+    queryFn: async (): Promise<SearchTrackResponse> => {
+      const [page, local] = await invoke<[DiscoverySearchPage, SearchTrackRow[]]>(
+        'discovery_search',
+        { query, filter, continuation: null, limit: 30 },
+      );
+      return { page, local };
+    },
     enabled: query.trim().length > 0,
     staleTime: 10 * 60_000,
     retry: false,
   });
 
-  const rows: Track[] = (yt.data ?? []).map((r) => ({
-    videoId: r.video_id,
-    title: r.title,
-    artists: [{ name: r.artist || 'Unknown Artist', id: null }],
-    album: r.album ? { id: null, name: r.album } : null,
-    durationSec: r.duration_sec && r.duration_sec > 0 ? r.duration_sec : null,
-    explicit: false,
-    thumbnail: r.thumbnail_url,
-    index: null,
-    plays: null,
-  }));
-  const source = sourceFor('search', query, 'yt');
+  useEffect(() => {
+    setMore([]);
+    setContinuation(search.data?.page.continuation ?? null);
+  }, [query, filter, search.data]);
 
+  const tracks = [...(search.data?.page.tracks ?? []), ...more].map(discoveryToTrack);
+  const local = (search.data?.local ?? []).map((row) => rowToTrack(row));
+  const cards = search.data?.page.cards ?? [];
+  const source = sourceFor('search', query, 'remote');
+  const loadMore = async () => {
+    if (!continuation) return;
+    const [page] = await invoke<[DiscoverySearchPage, SearchTrackRow[]]>('discovery_search', {
+      query,
+      filter,
+      continuation,
+      limit: 30,
+    });
+    setMore((rows) => [...rows, ...page.tracks]);
+    setContinuation(page.continuation);
+  };
   return (
     <div className="mx-(--body-gutter) pb-10">
-      {yt.isPending && <p className="type-body text-secondary">Searching YouTube Music…</p>}
-      {yt.isError && (
+      {search.isPending && <p className="type-body text-secondary">Searching sources…</p>}
+      {search.isError && (
         <p className="type-body text-secondary">
-          YouTube Music is unavailable: {String(yt.error)}. Enable catalogue sources in Settings → Sources (needs the
-          sidecar jar) and try again.
+          Search unavailable: {String(search.error)}. Enable catalogue sources in Settings → Sources and try again.
         </p>
       )}
-      {yt.data && rows.length === 0 && <p className="type-body text-secondary">Nothing matches “{query}”.</p>}
-      {rows.length > 0 && <TrackList tracks={rows} variant="playlist" source={source} />}
+      {search.data && tracks.length === 0 && cards.length === 0 && local.length === 0 && (
+        <p className="type-body text-secondary">Nothing matches “{query}”.</p>
+      )}
+      {cards.length > 0 && <div className="mb-5 flex flex-wrap gap-2">
+        {cards.map((card) => {
+          const kind = card.kind === 'album' || card.kind === 'artist' || card.kind === 'playlist' ? card.kind : null;
+          const href = kind && hrefFor({ kind, id: card.browse_id });
+          return href ? <Link key={`${kind}-${card.browse_id}`} className="rounded-[10px] bg-quinary px-3 py-2 type-callout text-secondary" to={href}>{kind}: {card.title}</Link> : null;
+        })}
+      </div>}
+      {local.length > 0 && <section className="mb-6"><h3 className="mb-2 type-callout-emphasized text-secondary">Local Library</h3><TrackList tracks={local} variant="playlist" source={sourceFor('search', query)} /></section>}
+      {tracks.length > 0 && <section className="mb-6"><h3 className="mb-2 type-callout-emphasized text-secondary">YouTube Music</h3><TrackList tracks={tracks} variant="playlist" source={source} /></section>}
+      {continuation && <button className="rounded-pill bg-quinary px-4 py-2 type-callout text-primary" onClick={() => void loadMore()}>Load more</button>}
     </div>
   );
+}
+
+function discoveryToTrack(row: DiscoveryTrack) {
+  return {
+    videoId: row.key.id,
+    title: row.title,
+    artists: row.artists.length ? row.artists.map((a) => ({ name: a.name, id: a.browse_id })) : [{ name: row.artist || 'Unknown Artist', id: null }],
+    album: row.album ? { id: row.album_id, name: row.album } : null,
+    durationSec: row.duration_sec,
+    explicit: row.explicit,
+    thumbnail: row.thumbnail_url,
+    index: null,
+    plays: null,
+    sourceKind: row.key.source,
+    artworkUrl: row.thumbnail_url,
+    ...(row.playable ? {} : { unavailable: 'missing' as const }),
+  };
+}
+
+function rowToTrack(row: SearchTrackRow) {
+  return {
+    videoId: row.key.source === 'local' ? `local:${row.key.id}` : row.key.id,
+    title: row.title,
+    artists: [{ name: row.artist || 'Unknown Artist', id: null }],
+    album: row.album ? { id: null, name: row.album } : null,
+    durationSec: row.duration_sec,
+    explicit: false,
+    thumbnail: row.artwork_url,
+    index: null,
+    plays: null,
+    sourceKind: row.key.source,
+    artworkUrl: row.artwork_url,
+  };
 }

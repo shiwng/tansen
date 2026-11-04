@@ -111,3 +111,230 @@ fn albums_group_and_order() {
     assert_eq!(artists[1].track_count, 2);
     assert_eq!(artists[1].album_count, 1);
 }
+
+// ---- M11: read-only connections + the queue-rows query --------------------
+
+#[test]
+fn tracks_by_ids_returns_rows_in_input_order_skipping_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("t.db")).unwrap();
+
+    let folder = repo::add_folder(&db, "/t", 0).unwrap();
+    let mk = |id_hint: i64, path: &str, title: &str| {
+        let t = persistence::models::Track {
+            id: 0,
+            folder_id: folder,
+            path: path.into(),
+            file_name: path.into(),
+            title: title.into(),
+            artist: "A".into(),
+            album: "AL".into(),
+            album_artist: "A".into(),
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: "".into(),
+            duration_sec: 60.0,
+            codec: "FLAC".into(),
+            bitrate_kbps: None,
+            sample_rate: None,
+            bit_depth: None,
+            channels: None,
+            art_path: None,
+            missing: false,
+        };
+        repo::upsert_track(&db, &t, folder, 0, 0, 0).unwrap();
+        let _ = id_hint;
+    };
+    mk(0, "/t/one.flac", "One");
+    mk(0, "/t/two.flac", "Two");
+    mk(0, "/t/three.flac", "Three");
+
+    let by_title: std::collections::HashMap<String, i64> = repo::list_tracks(&db)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.title.clone(), t.id))
+        .collect();
+    let one = by_title["One"];
+    let three = by_title["Three"];
+    // Input order 3,1,3(dup),999(missing) → rows for 3 then 1, no dup, no 999.
+    let query = [three, one, three, 999_999];
+    let rows = repo::tracks_by_ids(&db, &query).unwrap();
+    assert_eq!(rows.len(), 2, "missing id skipped, duplicates collapse");
+    assert_eq!(rows[0].title, "Three", "input order preserved");
+    assert_eq!(rows[1].title, "One");
+}
+
+#[test]
+fn read_only_connection_reads_and_refuses_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    let writer = Db::open(&path).unwrap();
+    let folder = repo::add_folder(&writer, "/t", 0).unwrap();
+    let t = persistence::models::Track {
+        id: 0,
+        folder_id: folder,
+        path: "/t/x.flac".into(),
+        file_name: "/t/x.flac".into(),
+        title: "X".into(),
+        artist: "A".into(),
+        album: "AL".into(),
+        album_artist: "A".into(),
+        track_no: None,
+        disc_no: None,
+        year: None,
+        genre: "".into(),
+        duration_sec: 60.0,
+        codec: "FLAC".into(),
+        bitrate_kbps: None,
+        sample_rate: None,
+        bit_depth: None,
+        channels: None,
+        art_path: None,
+        missing: false,
+    };
+    repo::upsert_track(&writer, &t, folder, 0, 0, 0).unwrap();
+
+    let reader = Db::open_read_only(&path).unwrap();
+    // Reads work on the read-only handle.
+    let rows = repo::tracks_by_ids(&reader, &[1]).unwrap();
+    assert_eq!(rows.len(), 1);
+    // Writes fail at the SQLite level.
+    let mut wrong = t.clone();
+    wrong.id = 0;
+    wrong.path = "/t/y.flac".into();
+    assert!(repo::upsert_track(&reader, &wrong, folder, 0, 0, 0).is_err(), "read-only refuses writes");
+}
+
+// ---- S2: migration 3 seed + persistence across restart ----
+
+#[test]
+fn fresh_db_is_seeded_with_builtin_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("t.db")).unwrap();
+    let cfg = repo::get_setting(&db, "sources_config").unwrap().expect("seeded");
+    assert!(cfg.contains("\"config_id\":\"yt\"") && cfg.contains("\"config_id\":\"local\""), "{cfg}");
+    assert!(cfg.contains("\"enabled\":true"));
+}
+
+#[test]
+fn upgrade_path_seeds_when_sources_config_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    {
+        let db = Db::open(&path).unwrap();
+        // Simulate a pre-S2/S6 v2 database: no seed, no remote_tracks, so
+        // the next open reruns migrations 3 (seed) and 4 (remote table).
+        let conn = db.lock().unwrap();
+        conn.execute("DELETE FROM settings WHERE key = 'sources_config'", []).unwrap();
+        conn.execute("DROP TABLE remote_tracks", []).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+    }
+    let db = Db::open(&path).unwrap(); // upgrade: migration 3 reruns
+    assert!(repo::get_setting(&db, "sources_config").unwrap().is_some(), "re-seeded on upgrade");
+}
+
+#[test]
+fn settings_persist_across_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    {
+        let db = Db::open(&path).unwrap();
+        repo::set_setting(&db, "audio_quality", "lossless").unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    assert_eq!(repo::get_setting(&db, "audio_quality").unwrap().as_deref(), Some("lossless"));
+}
+
+// ---- S6: remote track metadata round-trip ----
+
+#[test]
+fn remote_track_round_trip_and_clipping() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("t.db")).unwrap();
+    let id = repo::upsert_remote_track(
+        &db,
+        "youtube",
+        "vid123",
+        "T",
+        "A",
+        Some("AL"),
+        178.0,
+        Some("https://i.ytimg.com/x.jpg"),
+    )
+    .unwrap();
+    let rows = repo::remote_tracks_by_ids(&db, &[id]).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].title, "T");
+    assert_eq!(rows[0].key_id, "vid123");
+    // Same key re-upserts, id preserved.
+    let id2 = repo::upsert_remote_track(&db, "youtube", "vid123", "T2", "A", None, 1.0, None).unwrap();
+    assert_eq!(id, id2);
+    let rows = repo::remote_tracks_by_ids(&db, &[id]).unwrap();
+    assert_eq!(rows[0].title, "T2");
+    // Oversized title is clipped.
+    let long = "x".repeat(2000);
+    let id3 = repo::upsert_remote_track(&db, "youtube", "long", long.as_str(), "A", None, 1.0, None).unwrap();
+    let rows = repo::remote_tracks_by_ids(&db, &[id3]).unwrap();
+    assert!(rows[0].title.len() <= repo::REMOTE_MAX_STR);
+}
+
+#[test]
+fn queue_rows_query_returns_both_kinds_in_input_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("t.db")).unwrap();
+
+    let folder = repo::add_folder(&db, "/t", 0).unwrap();
+    let mk = |path: &str, title: &str| {
+        let t = persistence::models::Track {
+            id: 0,
+            folder_id: folder,
+            path: path.into(),
+            file_name: path.into(),
+            title: title.into(),
+            artist: "L".into(),
+            album: "Local AL".into(),
+            album_artist: "L".into(),
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: "".into(),
+            duration_sec: 60.0,
+            codec: "FLAC".into(),
+            bitrate_kbps: None,
+            sample_rate: None,
+            bit_depth: None,
+            channels: None,
+            art_path: None,
+            missing: false,
+        };
+        repo::upsert_track(&db, &t, folder, 0, 0, 0).unwrap();
+    };
+    mk("/t/a.flac", "Local A");
+    mk("/t/b.flac", "Local B");
+    let local_ids: Vec<i64> = repo::list_tracks(&db).unwrap().into_iter().map(|t| t.id).collect();
+
+    let remote_a = repo::upsert_remote_track(&db, "youtube", "vidA", "Remote A", "RA", Some("R AL"), 200.0, Some("https://i.ytimg.com/x.jpg")).unwrap();
+    let remote_b = repo::upsert_remote_track(&db, "addon", "vidB", "Remote B", "RB", None, 10.0, None).unwrap();
+
+    // Local ids [b, a] (input order preserved), remote ids [a, b] — the
+    // combined result keeps each group's input order and tags kinds.
+    let mut query = local_ids.clone();
+    query.reverse();
+    let rows = repo::queue_rows_by_ids(&db, &query, &[remote_a, remote_b]).unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].kind, "local");
+    assert_eq!(rows[0].title, "Local B");
+    assert_eq!(rows[1].title, "Local A");
+    assert_eq!(rows[2].kind, "remote");
+    assert_eq!(rows[2].title, "Remote A");
+    assert_eq!(rows[2].key_source.as_deref(), Some("youtube"));
+    assert_eq!(rows[2].video_id.as_deref(), Some("vidA"));
+    assert_eq!(rows[2].artwork_url.as_deref(), Some("https://i.ytimg.com/x.jpg"));
+    assert_eq!(rows[3].kind, "remote");
+    assert_eq!(rows[3].title, "Remote B");
+    assert_eq!(rows[3].album, None);
+    // Unknown ids on either side are skipped.
+    let rows = repo::queue_rows_by_ids(&db, &[999_999], &[999_999]).unwrap();
+    assert!(rows.is_empty());
+}

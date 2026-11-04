@@ -18,14 +18,22 @@
         "minWidth": 960,
         "minHeight": 620,
         "center": true,
-        "theme": "Dark"
+        "backgroundColor": "#1f1f22",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 18, "y": 18 }
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' art: http://art.localhost data: blob:; style-src 'self' 'unsafe-inline'; media-src 'self'; font-src 'self' data:"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' art: http://art.localhost data: blob:; style-src 'self' 'unsafe-inline'; media-src 'self'; font-src 'self' data:",
+      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420; img-src 'self' art: http://art.localhost data: blob:; style-src 'self' 'unsafe-inline'; media-src 'self'; font-src 'self' data:"
     }
   },
   "bundle": {
+    "macOS": {
+      "entitlements": "Tansen.entitlements",
+      "minimumSystemVersion": "10.15"
+    },
     "active": true,
     "targets": "all",
     "icon": [
@@ -36,7 +44,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/sidecar-all.jar"
+      "resources/sidecar-all.jar",
+      "resources/jre"
     ]
   }
 }

@@ -1642,3 +1642,133 @@ window returns; Space/⌘→ work; restart → main window, no overlay).
 - Scenarios 1–3 (Fresh launch without track, launch with restored track, `fullScreen` initial state false): Verified by unit tests (`FullScreenPlayer.test.tsx`) and verified embedded binary assets.
 - Scenarios 4–10 (LCD artwork click, Close button click, Escape key, pause/resume, route change auto-close, quit/reopen cycles): Code paths verified in `FullScreenPlayer.tsx`, `useKeyboardShortcuts.ts`, and `Lcd.tsx`. Live interactive GUI automation unavailable in headless environment; marked as verified via unit tests and binary verification.
 
+
+## F9 — make real music play: break map + fixes + S1–S12 (2026-11-03)
+
+**Break map (hop | before | after | evidence):**
+| Hop | Before | After | Evidence |
+|---|---|---|---|
+| 1 sidecar spawn/health | works | works | JRE+jar discovered from the app bundle under `env -i`; health 200 |
+| 2 search UI→command→rows | works | works | S1: 10 real rows, titles match query; per-source status |
+| 3 select/Play/Enqueue | works | works | S2: upsert + Enqueue with remote key; engine_id minted with REMOTE_ID_OFFSET |
+| 4 factory→resolver→ResolvedMedia | **BROKEN** | **FIXED** | nested-runtime panic in `resolve_blocking` when called from the engine's tokio task (the first broken link — remote play could never pass prepare). Fixed: Handle-aware resolve (`block_in_place`+`block_on` on runtime, one-shot runtime on plain threads) — rodio_factory.rs prepare |
+| 5 HttpRangeReader fetch | works (F2/F3: ~3 MiB/s, 160× real-time) | works | curl 206 + throughput; sniff fix (below) re-probed correctly |
+| 6 demux/decode | **BROKEN** | **FIXED** | "Unrecognized format": googlevideo MP4s are DASH-branded; the bare probe rejects them, and rodio's PrefetchReader path failed even with the hint. Fix: sniff the container from the first 64 bytes of the SAME HttpRangeReader (ftyp→m4a, OggS→ogg, fLaC→flac, RIFF→wav, EBML→webm) and build the decoder with that hint — pipeline.rs open_source. Regression test: http_branch_decodes_m4a_like_file_branch |
+| 7 output stream/frames | works (local) | works (remote) | S4: +17745 frames after resume; sink peak meter (debug) wired to audio::metrics |
+| 8 controls | works | works | S4/S5/S6 evidence below |
+| 9 playback_state→frontend | works | works | anchor pos, status, errors observed in logs |
+| — new: YT host allowlist | — | added | `yt_stream_host_allowed`: https + `*.googlevideo.com` (measured live: only hosts observed; the rrN/sn segment varies per request) + 2 tests |
+
+**Scenarios (running dev app, TANSEN_E2E=1 debug-only hook driving the same command paths, CC query "Kevin MacLeod"):**
+- S1 search real rows: **PASS** — 10 rows, titles match; per-source status ok.
+- S2 resolve: **PASS** — codec AAC, container mp4, itag 140, host *.googlevideo.com (allowlisted).
+- S3 play: **PASS** — Playing in 1.8–2.4 s; sink peak meter + frames advancing confirmed via S4 (+17745 frames ≈ 0.4 s × 44.1 kHz); first-audio at reader level 866–1298 ms (F3 live table).
+- S4 pause/resume: **PASS** — frames flat while paused; resume advancing.
+- S5 seek: **PASS** — anchor lands 30000 ms ± 0.
+- S6 queue mixed local/remote: **PASS** — Next walks remote→local; local EntryId(31) plays.
+- S10 unresolvable id: **PASS** — sidecar 500 → resolver error → Error(Resolve) typed; queue continues (skip-on-error).
+- S7 forced expiry: **NOT RUN live** (6 h TTL) — covered by engine M16 tests + resolver `expiry_forces_resolve`.
+- S8 sidecar killed mid-play: **PASS** — SIGKILL → current track continues (googlevideo direct) → supervisor recovers (backoff gate test + live).
+- S9 network off: **NOT RUN** (cannot disable the host network safely) — offline = sidecar unreachable = typed Network error, same path as the S8 evidence.
+- S12 quit/relaunch restores: **NOT RUN (GUI)** — restore path is structural (fresh resolver per process; URLs never persisted).
+- 5-min stress: 0 underruns (REPORT §F2/F6 evidence, unchanged paths).
+
+**Fixes landed (minimal):** nested-runtime resolve fix (rodio_factory.rs prepare/prefetch); sniff+hint in open_source (pipeline.rs); YT host allowlist + 2 tests (yt.rs); debug sink peak meter (pipeline.rs + metrics.rs, cfg-gated); E2E hook (e2e.rs, cfg(debug_assertions), TANSEN_E2E=1).
+
+**Fake data:** the real user DB contains **0 synthetic rows** (verified: `SELECT COUNT(*) FROM tracks WHERE path LIKE '/tmp/%'` = 0). No mock sources in user-facing paths.
+
+**Security re-check:** release binary `strings`: TANSEN_E2E/TANSEN_STRESS **absent** (0); TANSEN_BENCH_PLAY present (M1 harness design, env-gated, documented); bench_marker present (M1 harness dependency, 48-char cap on the echoed string). Allowlist + redirect policies intact. No secrets/signed URLs in logs (redaction live — path-only logging verified in the failing-decode warn lines).
+
+## BUG-002 — Settings page crash (`t.name`) — FIXED & VERIFIED (2026-11-03)
+
+**Symptom:** "Unexpected Application Error! undefined is not an object
+(evaluating 't.name')" at SettingsPage-*.js; Settings appeared empty.
+**Answer to "why is settings empty":** the page never got to draw the list —
+it crashed while rendering the FIRST source row. The user's database has 2
+valid sources (yt "YouTube Music", local "Local Files"); nothing was lost.
+
+**Root cause (confirmed before any code change):** crash column 5787 in the
+shipped bundle = `children:t.name` inside the sources map; built source was
+`.data?.map(({config:t,health:p},o,m)=>…)`. Rust `SourceWithHealth`
+(commands.rs:536-540) declares `#[serde(flatten)] config: SourceConfig` —
+flatten inlines the config's fields into the row; there is no `config` key
+on the wire. `SourceHealth` remains nested under `health` (internally tagged
+`state`: ok/unreachable/rejected). Frontend destructured a non-existent
+key → `config === undefined` → `config.name` threw. Latent since M10;
+every render with ≥1 source row crashed the route.
+
+**Fix:** read the flattened row top-level (name/kind/base_url/enabled/
+config_id; health via `row.health`). UI layout, classes and behavior
+unchanged. Files: `SettingsPage.tsx`, new `SettingsPage.test.tsx`.
+
+**Verification evidence:**
+- Reproduced the exact bundle hash pre-fix; post-fix bundle contains the
+  old destructure pattern 0 times (grep) and maps the whole row.
+- `npx tsc --noEmit`: clean. `npx vitest run`: **9 files / 55 tests PASS**
+  (54 prior + 1 new regression that mounts SettingsPage with the real
+  flattened wire row and asserts both rows + enabled states render).
+- `npm run build`: OK. Debug `tansen` launch smoke: sidecar JRE boots,
+  engine starts, watchers scan, SIGTERM exits cleanly.
+- Backend untouched — no IPC, serde, engine or persistence changes.
+
+## CORRECTION (2026-11-03): F9 "0 synthetic rows" claim was WRONG
+The F9 check `path LIKE '/tmp/%'` missed macOS `/private/tmp/...` resolutions.
+The real app DB had accumulated 31 harness rows (stress-01…29, e2e-local;
+paths /private/tmp/tansen-stress-lib|e2e-lib) plus their play_history and 2
+remote_tracks — debug/release share one data dir, and the E2E/stress harnesses
+wrote into it. That was the "prototype look": the user's Songs page showed 31
+junk tracks they never added, and one sat in the player bar.
+
+**Fixes (root cause + cleanup, no playback changes):**
+1. Isolation: debug harnesses (TANSEN_E2E / TANSEN_STRESS / TANSEN_BENCH_PLAY)
+   now redirect the data dir to /tmp/tansen-harness-data (main.rs data_dir,
+   cfg(debug_assertions) — release binaries unaffected).
+2. User DB cleaned (backup: /tmp/tansen-db-backup-20261103): tracks,
+   play_history, remote_tracks, playback_state cleared → 0 rows, VACUUM'd.
+3. E2E now self-seeds catalogue_sources=true in its scratch dir (fresh-DB
+   first-run gap: without Settings, a fresh install has no YT source).
+
+**Re-verification (fresh run, isolated dir):** S1 search 10 real YT rows →
+S3 Playing in 1957 ms, sink peak 0.288 (non-silent) → S4 pause/resume,
+S5 seek 30 s, S8 sidecar SIGKILL recovery, S6 local queue join, S10 typed
+error — all PASS. Real DB after run: 0 tracks / 0 remote (untouched).
+
+**On the user's search test:** the query "4raws" has no matches on YouTube
+Music either — empty results for gibberish is correct behavior. Real-song
+search→play is proven by the S1–S3 chain above, which drives the exact
+search_tracks/upsert/Enqueue/Play commands the UI buttons call.
+
+## BUG-003 — stress/test data kept re-inserting; root source removed (2026-11-03)
+
+**Symptom:** after BUG-002's row-level cleanup, the 31 stress/e2e tracks
+returned on the next app launch.
+
+**Root cause:** deleting `tracks` rows never removed the *watchers*:
+`library_folders` still contained `/private/tmp/tansen-stress-lib` and
+`/private/tmp/tansen-e2e-lib` (persisted when the stress/E2E harnesses ran),
+and the leftover directories still existed on disk. Every app start = folder
+watch rescan = the sine-wave tracks re-added. That is the automatic-insertion
+source: persisted folder list + harness dirs, not a seeder or frontend
+fallback (frontend has no mock data; crate fixtures live only under
+crates/*/tests/fixtures, never compiled into app paths).
+
+**Fix (data + disk, no code/UI/playback change):**
+- Deleted the two `library_folders` rows (path LIKE '/private/tmp/tansen-%').
+- Deleted the harness directories themselves: /private/tmp/tansen-stress-lib
+  and /private/tmp/tansen-e2e-lib (30+1 sine WAVs).
+- Purged remaining junk: tracks, play_history, remote_tracks, playback_state;
+  VACUUM. Backup: /tmp/tansen-db-backup-20261103b.
+- Harness isolation (main.rs data_dir redirect under TANSEN_E2E/STRESS/
+  BENCH_PLAY) already prevents debug harnesses from touching this DB; the
+  remaining env-gated write paths run only when those env vars are set.
+
+**Verification:**
+- After purge: tracks=0, folders=0, playlists=0, play_history=0.
+- Full app restart (open → watcher scan → quit): tracks still 0, folders
+  still 0 — no re-insertion confirmed across a real launch cycle.
+- Library/sections empty states verified present and intentional (Songs,
+  Albums, Artists, Recently Played, Playlists) — they render guidance, not
+  fake entries.
+- Nothing genuine lost: the database contained no user-created playlists,
+  real audio, or legit metadata (all 31 rows were harness artifacts); the
+  pre-clean backups preserve what existed.

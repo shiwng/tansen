@@ -122,3 +122,21 @@ is self-hosted for the UI face.
 - Windows build is untested (no Windows host in this environment); macOS is the
   verified platform.
 - Icons are placeholders; art theming and animations land with phase 5/6 polish.
+
+## Provider posture
+
+Tansen ships **no bundled addons, addon indexes, or default third-party
+servers** — sources are added by the user only. YouTube Music access is
+**anonymous** (no account sign-in, no cookies, no tokens; streams resolve
+through a local sidecar process). JioSaavn is not implemented. Some
+catalogue features require enabling "catalogue sources" in Settings.
+
+## Known limitations
+
+- YouTube audio is AAC ~128 kbps; Lossless is not available from YouTube
+  (the Lossless tier falls back to the best lossy stream and says so).
+- Opus/WebM streams are not decodable (the AAC supply is used instead).
+- HLS/DASH manifests are not played; progressive streams only.
+- The audio-quality setting applies to newly resolving tracks.
+- Queue editing (remove/reorder) is not wired yet.
+- Auto-update is not configured; updates are manual reinstalls.

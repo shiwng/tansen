@@ -126,3 +126,65 @@ impl<R: Read + Seek + Send + Sync> symphonia::core::io::MediaSource for ProbeSou
         Some(self.len)
     }
 }
+
+#[cfg(test)]
+mod codec_matrix_tests {
+    use super::*;
+    use crate::remote::HttpRangeReader;
+    use std::io::{Read, Seek, SeekFrom};
+    use std::sync::Arc;
+
+    /// A synthetic WAV (the only self-generatable format without ffmpeg).
+    fn wav_bytes(frames: usize) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        let data_len = frames * 2 * 2;
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        buf.extend_from_slice(b"WAVEfmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.extend_from_slice(&44100u32.to_le_bytes());
+        buf.extend_from_slice(&((44100u32 * 4).to_le_bytes()));
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&16u16.to_le_bytes());
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for i in 0..frames {
+            let v = (9000.0 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin()) as i16;
+            buf.extend_from_slice(&v.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        let _ = buf.flush();
+        buf
+    }
+
+    #[test]
+    fn wav_decodes_with_sound() {
+        let bytes = wav_bytes(22050); // 0.5 s
+        // Pipe through a memory-backed range reader.
+        let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let _ = std::io::Read::read(&mut &stream, &mut buf);
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    data.len() - 1,
+                    data.len(),
+                    data.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(data);
+            }
+        });
+        let reader = HttpRangeReader::new(format!("http://127.0.0.1:{port}/t.wav"), vec![]).unwrap();
+        let rms = decode_rms(reader, std::time::Duration::from_millis(300)).unwrap();
+        assert!(rms > 0.005, "WAV produced sound, RMS {rms}");
+    }
+
+}

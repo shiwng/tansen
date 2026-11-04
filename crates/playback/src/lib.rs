@@ -8,6 +8,7 @@
 pub mod cache;
 pub mod metrics;
 pub mod pipeline;
+pub mod ring;
 pub mod probe;
 pub mod remote;
 

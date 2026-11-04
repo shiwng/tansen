@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getAudio, getMixBeat, getPlayhead, usePlayer } from '@/state/player';
+import { getMixBeat, getPlayhead, usePlayer } from '@/state/player';
 
 export function clock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -79,19 +79,20 @@ export function useScrubber() {
   const deck = usePlayer((s) => s.deck);
   const mixing = usePlayer((s) => s.mixing);
   const seek = usePlayer((s) => s.seek);
+  // The engine owns the clock and the duration; there is no media element on
+  // this backend (the old HTMLAudio element is gone), so both come from the
+  // published state and the interpolated playhead.
+  const duration = usePlayer((s) => s.nowPlaying?.durationSec ?? 0);
   const [dragging, setDragging] = useState<number | null>(null);
 
   useEffect(() => {
-    const audio = getAudio();
     const element = bar.current;
-    if (!audio || !element) return;
+    if (!element) return;
     let frame = 0;
     const draw = () => {
-      const duration = audio.duration;
-      // during a loop mix the element is paused under the decks: the mix's own playhead
       const head = getPlayhead();
-      const paused = head?.paused ?? audio.paused;
-      const time = dragging !== null && Number.isFinite(duration) ? dragging * duration : (head?.sec ?? audio.currentTime);
+      const paused = head?.paused ?? true;
+      const time = dragging !== null && duration > 0 ? dragging * duration : (head?.sec ?? 0);
       const base = Math.min(1, Math.max(0, duration > 0 ? time / duration : 0));
       const beat = dragging === null ? getMixBeat() : null;
       const mix = stepPulse(pulse.current, performance.now(), beat, paused);
@@ -106,13 +107,8 @@ export function useScrubber() {
       if (!paused || dragging !== null || mix.active || beat) frame = requestAnimationFrame(draw);
     };
     draw();
-    const onSeeked = () => draw();
-    audio.addEventListener('seeked', onSeeked);
-    return () => {
-      cancelAnimationFrame(frame);
-      audio.removeEventListener('seeked', onSeeked);
-    };
-  }, [status, deck, dragging, mixing]);
+    return () => cancelAnimationFrame(frame);
+  }, [status, deck, dragging, mixing, duration]);
 
   const fractionAt = (event: React.PointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -121,7 +117,7 @@ export function useScrubber() {
 
   const handlers = {
     onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
-      if (!getAudio()) return;
+      if (duration <= 0) return;
       e.currentTarget.setPointerCapture(e.pointerId);
       setDragging(fractionAt(e));
     },
@@ -130,8 +126,7 @@ export function useScrubber() {
     },
     onPointerUp: (e: React.PointerEvent<HTMLElement>) => {
       if (dragging === null) return;
-      const audio = getAudio();
-      if (audio && Number.isFinite(audio.duration)) seek(fractionAt(e) * audio.duration);
+      seek(fractionAt(e) * duration);
       setDragging(null);
     },
     onPointerCancel: () => setDragging(null),

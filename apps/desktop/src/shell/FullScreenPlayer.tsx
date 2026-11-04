@@ -13,6 +13,7 @@ import {
   ShuffleIcon,
   UpNextIcon,
 } from '@/components/icons/Transport';
+import { useArtworkUrl } from '@/components/music/Artwork';
 import { ExplicitBadge } from '@/components/music/ExplicitBadge';
 import { TrackMenu } from '@/components/music/TrackMenu';
 import { albumHref } from '@/components/music/links';
@@ -152,6 +153,7 @@ export function FullScreenPlayer() {
     const entry = s.queue[s.index]?.track;
     return entry && entry.videoId === s.nowPlaying?.videoId ? entry : null;
   });
+  const artwork = useArtworkUrl(nowPlaying?.artworkUrl ?? null);
   const { pathname } = useLocation();
   const openedAt = useRef(pathname);
   const playing = usePlayer((s) => s.status === 'playing' || s.status === 'buffering');
@@ -254,7 +256,7 @@ export function FullScreenPlayer() {
       onKeyDown={wake}
       style={theater && playing && idle ? { cursor: 'none' } : undefined}
     >
-      <MeshBackdrop artworkUrl={nowPlaying.artworkUrl} playing={playing} />
+      <MeshBackdrop artworkUrl={artwork} playing={playing} />
       <button ref={close} className={`${corner} top-4 left-5`} aria-label="Close" onClick={() => setFullScreen(false)}>
         <X size={20} />
       </button>
@@ -293,22 +295,22 @@ export function FullScreenPlayer() {
               video ? ' aspect-video overflow-hidden bg-black' : ' aspect-square'
             }${playing ? '' : ' scale-92'}${column ? ' max-md:hidden' : ''}${theater ? ' hidden' : ''}`}
           >
-            {nowPlaying.artworkUrl && (
+            {artwork && (
               <>
                 <img
-                  key={`glow-${nowPlaying.artworkUrl}`}
+                  key={`glow-${artwork}`}
                   // The radiosity glow: a small copy, blurred and saturated, behind the artwork.
                   className={`${artworkLayer} -z-1 translate-y-2 scale-96 blur-[20px] saturate-200 data-loaded:opacity-40`}
-                  src={sizedArtwork(nowPlaying.artworkUrl, 60)}
+                  src={sizedArtwork(artwork, 60)}
                   alt=""
                   referrerPolicy="no-referrer"
                   decoding="async"
                   onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
                 />
                 <img
-                  key={nowPlaying.artworkUrl}
+                  key={artwork}
                   className={`${artworkLayer} bg-[#ffffff12] shadow-[0_4px_10px_#0000001a] data-loaded:opacity-100`}
-                  src={sizedArtwork(nowPlaying.artworkUrl, 600)}
+                  src={sizedArtwork(artwork, 600)}
                   alt=""
                   referrerPolicy="no-referrer"
                   decoding="async"

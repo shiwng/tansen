@@ -7,11 +7,17 @@ import { usePlayer } from '@/state/player';
 import { artUrl, q, rowsToTracks, sourceFor } from '@/lib/rows';
 import { useArtworkColor } from '@/lib/artworkColor';
 import { usePageTint } from '@/lib/usePageTint';
+import { RemoteBrowsePage } from './RemoteBrowsePage';
 
 /** An album: every track sharing album_artist + album, in disc/track order. */
 export function AlbumPage() {
   const { id } = useParams<{ id: string }>();
   const key = decodeURIComponent(id ?? '');
+  if (key.startsWith('MPREb')) return <RemoteBrowsePage kind="album" id={key} />;
+  return <LocalAlbumPage albumKey={key} />;
+}
+
+function LocalAlbumPage({ albumKey: key }: { albumKey: string }) {
   const album = useQuery(q.albums());
   const tracks = useQuery(q.albumTracks(key));
   const playTracks = usePlayer((s) => s.playTracks);

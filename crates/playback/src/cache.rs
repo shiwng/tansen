@@ -76,9 +76,27 @@ impl StreamCache {
         // A stale .part from an interrupted run restarts from scratch.
         let _ = fs::remove_file(&part);
 
+        // F7: the same media redirect policy as the streaming readers —
+        // CDN hops allowed, internal-network pivots refused, https never
+        // downgraded.
+        let original_local = crate::remote::media_host_is_local(url);
+        let original_scheme = reqwest::Url::parse(url)
+            .map(|u| u.scheme().to_string())
+            .unwrap_or_default();
         let client = reqwest::blocking::Client::builder()
             .timeout(DOWNLOAD_TIMEOUT)
             .user_agent("Tansen/0.3")
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                match crate::remote::media_redirect_verdict(
+                    attempt.previous().len(),
+                    attempt.url(),
+                    original_local,
+                    &original_scheme,
+                ) {
+                    Ok(()) => attempt.follow(),
+                    Err(e) => attempt.error(e),
+                }
+            }))
             .build()
             .map_err(|e| CacheError::Http(e.to_string()))?;
         let mut file = fs::File::create(&part)?;

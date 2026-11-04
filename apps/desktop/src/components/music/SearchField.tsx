@@ -1,6 +1,8 @@
 import { Search, X } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { useQuery } from '@tanstack/react-query';
+import { invoke } from '@tauri-apps/api/core';
 import type { MusicItem } from '@/data/music/types';
 import { Artwork } from './Artwork';
 import { hrefFor } from './links';
@@ -14,18 +16,29 @@ type Option = { kind: 'query'; text: string; typed: string; rest: string } | { k
  * a glass dropdown of completions, then artist, album and song suggestions.
  * Arrow keys move through it; Enter picks; Escape closes.
  */
-export function SearchField({ initial, onSearch }: { initial: string; onSearch: (query: string) => void }) {
+export function SearchField({
+  initial,
+  onSearch,
+  placeholder = 'Artists, Songs, Lyrics, and More',
+}: {
+  initial: string;
+  onSearch: (query: string) => void;
+  placeholder?: string;
+}) {
   const [value, setValue] = useState(initial);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
   const navigate = useNavigate();
-  // Catalogue typeahead arrives with the source system; the field searches the local library.
-  const suggestions: { isPending: boolean; data: { queries: { query: string; feedbackToken: string }[]; items: MusicItem[] } | undefined } = {
-    isPending: false,
-    data: { queries: [], items: [] },
-  };
+  const deferredValue = useDeferredValue(value.trim());
+  const suggestions = useQuery({
+    queryKey: ['catalogue-typeahead', deferredValue],
+    queryFn: () => invoke<SuggestResponse>('discovery_suggest', { query: deferredValue }),
+    enabled: deferredValue.length > 0,
+    staleTime: 60_000,
+    retry: false,
+  });
   // A suggestion's track menu takes focus when it opens (Menu focuses its
   // first item), which would otherwise read as the field blurring and close
   // the dropdown under the open menu. While a menu is open the blur close is
@@ -41,8 +54,8 @@ export function SearchField({ initial, onSearch }: { initial: string; onSearch: 
   useEffect(() => setValue(initial), [initial]);
 
   const options: Option[] = [
-    ...(suggestions.data?.queries ?? []).map((q) => ({ kind: 'query' as const, text: q.query, typed: '', rest: q.query })),
-    ...(suggestions.data?.items ?? []).map((item) => ({ kind: 'item' as const, item })),
+    ...(suggestions.data?.queries ?? []).map((text) => ({ kind: 'query' as const, text, typed: '', rest: text })),
+    ...(suggestions.data?.tracks ?? []).map((item) => ({ kind: 'item' as const, item: suggestionToItem(item) })),
   ];
   const showList = open && value.trim().length > 0 && options.length > 0;
 
@@ -61,7 +74,7 @@ export function SearchField({ initial, onSearch }: { initial: string; onSearch: 
   };
 
   return (
-    <div className="relative w-[min(492px,100%)]">
+    <div className="relative w-[min(600px,100%)]">
       <form
         className="relative flex items-center"
         role="search"
@@ -73,10 +86,10 @@ export function SearchField({ initial, onSearch }: { initial: string; onSearch: 
         <Search size={15} strokeWidth={2.4} className="pointer-events-none absolute left-2.5 text-secondary" aria-hidden="true" />
         <input
           ref={input}
-          className="h-[38px] w-full rounded-pill border border-search-border bg-page pt-1.5 pr-[30px] pb-[5px] pl-7 type-body text-primary placeholder:text-tertiary [&::-webkit-search-cancel-button]:hidden"
+          className="h-[32px] w-full rounded-pill border border-search-border bg-page pt-1.5 pr-[30px] pb-[5px] pl-7 type-body text-primary placeholder:text-tertiary focus-visible:border-key focus-visible:ring-[1.5px] focus-visible:ring-key/70 focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
           type="search"
           value={value}
-          placeholder="Artists, Songs, Lyrics, and More"
+          placeholder={placeholder}
           aria-label="Search"
           role="combobox"
           aria-expanded={showList}
@@ -176,6 +189,37 @@ export function SearchField({ initial, onSearch }: { initial: string; onSearch: 
       )}
     </div>
   );
+}
+
+interface SuggestionTrack {
+  key: { source: string; id: string };
+  title: string;
+  artist: string;
+  album: string | null;
+  duration_sec: number | null;
+  thumbnail_url: string | null;
+}
+
+interface SuggestResponse {
+  tracks: SuggestionTrack[];
+  cards: Array<{ kind: string; browse_id: string; title: string; subtitle: string | null; thumbnail_url: string | null }>;
+  queries: string[];
+  continuation: string | null;
+}
+
+function suggestionToItem(row: SuggestionTrack): MusicItem {
+  return {
+    kind: row.key.source === 'youtube' ? 'song' : 'unknown',
+    id: row.key.id,
+    title: row.title,
+    subtitle: row.album ? `Album • ${row.album}` : row.artist,
+    artists: [{ name: row.artist || 'Unknown Artist', id: null }],
+    album: row.album ? { name: row.album, id: null } : null,
+    thumbnail: row.thumbnail_url,
+    wide: false,
+    durationSec: row.duration_sec,
+    explicit: false,
+  };
 }
 
 // A suggestion row; hover or keyboard selection paints it in the key colour, white text.

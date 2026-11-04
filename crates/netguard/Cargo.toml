@@ -1,0 +1,9 @@
+[package]
+name = "netguard"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Shared outbound host-classification and DNS-rebinding guard for Tansen's HTTP clients"
+
+[dependencies]
+url = "2"

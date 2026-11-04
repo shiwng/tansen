@@ -16,6 +16,8 @@ const artist = () => import('@/pages/ArtistPage').then((m) => ({ default: m.Arti
 const playlist = () => import('@/pages/PlaylistPage').then((m) => ({ default: m.PlaylistPage }));
 const reorder = () => import('@/pages/ReorderPlaylistPage').then((m) => ({ default: m.ReorderPlaylistPage }));
 const settings = () => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage }));
+const discover = () => import('@/pages/DiscoveryPage').then((m) => ({ default: m.DiscoveryPage }));
+const radio = () => import('@/pages/RadioPage').then((m) => ({ default: m.RadioPage }));
 
 export const PAGE_ROUTES: PageRoute[] = [
   { path: '/home', load: home },
@@ -27,6 +29,8 @@ export const PAGE_ROUTES: PageRoute[] = [
   { path: '/playlist/:id/reorder', load: reorder },
   { path: '/library/:section', load: library },
   { path: '/settings', load: settings },
+  { path: '/discover', load: discover },
+  { path: '/radio', load: radio },
 ];
 
 export function pageElement(route: PageRoute): ReactNode {

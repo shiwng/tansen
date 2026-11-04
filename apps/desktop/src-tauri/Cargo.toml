@@ -1,5 +1,6 @@
 [package]
 name = "tansen"
+default-run = "tansen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,6 +21,11 @@ sources = { path = "../../../crates/sources" }
 playback = { path = "../../../crates/playback" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-foundation = "0.3"
+objc2-media-player = "0.3"
+block2 = "0.6"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

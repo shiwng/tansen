@@ -1,0 +1,49 @@
+{
+  "tracks": [
+    {
+      "videoId": "dQw4w9WgXcQ_1",
+      "title": "Fixture Song One",
+      "artist": "Fixture Artist",
+      "album": "Fixture Album",
+      "durationText": "3:21",
+      "durationSec": 201,
+      "thumbnailUrl": "https://example.test/thumb/1.jpg",
+      "isVideo": false
+    },
+    {
+      "videoId": "dQw4w9WgXcQ_2",
+      "title": "Fixture Song Two",
+      "artist": "Fixture Artist",
+      "durationSec": 185,
+      "isVideo": false
+    },
+    {
+      "videoId": "dQw4w9WgXcQ_3",
+      "title": "Fixture Song Three",
+      "artist": "Other Artist",
+      "durationSec": 240,
+      "isVideo": false
+    }
+  ],
+  "browse": [
+    {
+      "kind": "artist",
+      "browseId": "UC_fixture_artist_01",
+      "title": "Fixture Artist",
+      "subtitle": "Artist",
+      "thumbnailUrl": "https://example.test/thumb/a.jpg"
+    },
+    {
+      "kind": "album",
+      "browseId": "MPREb_fixture_album_1",
+      "title": "Fixture Album",
+      "subtitle": "Fixture Artist"
+    },
+    {
+      "kind": "playlist",
+      "browseId": "VL_fixture_playlist_1",
+      "title": "Fixture Playlist",
+      "subtitle": "12 tracks"
+    }
+  ]
+}

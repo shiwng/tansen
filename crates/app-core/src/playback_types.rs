@@ -13,10 +13,20 @@
 //! M9 put `Command` on the Tauri bridge and `PlaybackState` into an event,
 //! so the types now carry `Serialize`/`Deserialize`.
 
+/// Remote track identity used by engine commands: (kind, id) — the app
+/// layer converts to/from `sources::TrackKey`.
+pub type RemoteKey = (String, String);
+
 /// Identity of one queue entry. Deliberately not an index: queue edits
 /// renumber positions, never identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EntryId(pub u64);
+
+/// F5: remote_tracks rowids are minted into EntryIds at this offset, so
+/// the remote id space never collides with library track ids (both start
+/// at 1). Safe in JSON (2^40 ≈ 1.1e12 < 2^53) and clear of u64::MAX (bench
+/// sentinel). Subtract before treating an EntryId as a DB rowid.
+pub const REMOTE_ID_OFFSET: u64 = 1 << 40;
 
 /// The class of a playback failure, mirroring the engine's existing load /
 /// append error paths: no output device (`Device`), an unresolved
@@ -141,8 +151,9 @@ pub enum Placement {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
-    /// Make this entry the current one (load + start).
-    Play { entry: EntryId },
+    /// Make this entry the current one (load + start). `remote` carries the
+    /// TrackKey when the entry is a remote (source) track (S6).
+    Play { entry: EntryId, #[serde(default)] remote: Option<crate::playback_types::RemoteKey> },
     Pause,
     Resume,
     Next,
@@ -151,11 +162,28 @@ pub enum Command {
     Seek { ms: u64 },
     SetVolume(f32),
     /// Add entries to the queue; `queue_rev` bumps, playback does not change.
-    Enqueue { tracks: Vec<EntryId>, placement: Placement },
+    /// `tracks` carries every entry id in queue order — local library ids
+    /// and remote (source-keyed) row ids alike; `remote` maps the remote
+    /// subset to their TrackKeys (S6). The enqueue length cap covers the
+    /// combined list.
+    Enqueue {
+        tracks: Vec<EntryId>,
+        #[serde(default)]
+        remote: Vec<(EntryId, crate::playback_types::RemoteKey)>,
+        placement: Placement,
+    },
+    /// Remove a non-current entry from the queue by stable identity.
+    Remove { entry: EntryId },
+    /// Move a queued entry to a bounded positional slot.
+    Move { entry: EntryId, to: usize },
     /// Empty the queue and stop (M10: the frontend's "play X now" replaces
     /// the queue — ClearQueue + Enqueue + Play; the old path's Load did it in
     /// one op). Amends the M5 set; the UI cannot replace queues without it.
     ClearQueue,
+    /// M18: the output device changed, the system slept/woke, or the stream
+    /// died. Rebuild the pipeline at the current position; keep the user's
+    /// play state (Playing resumes at the anchor, Paused stays paused).
+    RebuildOutput,
 }
 
 /// Why a transition was refused.

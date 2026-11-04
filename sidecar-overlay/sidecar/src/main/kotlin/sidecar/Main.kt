@@ -39,6 +39,8 @@ import java.time.Duration
 import kotlin.system.exitProcess
 
 private const val VERSION = "1.8.1-sidecar.1"
+private const val QUERY_MAX = 200
+private const val CONTINUATION_MAX = 4096
 private val START = System.currentTimeMillis()
 
 fun main(args: Array<String>) {
@@ -48,15 +50,31 @@ fun main(args: Array<String>) {
         ?: System.getenv("BITCHORD_SIDECAR_PORT")?.toIntOrNull()
         ?: 8765
 
+    // Per-launch shared secret from the Rust launcher: every request must
+    // carry it in the X-Sidecar-Token header. Loopback bind alone only
+    // kept other local processes off the API by obscurity of the port.
+    // No token set (dev/standalone runs) keeps the server open — the
+    // launcher always sets one.
+    val requiredToken = System.getenv("TANSEN_SIDECAR_TOKEN")
+
+    fun authorized(ex: HttpExchange): Boolean =
+        requiredToken == null || ex.requestHeaders.getFirst("X-Sidecar-Token") == requiredToken
+
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 32)
     server.executor = java.util.concurrent.Executors.newFixedThreadPool(8)
 
-    server.createContext("/health") { ex -> handle(ex) { healthJson() } }
-    server.createContext("/search") { ex -> handle(ex) { searchJson(ex) } }
-    server.createContext("/track") { ex -> handle(ex) { trackJson(ex) } }
-    server.createContext("/album") { ex -> handle(ex) { browseJson(ex, "album") } }
-    server.createContext("/playlist") { ex -> handle(ex) { browseJson(ex, "playlist") } }
-    server.createContext("/lyrics") { ex -> handle(ex) { lyricsJson(ex) } }
+    server.createContext("/health") { ex -> handle(ex) { if (authorized(ex)) healthJson() else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/search") { ex -> handle(ex) { if (authorized(ex)) searchJson(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/track") { ex -> handle(ex) { if (authorized(ex)) trackJson(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/album") { ex -> handle(ex) { if (authorized(ex)) browseJson(ex, "album") else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/playlist") { ex -> handle(ex) { if (authorized(ex)) browseJson(ex, "playlist") else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/artist") { ex -> handle(ex) { if (authorized(ex)) browseJson(ex, "artist") else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/suggest") { ex -> handle(ex) { if (authorized(ex)) suggestJson(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/radio") { ex -> handle(ex) { if (authorized(ex)) radioEndpoint(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/home") { ex -> handle(ex) { if (authorized(ex)) homeEndpoint(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/explore") { ex -> handle(ex) { if (authorized(ex)) exploreEndpoint(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/browse/continuation") { ex -> handle(ex) { if (authorized(ex)) browseContinuationEndpoint(ex) else errorJson(401, "missing or wrong sidecar token") } }
+    server.createContext("/lyrics") { ex -> handle(ex) { if (authorized(ex)) lyricsJson(ex) else errorJson(401, "missing or wrong sidecar token") } }
     server.createContext("/") { ex -> handle(ex) { errorJson(404, "no such route") } }
 
     Runtime.getRuntime().addShutdownHook(Thread {
@@ -79,22 +97,38 @@ private fun healthJson(): JsonObject = buildJsonObject {
 }
 
 private suspend fun searchJson(ex: HttpExchange): JsonObject {
-    val query = ex.queryParam("q") ?: return errorJson(400, "missing ?q=")
-    val filter = when (ex.queryParam("filter")?.lowercase()) {
-        "songs" -> SearchFilter.SONGS
-        "albums" -> SearchFilter.ALBUMS
-        "artists" -> SearchFilter.ARTISTS
-        "playlists" -> SearchFilter.PLAYLISTS
-        "videos" -> SearchFilter.VIDEOS
-        else -> SearchFilter.ALL
-    }
-    val results = YtMusicRepository.search(query, filter).getOrElse { return errorJson(502, "upstream: ${it.message}") }
-    return searchResultsJson(results)
+    val query = ex.queryParam("q")?.trim() ?: return errorJson(400, "missing ?q=")
+    if (query.isEmpty()) return errorJson(400, "query is empty")
+    if (query.length > QUERY_MAX) return errorJson(400, "query too long")
+    val filter = parseFilter(ex.queryParam("filter")) ?: return errorJson(400, "invalid search filter")
+    val continuation = ex.queryParam("continuation")
+    if (continuation != null && !validContinuation(continuation)) return errorJson(400, "invalid continuation")
+    val page = if (continuation == null) {
+        YtMusicRepository.searchPage(query, filter)
+    } else {
+        YtMusicRepository.searchContinuation(continuation, filter)
+    }.getOrElse { return errorJson(502, "upstream: ${it.message}") }
+    return searchResultsJson(page.rows, page.continuation)
+}
+
+private fun parseFilter(raw: String?): SearchFilter? = when (raw?.lowercase() ?: "all") {
+    "all" -> SearchFilter.ALL
+    "songs" -> SearchFilter.SONGS
+    "albums" -> SearchFilter.ALBUMS
+    "artists" -> SearchFilter.ARTISTS
+    "playlists" -> SearchFilter.PLAYLISTS
+    "videos" -> SearchFilter.VIDEOS
+    else -> null
 }
 
 private suspend fun trackJson(ex: HttpExchange): JsonObject {
     val videoId = ex.pathSegment(1) ?: return errorJson(400, "missing video id")
-    if (ex.requestURI.path.endsWith("/stream")) return streamJson(videoId, ex.queryParam("prefer"))
+    if (!validId(videoId)) return errorJson(400, "invalid video id")
+    if (ex.requestURI.path.endsWith("/stream")) {
+        val prefer = ex.queryParam("prefer")
+        val preferCodec = ex.queryParam("prefer_codec")
+        return streamJson(videoId, prefer, preferCodec)
+    }
     val song = YtMusicRepository.trackLinks(videoId).getOrElse { return errorJson(404, "no watch entry: ${it.message}") }
     return songJson(song)
 }
@@ -107,8 +141,12 @@ private suspend fun trackJson(ex: HttpExchange): JsonObject {
  * Progressive audio itags only — HLS/DASH manifests are a later step and are
  * recorded as a gap in the desktop feature matrix.
  */
-private suspend fun streamJson(videoId: String, prefer: String?): JsonObject {
-    val preferAac = prefer == "aac" || prefer == "m4a"
+private suspend fun streamJson(videoId: String, prefer: String?, preferCodec: String?): JsonObject {
+    // S4: optional codec-preference hint (backward compatible — absent =
+    // previous behavior). Only "aac"/"m4a" is honored; anything else falls
+    // back to the existing prefer/prefer=aac logic.
+    val effectivePrefer = if (preferCodec == "aac" || preferCodec == "m4a") "aac" else prefer
+    val preferAac = effectivePrefer == "aac" || effectivePrefer == "m4a"
     return if (preferAac) {
         val stream = StreamResolver.resolveForDownload(videoId, Int.MAX_VALUE, requireM4a = true)
         buildJsonObject {
@@ -138,8 +176,31 @@ private suspend fun streamJson(videoId: String, prefer: String?): JsonObject {
 private suspend fun browseJson(ex: HttpExchange, kind: String): JsonObject {
     val browseId = ex.pathSegment(1) ?: return errorJson(400, "missing browse id")
     val id = if (kind == "playlist" && !browseId.startsWith("VL")) "VL$browseId" else browseId
+    if (!validId(id)) return errorJson(400, "invalid browse id")
     val page = YtMusicRepository.browseSongs(id).getOrElse { return errorJson(502, "upstream: ${it.message}") }
     return browsePageJson(page)
+}
+
+private suspend fun browseContinuationEndpoint(ex: HttpExchange): JsonObject {
+    val token = ex.queryParam("token") ?: return errorJson(400, "missing continuation token")
+    if (!validContinuation(token)) return errorJson(400, "invalid continuation")
+    val page = YtMusicRepository.moreSongs(token).getOrElse { return errorJson(502, "upstream: ${it.message}") }
+    return browsePageJson(page)
+}
+
+/**
+ * S10: typeahead rows for discovery. Deliberately unauthenticated upstream
+ * ([YtMusicRepository.searchTypeahead] strips the session cookie), so typed
+ * keystrokes never land in the account's server-side search history. No
+ * account sign-in, cookies or tokens cross this endpoint.
+ */
+private suspend fun suggestJson(ex: HttpExchange): JsonObject {
+    val query = ex.queryParam("q")?.trim() ?: return errorJson(400, "missing ?q=")
+    if (query.isEmpty()) return errorJson(400, "query is empty")
+    if (query.length > QUERY_MAX) return errorJson(400, "query too long")
+    val queries = YtMusicRepository.searchSuggestions(query).getOrElse { return errorJson(502, "upstream: ${it.message}") }
+    val page = YtMusicRepository.searchTypeahead(query).getOrElse { return errorJson(502, "upstream: ${it.message}") }
+    return searchResultsJson(page.rows, page.continuation, queries)
 }
 
 private suspend fun lyricsJson(ex: HttpExchange): JsonObject {
@@ -156,6 +217,36 @@ private suspend fun lyricsJson(ex: HttpExchange): JsonObject {
         order = LyricsSource.entries,
     ) ?: return errorJson(404, "no lyrics found")
     return lyricsJson(result.source.name, result.lines)
+}
+
+/**
+ * S11: related tracks for autoplay — `:shared`'s radio (the watch queue
+ * behind the playing track) as plain rows. Read-only; no account state.
+ */
+private suspend fun radioEndpoint(ex: HttpExchange): JsonObject {
+    val videoId = ex.pathSegment(1) ?: return errorJson(400, "missing video id")
+    if (!validId(videoId)) return errorJson(400, "invalid video id")
+    val songs = YtMusicRepository.radio(videoId).getOrElse { return errorJson(502, "upstream: ${it.message}") }
+    return radioJson(songs)
+}
+
+private suspend fun homeEndpoint(ex: HttpExchange): JsonObject {
+    val token = ex.queryParam("continuation")
+    if (token != null && !validContinuation(token)) return errorJson(400, "invalid continuation")
+    val feed = if (token == null) YtMusicRepository.home() else YtMusicRepository.moreHome(token)
+    return homeJson(feed.getOrElse { return errorJson(502, "upstream: ${it.message}") })
+}
+
+private suspend fun exploreEndpoint(ex: HttpExchange): JsonObject {
+    val section = ex.queryParam("section") ?: return errorJson(400, "missing section")
+    val browseId = when (section.lowercase()) {
+        "explore" -> "FEmusic_explore"
+        "new-releases" -> "FEmusic_new_releases"
+        else -> return errorJson(400, "invalid explore section")
+    }
+    val shelves = YtMusicRepository.homeSupplement(browseId)
+        .getOrElse { return errorJson(502, "upstream: ${it.message}") }
+    return homeShelvesJson(shelves)
 }
 
 // ---- Stream helper: mime sniff + itag extraction (adapter-level seam) -------
@@ -208,19 +299,30 @@ private fun HttpExchange.queryParam(name: String): String? =
 private fun HttpExchange.pathSegment(index: Int): String? =
     requestURI.path.split('/').filter { it.isNotBlank() }.getOrNull(index)
 
+private fun validContinuation(token: String): Boolean =
+    token.isNotEmpty() && token.length <= CONTINUATION_MAX && token.none { it.isISOControl() }
+
+private fun validId(id: String): Boolean =
+    id.isNotEmpty() && id.length <= 64 && id.all { it.isLetterOrDigit() || it == '-' || it == '_' }
+
 private fun errorJson(status: Int, message: String?): JsonObject = buildJsonObject {
     put("error", JsonPrimitive(message ?: "error"))
+    // Carried so handle() can answer with the caller's exact status — the
+    // message-prefix heuristic (missing→400, no→404, else 502) cannot
+    // express 401/403/etc.
+    put("status", JsonPrimitive(status))
 }
 
 private fun handle(ex: HttpExchange, body: suspend () -> JsonObject) {
     val started = System.currentTimeMillis()
-    // Error-shaped bodies carry their status in-band: an `error` object is
-    // either a 400 (bad input), a 404 (no such track/lyrics) or a 502
-    // (upstream failure), decided by the caller putting the right message.
+    // Error-shaped bodies carry their status in-band: the caller's
+    // explicit `status` field wins; the message-prefix heuristic
+    // (missing→400, no→404, else 502) stays as the fallback for callers
+    // that only put an `error` string.
     val (status, json) = try {
         val json = runBlocking { withContext(Dispatchers.IO) { body() } }
         if (json.containsKey("error")) {
-            statusForError(json) to json
+            explicitStatus(json) ?: statusForError(json) to json
         } else {
             200 to json
         }
@@ -231,6 +333,9 @@ private fun handle(ex: HttpExchange, body: suspend () -> JsonObject) {
     send(ex, status, json)
     log("${if (status < 400) "OK" else "ERR"} $status ${ex.requestMethod} ${ex.requestURI.path} in ${System.currentTimeMillis() - started}ms")
 }
+
+private fun explicitStatus(json: JsonObject): Int? =
+    (json["status"] as? JsonPrimitive)?.content?.toIntOrNull()
 
 private fun statusForError(json: JsonObject): Int {
     val message = json["error"]?.toString().orEmpty()

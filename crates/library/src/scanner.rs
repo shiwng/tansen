@@ -16,13 +16,16 @@ use std::sync::Arc;
 pub struct ScanProgress {
     pub scanned: usize,
     pub total: usize,
-    pub folder: String,
+    /// Folder id — the path stays inside the backend (TAN-11).
+    pub folder_id: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct ScanSummary {
     pub added: usize,
-    pub updated: usize,
+    /// M12: files whose stored mtime+size matched and were skipped without
+    /// parsing (the field was never written before).
+    pub unchanged: usize,
     pub marked_missing: usize,
     pub errors: usize,
 }
@@ -62,29 +65,48 @@ impl Scanner {
         let total = jobs.len();
         let done = Arc::new(AtomicUsize::new(0));
         let errors = Arc::new(AtomicUsize::new(0));
-        let added = Arc::new(AtomicUsize::new(0));
 
-        // New tracks are recorded so the summary can count them without a
-        // second query.
-        jobs.par_iter().for_each(|(folder_id, path)| {
-            match self.record(db, *folder_id, path) {
-                Ok(true) => {
-                    added.fetch_add(1, Ordering::Relaxed);
+        // M12, phase 1 (parallel parse): stat-compare against the stored
+        // mtime+size and read tags only for changed or missing rows. Nothing
+        // touches the database here.
+        let writes: Vec<(repo::TrackWrite, bool)> = jobs
+            .par_iter()
+            .filter_map(|(folder_id, path)| {
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n % 25 == 0 || n == total {
+                    on_progress(ScanProgress { scanned: n, total, folder_id: *folder_id });
                 }
-                Ok(false) => {}
+                match self.parse_job(db, *folder_id, path) {
+                    Ok(Some(pair)) => Some(pair),
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "scan parse failed");
+                        errors.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
+                }
+            })
+            .collect();
+        summary.unchanged = total - writes.len();
+
+        // M12, phase 2 (batched write): every insert of a chunk commits
+        // inside one transaction instead of two autocommits per file.
+        let mut added = 0usize;
+        for chunk in writes.chunks(200) {
+            let items: Vec<repo::TrackWrite> =
+                chunk.iter().map(|(w, _)| repo::TrackWrite { track: w.track.clone(), folder_id: w.folder_id, mtime: w.mtime, size: w.size, art_path: w.art_path.clone() }).collect();
+            match repo::upsert_batch(db, &items, now_secs()) {
+                Ok(_) => {
+                    added += chunk.iter().filter(|(_, existed)| !existed).count();
+                }
                 Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "scan record failed");
-                    errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(error = %e, "scan batch write failed");
+                    errors.fetch_add(chunk.len(), Ordering::Relaxed);
                 }
             }
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 25 == 0 || n == total {
-                let folder = path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                on_progress(ScanProgress { scanned: n, total, folder });
-            }
-        });
+        }
 
-        summary.added = added.load(Ordering::Relaxed);
+        summary.added = added;
         summary.errors = errors.load(Ordering::Relaxed);
 
         // Missing-file detection: every previously known track under a scanned
@@ -111,30 +133,37 @@ impl Scanner {
         Ok(summary)
     }
 
-    /// Reads and upserts one file. Returns `Ok(true)` when the track is new.
-    fn record(&self, db: &Db, folder_id: i64, path: &Path) -> std::result::Result<bool, String> {
-        let existed = repo::get_track_by_path(db, &path.to_string_lossy())
-            .map_err(|e| e.to_string())?
-            .is_some();
+    /// Stats + parses one file. `Ok(None)` = unchanged row skipped (M12):
+    /// the stored mtime+size match the file and the row is not missing, so
+    /// no metadata is parsed and nothing is written. `existed` distinguishes
+    /// inserts from updates for the summary.
+    fn parse_job(
+        &self,
+        db: &Db,
+        folder_id: i64,
+        path: &Path,
+    ) -> std::result::Result<Option<(repo::TrackWrite, bool)>, String> {
+        let stat = repo::stat_by_path(db, &path.to_string_lossy()).map_err(|e| e.to_string())?;
         let mtime = file_mtime(path);
         let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
-
-        match metadata::read(path, folder_id) {
-            Ok(mut track) => {
-                let id = repo::upsert_track(db, &track, folder_id, mtime, size, now_secs())
-                    .map_err(|e| e.to_string())?;
-                track.id = id;
-                // Artwork only when absent or file changed (hash includes mtime,
-                // so an unchanged file hits the cache and costs nothing).
-                if let Ok(Some(art_path)) = art::extract(path, mtime, &self.art_dir) {
-                    repo::set_art_path(db, id, art_path.to_str()).map_err(|e| e.to_string())?;
-                } else {
-                    repo::set_art_path(db, id, None).map_err(|e| e.to_string())?;
-                }
-                Ok(!existed)
+        if let Some((st_mtime, st_size, missing)) = stat {
+            if !missing && st_mtime == mtime && st_size == size {
+                return Ok(None);
             }
-            Err(e) => Err(e.to_string()),
         }
+        let existed = stat.is_some();
+        let track = metadata::read(path, folder_id).map_err(|e| e.to_string())?;
+        // Art failures never fail the file (old behavior): the row just gets
+        // no artwork path. The hash includes mtime, so unchanged files hit
+        // the cache for free.
+        let art_path = art::extract(path, mtime, &self.art_dir)
+            .ok()
+            .flatten()
+            .and_then(|p| p.to_str().map(str::to_owned));
+        Ok(Some((
+            repo::TrackWrite { track, folder_id, mtime, size, art_path },
+            existed,
+        )))
     }
 
     fn known_paths(&self, db: &Db, folder_id: i64) -> DbResult<Vec<(i64, String, bool)>> {
@@ -148,7 +177,7 @@ impl Scanner {
     }
 }
 
-fn file_mtime(path: &Path) -> i64 {
+pub(crate) fn file_mtime(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()

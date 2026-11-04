@@ -9,7 +9,6 @@ persistence = { path = "../persistence" }
 playback = { path = "../playback" }
 library = { path = "../library" }
 sources = { path = "../sources" }
-souvlaki = "0.8"
 notify = "8"
 tokio = { workspace = true }
 serde = { workspace = true }

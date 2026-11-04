@@ -21,11 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out upstream BitChord at the pinned tag (sidecar sibling)
+      - name: Check out upstream BitChord at the pinned commit (sidecar sibling)
         uses: actions/checkout@v4
         with:
           repository: kushagrasinghx/BitChord
-          ref: v1.8.1 # keep in sync with scripts/build-sidecar.sh / BITCHORD_REF
+          # Immutable commit the v1.8.1 tag pointed at when audited; the
+          # tag itself is mutable. Keep in sync with BITCHORD_SHA in
+          # scripts/build-sidecar.sh.
+          ref: 7d956f211b8a46a87184fd3ff87432b51a111dfa
           path: BitChord
           fetch-depth: 1
 

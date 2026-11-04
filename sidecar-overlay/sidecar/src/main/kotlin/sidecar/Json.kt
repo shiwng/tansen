@@ -11,6 +11,8 @@ package sidecar
 import com.music.bitchord.data.model.SearchResult
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.ArtistRef
+import com.music.bitchord.data.model.HomeFeed
+import com.music.bitchord.data.model.HomeShelf
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.lyrics.LyricLine
 import kotlinx.serialization.json.JsonArray
@@ -48,7 +50,7 @@ fun songJson(song: Song): JsonObject = buildJsonObject {
 }
 
 /** Search rows: tracks (with their promotion marked) and browse cards. */
-fun searchResultsJson(rows: List<SearchResult>): JsonObject = buildJsonObject {
+fun searchResultsJson(rows: List<SearchResult>, continuation: String? = null, queries: List<String> = emptyList()): JsonObject = buildJsonObject {
     put(
         "tracks",
         JsonArray(
@@ -77,9 +79,16 @@ fun searchResultsJson(rows: List<SearchResult>): JsonObject = buildJsonObject {
             },
         ),
     )
+    put("continuation", continuation?.let { JsonPrimitive(it) } ?: JsonNull)
+    put("queries", JsonArray(queries.map { JsonPrimitive(it) }))
 }
 
-/** One browse page (album or playlist): header if the response carried one. */
+/** S11: a radio (related tracks) answer — the watch queue as plain rows. */
+fun radioJson(songs: List<com.music.bitchord.data.model.Song>): JsonObject = buildJsonObject {
+    put("tracks", JsonArray(songs.map { songJson(it) }))
+}
+
+/** One browse page (album, playlist or artist): header if the response carried one. */
 fun browsePageJson(page: YtMusicRepository.SongPage): JsonObject = buildJsonObject {
     page.header?.let { header ->
         put("title", JsonPrimitive(header.title))
@@ -89,6 +98,42 @@ fun browsePageJson(page: YtMusicRepository.SongPage): JsonObject = buildJsonObje
     page.description?.let { put("description", JsonPrimitive(it)) }
     put("continuation", page.continuation?.let { JsonPrimitive(it) } ?: JsonNull)
     put("tracks", JsonArray(page.songs.map { songJson(it) }))
+    put("suggested", JsonArray(page.suggested.map { songJson(it) }))
+    page.library?.let { library ->
+        put("library", buildJsonObject {
+            put("playlistId", JsonPrimitive(library.playlistId))
+            put("saved", JsonPrimitive(library.saved))
+        })
+    }
+}
+
+/** Anonymous home/explore shelves. Account-only fields are deliberately absent. */
+fun homeJson(feed: HomeFeed): JsonObject = buildJsonObject {
+    put("continuation", feed.continuation?.let { JsonPrimitive(it) } ?: JsonNull)
+    put("shelves", JsonArray(feed.shelves.map(::homeShelfJson)))
+}
+
+fun homeShelvesJson(shelves: List<HomeShelf>): JsonObject = buildJsonObject {
+    put("continuation", JsonNull)
+    put("shelves", JsonArray(shelves.map(::homeShelfJson)))
+}
+
+private fun homeShelfJson(shelf: HomeShelf): JsonObject = buildJsonObject {
+    put("title", JsonPrimitive(shelf.title))
+    put("subtitle", JsonPrimitive(shelf.subtitle))
+    put("layout", JsonPrimitive(shelf.layout.name.lowercase()))
+    shelf.moreBrowseId?.let { put("moreBrowseId", JsonPrimitive(it)) }
+    shelf.moreParams?.let { put("moreParams", JsonPrimitive(it)) }
+    put("items", JsonArray(shelf.items.map { item ->
+        buildJsonObject {
+            put("title", JsonPrimitive(item.title))
+            put("subtitle", JsonPrimitive(item.subtitle))
+            item.thumbnailUrl?.let { put("thumbnailUrl", JsonPrimitive(it)) }
+            item.videoId?.let { put("videoId", JsonPrimitive(it)) }
+            item.browseId?.let { put("browseId", JsonPrimitive(it)) }
+            put("isVideo", JsonPrimitive(item.isVideo))
+        }
+    }))
 }
 
 /** Lyric lines: the timing rides with each line; the flag just summarizes. */

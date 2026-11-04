@@ -53,6 +53,95 @@ pub fn list_folders(db: &Db) -> Result<Vec<Folder>> {
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
+/// Stored stat tuple for a library path: (mtime_sec, size_bytes, missing).
+/// The scanner compares it against the filesystem to skip unchanged files
+/// without parsing metadata (M12).
+pub fn stat_by_path(db: &Db, path: &str) -> Result<Option<(i64, i64, bool)>> {
+    let conn = db.lock()?;
+    conn.query_row(
+        "SELECT mtime_sec, size_bytes, missing FROM tracks WHERE path = ?1",
+        params![path],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// One file's write for a scan batch: the parsed row plus its stat tuple and
+/// artwork destination.
+pub struct TrackWrite {
+    pub track: Track,
+    pub folder_id: i64,
+    pub mtime: i64,
+    pub size: i64,
+    pub art_path: Option<String>,
+}
+
+/// Upserts a whole scan batch inside ONE transaction (M12): the per-file
+/// autocommit pairs (upsert + art update) become a single commit per batch.
+/// Returns the ids in input order.
+pub fn upsert_batch(db: &Db, items: &[TrackWrite], now: i64) -> Result<Vec<i64>> {
+    let mut conn = db.lock()?;
+    let tx = conn.transaction()?;
+    let mut ids = Vec::with_capacity(items.len());
+    for item in items {
+        let id = upsert_track_in(&tx, &item.track, item.folder_id, item.mtime, item.size, now)?;
+        set_art_path_in(&tx, id, item.art_path.as_deref())?;
+        ids.push(id);
+    }
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Track rows for a list of library ids (M11): the queue-rows query the
+/// frontend drives on `queue_rev` changes. Returns one row per distinct id
+/// found, in input order, skipping missing rows. Chunked like `mark_missing`
+/// so the IN list stays bounded.
+/// F1: capped read-only LIKE search over the local library (title,
+/// artist, album). LIKE metacharacters in the query are escaped.
+pub fn search_local(db: &Db, query: &str, limit: usize) -> Result<Vec<Track>> {
+    let conn = db.lock()?;
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    let mut stmt = conn.prepare(
+        "SELECT * FROM tracks WHERE title LIKE ?1 ESCAPE '\\' \
+         OR artist LIKE ?1 ESCAPE '\\' \
+         OR album LIKE ?1 ESCAPE '\\' \
+         ORDER BY title LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![pattern, limit.clamp(1, 200) as i64], track_from_row)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn tracks_by_ids(db: &Db, ids: &[i64]) -> Result<Vec<Track>> {
+    let conn = db.lock()?;
+    let mut by_id: std::collections::HashMap<i64, Track> = std::collections::HashMap::new();
+    for chunk in ids.chunks(500) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT * FROM tracks WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), track_from_row)?;
+        for row in rows {
+            let t = row?;
+            by_id.insert(t.id, t);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    Ok(ids
+        .iter()
+        .filter(|id| seen.insert(**id))
+        .filter_map(|id| by_id.get(id).cloned())
+        .collect())
+}
+
 pub fn get_track(db: &Db, id: i64) -> Result<Option<Track>> {
     let conn = db.lock()?;
     conn.query_row("SELECT * FROM tracks WHERE id = ?1", params![id], track_from_row)
@@ -88,6 +177,18 @@ pub fn list_tracks(db: &Db) -> Result<Vec<Track>> {
 /// Upsert one scanned file by path. Returns the track id.
 pub fn upsert_track(db: &Db, t: &Track, folder_id: i64, mtime: i64, size: i64, now: i64) -> Result<i64> {
     let conn = db.lock()?;
+    upsert_track_in(&conn, t, folder_id, mtime, size, now)
+}
+
+/// Transaction-scoped variant used by the scan batch (M12).
+pub fn upsert_track_in(
+    conn: &rusqlite::Connection,
+    t: &Track,
+    folder_id: i64,
+    mtime: i64,
+    size: i64,
+    now: i64,
+) -> Result<i64> {
     conn.execute(
         r#"INSERT INTO tracks(
                folder_id, path, file_name, title, artist, album, album_artist,
@@ -178,6 +279,15 @@ pub fn dirty_art_tracks(db: &Db) -> Result<Vec<(i64, String, i64)>> {
 
 pub fn set_art_path(db: &Db, track_id: i64, art_path: Option<&str>) -> Result<()> {
     let conn = db.lock()?;
+    set_art_path_in(&conn, track_id, art_path)
+}
+
+/// Transaction-scoped variant used by the scan batch (M12).
+pub fn set_art_path_in(
+    conn: &rusqlite::Connection,
+    track_id: i64,
+    art_path: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "UPDATE tracks SET art_path = ?2, art_dirty = 0 WHERE id = ?1",
         params![track_id, art_path],
@@ -316,4 +426,199 @@ pub fn count(db: &Db, table: &str) -> Result<i64> {
     let conn = db.lock()?;
     let sql = format!("SELECT COUNT(*) FROM {table}");
     conn.query_row(&sql, [], |r| r.get(0)).map_err(Into::into)
+}
+
+// ---- S6: remote track metadata -------------------------------------------
+
+/// Bound on remote metadata text columns (S6). Oversized values are
+/// truncated, never rejected — the UI should not break on a hostile title.
+pub const REMOTE_MAX_STR: usize = 512;
+pub const REMOTE_MAX_KEY: usize = 1024;
+
+fn clip(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// One remote-track row (display + identity).
+#[derive(Debug, Clone)]
+pub struct RemoteTrack {
+    pub id: i64,
+    pub key_source: String,
+    pub key_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub duration_sec: f64,
+    pub artwork_url: Option<String>,
+}
+
+/// Upserts a remote track's metadata; returns its row id. Single writer
+/// path (the app layer calls this before sending the Command).
+pub fn upsert_remote_track(
+    db: &Db,
+    key_source: &str,
+    key_id: &str,
+    title: &str,
+    artist: &str,
+    album: Option<&str>,
+    duration_sec: f64,
+    artwork_url: Option<&str>,
+) -> Result<i64> {
+    let conn = db.lock()?;
+    conn.execute(
+        r#"INSERT INTO remote_tracks(
+               key_source, key_id, title, artist, album, duration_sec, artwork_url)
+           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT(key_source, key_id) DO UPDATE SET
+               title = excluded.title,
+               artist = excluded.artist,
+               album = excluded.album,
+               duration_sec = excluded.duration_sec,
+               artwork_url = excluded.artwork_url"#,
+        params![
+            clip(key_source, REMOTE_MAX_KEY),
+            clip(key_id, REMOTE_MAX_KEY),
+            clip(title, REMOTE_MAX_STR),
+            clip(artist, REMOTE_MAX_STR),
+            album.map(|a| clip(a, REMOTE_MAX_STR)),
+            duration_sec,
+            artwork_url.map(|a| clip(a, REMOTE_MAX_STR)),
+        ],
+    )?;
+    conn.query_row(
+        "SELECT id FROM remote_tracks WHERE key_source = ?1 AND key_id = ?2",
+        params![clip(key_source, REMOTE_MAX_KEY), clip(key_id, REMOTE_MAX_KEY)],
+        |r| r.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// Display rows for remote entries by their row ids. Chunked like
+/// `tracks_by_ids` so the IN list stays bounded; input order preserved,
+/// duplicates collapsed, unknown ids skipped.
+pub fn remote_tracks_by_ids(db: &Db, ids: &[i64]) -> Result<Vec<RemoteTrack>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let conn = db.lock()?;
+    let mut by_id: std::collections::HashMap<i64, RemoteTrack> = std::collections::HashMap::new();
+    for chunk in ids.chunks(500) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, key_source, key_id, title, artist, album, duration_sec, artwork_url \
+             FROM remote_tracks WHERE id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok(RemoteTrack {
+                id: r.get(0)?,
+                key_source: r.get(1)?,
+                key_id: r.get(2)?,
+                title: r.get(3)?,
+                artist: r.get(4)?,
+                album: r.get(5)?,
+                duration_sec: r.get(6)?,
+                artwork_url: r.get(7)?,
+            })
+        })?;
+        for row in rows {
+            let t = row?;
+            by_id.insert(t.id, t);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    Ok(ids
+        .iter()
+        .filter(|id| seen.insert(**id))
+        .filter_map(|id| by_id.get(id).cloned())
+        .collect())
+}
+
+/// One remote-track row by its (source kind, id) key — the S7 resolver's
+/// target-metadata lookup for fallback matching.
+pub fn get_remote_track_by_key(db: &Db, key_source: &str, key_id: &str) -> Result<Option<RemoteTrack>> {
+    let conn = db.lock()?;
+    conn.query_row(
+        "SELECT id, key_source, key_id, title, artist, album, duration_sec, artwork_url \
+         FROM remote_tracks WHERE key_source = ?1 AND key_id = ?2",
+        params![key_source, key_id],
+        |r| {
+            Ok(RemoteTrack {
+                id: r.get(0)?,
+                key_source: r.get(1)?,
+                key_id: r.get(2)?,
+                title: r.get(3)?,
+                artist: r.get(4)?,
+                album: r.get(5)?,
+                duration_sec: r.get(6)?,
+                artwork_url: r.get(7)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// One display row for a queue entry — local library track or remote
+/// (source-keyed) track (S6). `kind` tells the frontend which identity
+/// space the row belongs to (`local` / `remote`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QueueDisplayRow {
+    pub kind: &'static str,
+    /// Local: `tracks.id`; remote: `remote_tracks.id` — the EntryId the
+    /// engine holds and the frontend mirrors.
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub duration_sec: f64,
+    /// Local rows: art cache path (rendered via `art://`).
+    pub art_path: Option<String>,
+    /// Remote rows: catalogue artwork URL (never fetched directly; the app
+    /// routes it through `fetch_artwork`'s host allowlist).
+    pub artwork_url: Option<String>,
+    /// Remote rows: the source's own track id (the TrackKey id).
+    pub video_id: Option<String>,
+    /// Remote rows: the source kind (`youtube` / `addon`).
+    pub key_source: Option<String>,
+}
+
+/// The queue display query: rows for BOTH kinds in one call (S6). Local ids
+/// resolve through `tracks_by_ids` (missing rows dropped), remote ids through
+/// `remote_tracks_by_ids`; each group keeps its input order.
+pub fn queue_rows_by_ids(db: &Db, ids: &[i64], remote_ids: &[i64]) -> Result<Vec<QueueDisplayRow>> {
+    let mut rows = Vec::with_capacity(ids.len() + remote_ids.len());
+    for t in tracks_by_ids(db, ids)? {
+        if t.missing {
+            continue;
+        }
+        rows.push(QueueDisplayRow {
+            kind: "local",
+            id: t.id,
+            title: t.title,
+            artist: t.artist,
+            album: if t.album.is_empty() { None } else { Some(t.album) },
+            duration_sec: t.duration_sec,
+            art_path: t.art_path,
+            artwork_url: None,
+            video_id: None,
+            key_source: None,
+        });
+    }
+    for r in remote_tracks_by_ids(db, remote_ids)? {
+        rows.push(QueueDisplayRow {
+            kind: "remote",
+            id: r.id,
+            title: r.title,
+            artist: r.artist,
+            album: r.album,
+            duration_sec: r.duration_sec,
+            art_path: None,
+            artwork_url: r.artwork_url,
+            video_id: Some(r.key_id),
+            key_source: Some(r.key_source),
+        });
+    }
+    Ok(rows)
 }

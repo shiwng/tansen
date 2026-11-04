@@ -11,11 +11,19 @@ import type { TrackRef } from '@/types';
 import { artUrl, sourceFor } from '@/lib/rows';
 import { useArtworkColor } from '@/lib/artworkColor';
 import { usePageTint } from '@/lib/usePageTint';
+import { RemoteBrowsePage } from './RemoteBrowsePage';
 
 /** A user playlist: an ordered list of library tracks. */
 export function PlaylistPage() {
   const { id } = useParams<{ id: string }>();
-  const playlistId = Number(id);
+  const rawId = decodeURIComponent(id ?? '');
+  if (rawId.startsWith('VL') || rawId.startsWith('PL') || rawId.startsWith('OLAK5uy')) {
+    return <RemoteBrowsePage kind="playlist" id={rawId} />;
+  }
+  return <LocalPlaylistPage playlistId={Number(rawId)} />;
+}
+
+function LocalPlaylistPage({ playlistId }: { playlistId: number }) {
   const navigate = useNavigate();
   const client = useQueryClient();
   const playTracks = usePlayer((s) => s.playTracks);

@@ -1,14 +1,11 @@
-import { ListMusic, Settings } from 'lucide-react';
+import { Clock, ListMusic, Radio, Settings } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { PrefetchLink, PrefetchNavLink } from '@/components/PrefetchLink';
-import { LogoMark } from '@/components/icons/LogoMark';
+import { PrefetchNavLink } from '@/components/PrefetchLink';
 import {
   AlbumsIcon,
   AllPlaylistsIcon,
   ArtistsIcon,
   HomeIcon,
-  NewIcon,
-  RecentlyAddedIcon,
   SearchIcon,
   SongsIcon,
   type NavIconProps,
@@ -25,24 +22,26 @@ interface NavItem {
 const PRIMARY: NavItem[] = [
   { to: '/search', label: 'Search', Icon: SearchIcon },
   { to: '/home', label: 'Home', Icon: HomeIcon },
-  { to: '/new', label: 'New', Icon: NewIcon },
+  { to: '/radio', label: 'Radio', Icon: (props) => <Radio size={20} {...props} /> },
 ];
 
 const LIBRARY: NavItem[] = [
-  { to: '/library/recent', label: 'Recently Played', Icon: RecentlyAddedIcon },
+  { to: '/library/recent', label: 'Recently Added', Icon: (props) => <Clock size={20} {...props} /> },
   { to: '/library/artists', label: 'Artists', Icon: ArtistsIcon },
   { to: '/library/albums', label: 'Albums', Icon: AlbumsIcon },
   { to: '/library/songs', label: 'Songs', Icon: SongsIcon },
 ];
 
+// Where Music lists Store — Tansen has no store, so Settings lives here.
+const SETTINGS: NavItem[] = [{ to: '/settings', label: 'Settings', Icon: (props) => <Settings size={20} {...props} /> }];
+
 // A sidebar row; NavLink sets aria-current on the page's own row.
 const item =
-  'group flex h-9 items-center gap-2 mb-0.5 p-1 rounded-nav type-body-reduced text-primary hover:bg-quinary aria-[current=page]:bg-nav-selected';
-// Apple's glyphs, drawn at 24px (their 24-unit box), which the user preferred to Apple's own 28px.
-const icon = 'inline-grid size-6 flex-none place-items-center text-primary group-aria-[current=page]:text-key';
+  'group flex h-7 items-center gap-2 mb-px rounded-[6px] px-2 type-body-reduced text-primary hover:bg-quinary aria-[current=page]:bg-nav-selected';
+// Glyphs at 20px in a fixed column, so every label starts at the same x.
+const icon = 'inline-grid size-5 flex-none place-items-center text-key';
 const navLabel = 'min-w-0 truncate';
-// "Library", "Playlists" (report §1: 12px/15px 600, secondary, padding 4px 8px).
-const sectionHeader = 'mt-4 px-2 py-1 type-callout-emphasized text-secondary';
+const sectionHeader = 'mt-4 px-2 pb-1 type-callout-emphasized text-secondary';
 const list = 'flex flex-col';
 
 function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => void }) {
@@ -51,7 +50,7 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => vo
       {items.map(({ to, label, Icon }) => (
         <li key={to}>
           <PrefetchNavLink to={to} className={item} onClick={onNavigate}>
-            <Icon size={24} className={icon} />
+            <Icon size={20} className={icon} />
             <span className={navLabel}>{label}</span>
           </PrefetchNavLink>
         </li>
@@ -60,7 +59,7 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => vo
   );
 }
 
-/** The left glass sidebar (report §1), backed by the local library. */
+/** The left material sidebar, with the traffic lights over its top (Toolbar.tsx). */
 export function Sidebar() {
   const drawerOpen = useUi((s) => s.drawerOpen);
   const setDrawerOpen = useUi((s) => s.setDrawerOpen);
@@ -75,22 +74,18 @@ export function Sidebar() {
         data-open={drawerOpen}
         aria-label="Main"
       >
-        <div className="mt-2 ml-2 flex h-18 items-center px-5">
-          <PrefetchLink to="/home" className="inline-flex items-center gap-2 rounded-[6px]" aria-label="Tansen, Home" onClick={close}>
-            {/* White on dark, as Apple's own wordmark; it follows the label colour so it stays visible in light. */}
-            <LogoMark size={22} className="text-primary" />
-            <span className="type-[700_19px/24px] tracking-[-0.01em]">Tansen</span>
-          </PrefetchLink>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto pr-3 pl-5 [scrollbar-width:none]">
+        {/* The title bar is overlaid, so the first row sits below the traffic lights. */}
+        <div className="min-h-0 flex-1 overflow-y-auto pt-[52px] pr-3 pl-3 [scrollbar-width:none]">
           <NavList items={PRIMARY} onNavigate={close} />
           <h2 className={sectionHeader}>Library</h2>
           <NavList items={LIBRARY} onNavigate={close} />
+          <h2 className={sectionHeader}>Tansen</h2>
+          <NavList items={SETTINGS} onNavigate={close} />
           <h2 className={sectionHeader}>Playlists</h2>
           <ul className={list}>
             <li>
               <PrefetchNavLink to="/library/playlists" className={item} onClick={close}>
-                <AllPlaylistsIcon size={24} className={icon} />
+                <AllPlaylistsIcon size={20} className={icon} />
                 <span className={navLabel}>All Playlists</span>
               </PrefetchNavLink>
             </li>
@@ -98,21 +93,13 @@ export function Sidebar() {
               <li key={id}>
                 <PrefetchNavLink to={`/playlist/${id}`} className={item} onClick={close}>
                   <span className={icon}>
-                    <ListMusic size={17} strokeWidth={1.8} />
+                    <ListMusic size={16} strokeWidth={1.8} />
                   </span>
                   <span className={navLabel}>{name}</span>
                 </PrefetchNavLink>
               </li>
             ))}
           </ul>
-        </div>
-        <div className="flex flex-col gap-2 pt-3 pr-3 pb-5 pl-5">
-          <div className="flex items-center justify-between">
-            <span className="ps-1 type-callout text-secondary">Desktop</span>
-            <PrefetchNavLink to="/settings" className="grid size-7 place-items-center rounded-nav text-secondary hover:bg-quinary hover:text-primary aria-[current=page]:bg-quinary aria-[current=page]:text-primary" aria-label="Settings" title="Settings" onClick={close}>
-              <Settings size={17} strokeWidth={1.9} />
-            </PrefetchNavLink>
-          </div>
         </div>
       </nav>
       {drawerOpen && <div className="absolute inset-0 z-[calc(var(--z-web-chrome)-1)] hidden bg-scrim max-sm:block" onClick={close} aria-hidden="true" />}

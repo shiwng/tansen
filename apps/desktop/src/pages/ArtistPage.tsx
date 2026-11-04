@@ -5,11 +5,17 @@ import { TrackList } from '@/components/music/TrackList';
 import { shuffleList } from '@/components/music/play';
 import { usePlayer } from '@/state/player';
 import { q, rowsToTracks, sourceFor } from '@/lib/rows';
+import { RemoteBrowsePage } from './RemoteBrowsePage';
 
 /** An artist: everything credited to the name (album_artist or track artist). */
 export function ArtistPage() {
   const { id } = useParams<{ id: string }>();
   const name = decodeURIComponent(id ?? '');
+  if (name.startsWith('UC')) return <RemoteBrowsePage kind="artist" id={name} />;
+  return <LocalArtistPage artistName={name} />;
+}
+
+function LocalArtistPage({ artistName: name }: { artistName: string }) {
   const tracks = useQuery(q.artistTracks(name));
   const playTracks = usePlayer((s) => s.playTracks);
 

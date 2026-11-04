@@ -25,8 +25,10 @@ pub enum CoreError {
 
 pub struct AppState {
     pub db: Arc<Db>,
+    /// M11: read-only WAL connection for query-heavy reads. The writer stays
+    /// `db` alone; the engine never touches either.
+    pub db_ro: Arc<Db>,
     pub scanner: Scanner,
-    pub media: crate::media::Media,
     /// Completed-scan notifications (watcher scans surface here too).
     pub scan_events: tokio::sync::broadcast::Sender<library::ScanSummary>,
     /// Serializes scans; the watcher skips when the command path holds it.
@@ -36,6 +38,9 @@ pub struct AppState {
     yt: std::sync::Mutex<Option<Arc<crate::yt_handle::YtHandle>>>,
     /// Jar path found by the shell (Tauri resource dir). Checked first.
     sidecar_hint: std::sync::Mutex<Option<PathBuf>>,
+    /// F7: bundled-JRE java binary found by the shell. Checked before
+    /// JAVA_HOME/PATH discovery so a clean Mac works without system Java.
+    java_hint: std::sync::Mutex<Option<String>>,
     /// Disk cache for streamed tracks, read by the playback pipeline.
     stream_cache: Arc<playback::StreamCache>,
     /// Root data directory (for caches the shell owns, like lyrics).
@@ -45,6 +50,7 @@ pub struct AppState {
 impl AppState {
     pub fn open(data_dir: &std::path::Path) -> Result<Self, CoreError> {
         let db = Arc::new(Db::open(&data_dir.join("tansen.db"))?);
+        let db_ro = Arc::new(Db::open_read_only(&data_dir.join("tansen.db"))?);
         let stream_cache = Arc::new(playback::StreamCache::new(
             data_dir.join("stream-cache"),
             512 * 1024 * 1024,
@@ -54,12 +60,13 @@ impl AppState {
         crate::watcher::spawn_watcher(db.clone(), scanner.clone(), scan_events.clone());
         Ok(Self {
             db,
+            db_ro,
             scanner,
-            media: crate::media::Media::new(),
             scan_events,
             scan_lock: std::sync::Mutex::new(()),
             yt: std::sync::Mutex::new(None),
             sidecar_hint: std::sync::Mutex::new(None),
+            java_hint: std::sync::Mutex::new(None),
             stream_cache,
             data_dir: data_dir.to_path_buf(),
         })
@@ -145,6 +152,11 @@ impl AppState {
         *self.sidecar_hint.lock().unwrap() = Some(jar);
     }
 
+    /// F7: the shell points at the bundled JRE's java binary (resource dir).
+    pub fn set_java_hint(&self, java: PathBuf) {
+        *self.java_hint.lock().unwrap() = Some(java.to_string_lossy().into_owned());
+    }
+
     /// The stream disk cache, for services that prefetch outside app-core.
     pub fn stream_cache(&self) -> Arc<playback::StreamCache> {
         self.stream_cache.clone()
@@ -172,17 +184,32 @@ impl AppState {
         if let Some(handle) = &*guard {
             return Ok(handle.clone());
         }
-        let jar = repo::get_setting(&self.db, "sidecar_jar")
-            .ok()
-            .flatten()
-            .map(PathBuf::from)
-            .or_else(|| self.sidecar_hint.lock().unwrap().clone());
-        let java = repo::get_setting(&self.db, "java_path").ok().flatten();
+        // Settings survive upgrades and can point at a removed checkout. Prefer
+        // them when valid, but fall back to the resources injected by the
+        // desktop shell; otherwise a stale setting permanently disables the
+        // bundled sidecar/JRE.
+        let jar = existing_or_hint(
+            repo::get_setting(&self.db, "sidecar_jar").ok().flatten().map(PathBuf::from),
+            self.sidecar_hint.lock().unwrap().clone(),
+        );
+        let java = existing_or_hint(
+            repo::get_setting(&self.db, "java_path").ok().flatten().map(PathBuf::from),
+            self.java_hint.lock().unwrap().clone().map(PathBuf::from),
+        )
+        .map(|p| p.to_string_lossy().into_owned());
         let source = sources::yt::YtMusicSource::launch(jar, java)
             .map_err(|e| CoreError::Catalogue(format!("YouTube sidecar unavailable: {e}")))?;
         let handle = Arc::new(crate::yt_handle::YtHandle { source: Arc::new(source) });
         *guard = Some(handle.clone());
         Ok(handle)
+    }
+
+    /// Kill the sidecar JVM. The shell calls this on exit so a relaunch never
+    /// inherits an orphaned listener.
+    pub fn shutdown_sidecar(&self) {
+        if let Some(handle) = self.yt.lock().unwrap().take() {
+            handle.source.shutdown();
+        }
     }
 
     // ---- Settings ----------------------------------------------------------
@@ -269,6 +296,31 @@ fn dirs_data_root() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
+}
+
+/// A persisted path is used only while it still exists: settings survive
+/// upgrades, so a path into a since-trashed app must fall back to the path the
+/// current bundle injected.
+fn existing_or_hint(setting: Option<PathBuf>, hint: Option<PathBuf>) -> Option<PathBuf> {
+    setting.filter(|p| p.is_file()).or(hint)
+}
+
+#[cfg(test)]
+mod state_path_tests {
+    use super::existing_or_hint;
+
+    #[test]
+    fn stale_setting_falls_back_to_the_current_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundled = dir.path().join("sidecar-all.jar");
+        std::fs::write(&bundled, b"jar").unwrap();
+        let trashed = dir
+            .path()
+            .join("Tansen-old.app/Contents/Resources/resources/sidecar-all.jar");
+        assert_eq!(existing_or_hint(Some(trashed), Some(bundled.clone())), Some(bundled));
+        assert_eq!(existing_or_hint(None, Some(dir.path().join("jre/bin/java"))), Some(dir.path().join("jre/bin/java")));
+        assert_eq!(existing_or_hint(None, None), None);
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

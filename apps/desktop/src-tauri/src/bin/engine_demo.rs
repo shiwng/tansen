@@ -70,7 +70,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resolve: HashMap<u64, String> =
         files.iter().enumerate().map(|(i, p)| (i as u64, p.clone())).collect();
     let factory = Arc::new(RodioFactory::new(
-        Box::new(move |id: u64| resolve.get(&id).cloned()),
+        Box::new(move |id: u64| {
+            resolve.get(&id).cloned().map(|url| sources::ResolvedMedia {
+                url,
+                headers: vec![],
+                expiry: None,
+                length: None,
+                mime: None,
+                format: None,
+                container: None,
+                source: sources::SourceKind::Local,
+                below_request: false,
+            })
+        }),
         None,
     ));
 
@@ -93,10 +105,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine
             .send(Command::Enqueue {
                 tracks: (0..n).map(EntryId).collect(),
+                remote: vec![],
                 placement: Placement::Append,
             })
             .await;
-        engine.send(Command::Play { entry: EntryId(0) }).await;
+        engine.send(Command::Play { entry: EntryId(0), remote: None }).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
         let (f0, pos0) = factory.frames();
         println!("after 2 s: frames={f0} pos_ms={pos0}");

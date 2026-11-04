@@ -2,6 +2,7 @@ import { Maximize2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { LogoMark } from '@/components/icons/LogoMark';
+import { useArtworkUrl } from '@/components/music/Artwork';
 import { ExplicitBadge } from '@/components/music/ExplicitBadge';
 import { albumHref, artistHref } from '@/components/music/links';
 import { PrefetchLink } from '@/components/PrefetchLink';
@@ -41,6 +42,7 @@ export function PageLink({ href, resolve, className, children }: PageLinkProps) 
     <button
       className={className}
       aria-busy={busy || undefined}
+      aria-label={typeof children === 'string' ? children : undefined}
       onClick={() => {
         if (busy) return;
         setBusy(true);
@@ -100,6 +102,9 @@ export function Lcd() {
     const entry = s.queue[s.index]?.track;
     return entry && entry.videoId === s.nowPlaying?.videoId ? entry : null;
   });
+  // Above the early return: a restored queue turns nowPlaying on after the
+  // first render, and a hook added on that render is React error #310.
+  const artwork = useArtworkUrl(nowPlaying?.artworkUrl ?? null);
 
   if (!nowPlaying) {
     return (
@@ -122,10 +127,10 @@ export function Lcd() {
         aria-label="Open full screen player"
         onClick={() => openFullScreen(true)}
       >
-        {nowPlaying.artworkUrl && (
+        {artwork && (
           <img
-            key={nowPlaying.artworkUrl}
-            src={sizedArtwork(nowPlaying.artworkUrl, 34)}
+            key={artwork}
+            src={sizedArtwork(artwork, 34)}
             alt=""
             referrerPolicy="no-referrer"
             decoding="async"
@@ -162,7 +167,13 @@ export function Lcd() {
           <span className="truncate type-callout-medium text-key">{error}</span>
         ) : (
           <span className="truncate type-callout-medium text-secondary">
-            {artist ? <Credits videoId={videoId} line={artist} artists={track?.artists ?? []} /> : status === 'loading' ? 'Loading…' : ''}
+            {status === 'buffering'
+              ? 'Buffering…'
+              : status === 'loading'
+                ? 'Resolving…'
+                : artist
+                  ? <Credits videoId={videoId} line={artist} artists={track?.artists ?? []} />
+                  : ''}
           </span>
         )}
       </div>

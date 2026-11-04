@@ -12,7 +12,7 @@
 //! ```
 
 use sources::yt::{fetch_prefix, YtMusicSource};
-use sources::{MusicSource, StreamRequest};
+use sources::{MusicSource, SourceKind, StreamRequest, TrackKey};
 use std::path::PathBuf;
 
 #[tokio::test(flavor = "current_thread")]
@@ -33,7 +33,7 @@ async fn sidecar_search_stream_decode_round_trip() {
     assert!(source.version().is_some());
 
     // Search a recording that is certainly on YouTube Music.
-    let rows = source.search("Tom Sawyer Rush", 10, None).await.expect("search succeeds");
+    let rows = source.search("Tom Sawyer Rush", 10).await.expect("search succeeds");
     assert!(!rows.is_empty(), "search returned rows");
     let track = &rows[0];
     assert!(!track.track_id.is_empty());
@@ -41,7 +41,7 @@ async fn sidecar_search_stream_decode_round_trip() {
 
     // Resolve a progressive AAC stream through the prefer=aac gate.
     let stream = source
-        .stream(&track.track_id, &StreamRequest::Best)
+        .stream(&TrackKey { source: SourceKind::YouTube, id: track.track_id.clone() }, &StreamRequest::Best)
         .await
         .expect("stream resolves")
         .expect("stream exists for the search hit");

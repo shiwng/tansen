@@ -1,0 +1,40 @@
+{
+  "title": "Fixture Album",
+  "subtitle": "Fixture Artist • 2024",
+  "thumbnailUrl": "https://example.test/thumb/album.jpg",
+  "continuation": null,
+  "tracks": [
+    {
+      "videoId": "dQw4w9WgXcQ_1",
+      "title": "Fixture Song One",
+      "artist": "Fixture Artist",
+      "album": "Fixture Album",
+      "durationSec": 201,
+      "isVideo": false
+    },
+    {
+      "videoId": "dQw4w9WgXcQ_2",
+      "title": "Fixture Song Two",
+      "artist": "Fixture Artist",
+      "album": "Fixture Album",
+      "durationSec": 185,
+      "isVideo": false
+    },
+    {
+      "videoId": "dQw4w9WgXcQ_3",
+      "title": "Fixture Song Three",
+      "artist": "Fixture Artist",
+      "album": "Fixture Album",
+      "durationSec": 240,
+      "isVideo": false
+    },
+    {
+      "videoId": "dQw4w9WgXcQ_4",
+      "title": "Fixture Song Four",
+      "artist": "Fixture Artist",
+      "album": "Fixture Album",
+      "durationSec": 199,
+      "isVideo": false
+    }
+  ]
+}

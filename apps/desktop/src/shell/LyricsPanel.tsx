@@ -29,17 +29,17 @@ type AmLyricsElement = HTMLElement & {
  */
 const HIDE_FOOTER = '.lyrics-footer { visibility: hidden !important; pointer-events: none !important; }';
 
-/** The phone's lyric typeface (@font-face in styles/global.css), then the app's. */
-const LYRIC_FONT = "'Tansen SF Pro Display', 'DM Sans', system-ui, sans-serif";
+/** The system lyric typeface, the same stack the rest of the app renders. */
+const LYRIC_FONT = '-apple-system, system-ui, sans-serif';
 
 let lyricFont: Promise<void> | null = null;
 let lyricFontLoaded = false;
 
 /**
- * Both weights, fetched once. am-lyrics measures its lines for the scroll and
+ * Both weights, resolved once. am-lyrics measures its lines for the scroll and
  * the wipe, so it's only built once the face is in: built earlier, it laid
- * out in the fallback and then jumped when the font arrived. A slow network
- * gives up after 1.5 s and lets the fallback show.
+ * out in the fallback and then jumped when the font arrived. A system face
+ * resolves immediately; the 1.5 s guard stays for a slow first paint.
  */
 function loadLyricFont(): Promise<void> {
   lyricFont ??= Promise.race([

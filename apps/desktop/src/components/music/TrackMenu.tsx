@@ -27,6 +27,8 @@ export function TrackMenu({
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [view, setView] = useState<'main' | 'playlists'>('main');
+  const [radioBusy, setRadioBusy] = useState(false);
+  const [radioError, setRadioError] = useState<string | null>(null);
   const close = useCallback(() => {
     setAnchor(null);
     setView('main');
@@ -37,7 +39,30 @@ export function TrackMenu({
 
   const playNext = usePlayer((s) => s.playNext);
   const addToQueue = usePlayer((s) => s.addToQueue);
+  const queue = usePlayer((s) => s.queue);
   const isLocal = track.videoId.startsWith('local:');
+
+  const startRadio = async () => {
+    setRadioBusy(true);
+    setRadioError(null);
+    try {
+      const rows = await invoke<DiscoveryTrack[]>('discovery_radio', { videoId: track.videoId });
+      const queued = new Set(queue.map((entry) => entry.track.videoId));
+      const radio = rows
+        .filter((row) => row.key.id !== track.videoId && !queued.has(row.key.id) && row.playable)
+        .map(discoveryToTrack);
+      if (!radio.length) {
+        setRadioError('No related tracks were available.');
+        return;
+      }
+      await addToQueue(radio, { title: `Radio · ${track.title}`, type: 'radio' });
+      close();
+    } catch (error) {
+      setRadioError(`Radio unavailable: ${String(error)}`);
+    } finally {
+      setRadioBusy(false);
+    }
+  };
 
   return (
     <>
@@ -65,6 +90,9 @@ export function TrackMenu({
               onPlaylists={() => setView('playlists')}
               playNext={playNext}
               addToQueue={addToQueue}
+              onRadio={() => void startRadio()}
+              radioBusy={radioBusy}
+              radioError={radioError}
             />
           ) : (
             <PlaylistChoices trackId={track.videoId} onDone={close} onBack={() => setView('main')} />
@@ -82,6 +110,9 @@ function MainMenu({
   onPlaylists,
   playNext,
   addToQueue,
+  onRadio,
+  radioBusy,
+  radioError,
 }: {
   track: Track;
   isLocal: boolean;
@@ -89,15 +120,19 @@ function MainMenu({
   onPlaylists: () => void;
   playNext: (tracks: Track[]) => void;
   addToQueue: (tracks: Track[]) => void;
+  onRadio: () => void;
+  radioBusy: boolean;
+  radioError: string | null;
 }) {
   return (
     <>
       <MenuHeader>{track.title}</MenuHeader>
-      {isLocal && (
+      {!isLocal && (
         <>
-          <MenuItem icon={<Radio size={15} />} onSelect={onClose}>
-            Start radio — not yet implemented
+          <MenuItem icon={<Radio size={15} />} disabled={radioBusy} onSelect={onRadio}>
+            {radioBusy ? 'Loading radio…' : 'Start radio'}
           </MenuItem>
+          {radioError && <p className="px-2 pb-1 type-caption text-secondary">{radioError}</p>}
           <MenuSeparator />
         </>
       )}
@@ -107,12 +142,47 @@ function MainMenu({
       <MenuItem icon={<ListPlus size={15} />} onSelect={() => (onClose(), addToQueue([track]))}>
         Add to Queue
       </MenuItem>
-      <MenuSeparator />
-      <MenuItem icon={<ChevronRight size={14} />} onSelect={onPlaylists}>
-        Add to Playlist
-      </MenuItem>
+      {isLocal && (
+        <>
+          <MenuSeparator />
+          <MenuItem icon={<ChevronRight size={14} />} onSelect={onPlaylists}>
+            Add to Playlist
+          </MenuItem>
+        </>
+      )}
     </>
   );
+}
+
+interface DiscoveryTrack {
+  key: { source: string; id: string };
+  title: string;
+  artist: string;
+  album: string | null;
+  duration_sec: number | null;
+  thumbnail_url: string | null;
+  artists: Array<{ name: string; browse_id: string | null }>;
+  album_id: string | null;
+  explicit: boolean;
+  playable: boolean;
+}
+
+function discoveryToTrack(row: DiscoveryTrack): Track {
+  return {
+    videoId: row.key.id,
+    title: row.title,
+    artists: row.artists.length
+      ? row.artists.map((artist) => ({ name: artist.name, id: artist.browse_id }))
+      : [{ name: row.artist || 'Unknown Artist', id: null }],
+    album: row.album ? { id: row.album_id, name: row.album } : null,
+    durationSec: row.duration_sec,
+    explicit: row.explicit,
+    thumbnail: row.thumbnail_url,
+    index: null,
+    plays: null,
+    sourceKind: row.key.source,
+    artworkUrl: row.thumbnail_url,
+  };
 }
 
 /** The playlist picker: an existing playlist, or a new one made on the spot. */

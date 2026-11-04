@@ -17,7 +17,8 @@
 //! ```
 
 use sources::yt::YtMusicSource;
-use sources::{MusicSource, StreamRequest};
+use sources::SourceKind;
+use sources::{MusicSource, StreamRequest, TrackKey};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -64,7 +65,7 @@ async fn sidecar_measurements() {
     println!("sidecar pid {pid}: RSS at ready {} KiB ({} MiB)", rss_ready, rss_ready / 1024);
 
     // One search to pin a track; resolve latency is measured against it.
-    let rows = source.search("Tom Sawyer Rush", 5, None).await.expect("search succeeds");
+    let rows = source.search("Tom Sawyer Rush", 5).await.expect("search succeeds");
     let track = &rows[0];
     println!("track: {} — {} ({})", track.title, track.artist, track.track_id);
 
@@ -74,7 +75,7 @@ async fn sidecar_measurements() {
     for i in 0..30 {
         let t = Instant::now();
         let s = source
-            .stream(&track.track_id, &StreamRequest::Best)
+            .stream(&TrackKey { source: SourceKind::YouTube, id: track.track_id.clone() }, &StreamRequest::Best)
             .await
             .expect("stream resolves")
             .expect("stream present");
@@ -102,7 +103,7 @@ async fn sidecar_measurements() {
     //    inside the tokio runtime — same rule the engine follows.
     let t = Instant::now();
     let s = source
-        .stream(&track.track_id, &StreamRequest::Best)
+        .stream(&TrackKey { source: SourceKind::YouTube, id: track.track_id.clone() }, &StreamRequest::Best)
         .await
         .expect("stream resolves")
         .expect("stream present");

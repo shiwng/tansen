@@ -15,8 +15,16 @@
 import { create } from 'zustand';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { mapStreamInfo, type StreamInfoDto, type StreamInfoView } from '@/lib/streamInfo';
+import { mergeTrackRows, type QueueRow } from '@/lib/queueRows';
 import type { Track } from '@/data/music/types';
 import type { QueueEntry, QueueSource } from '@/playback/queue/timeline';
+
+/** A mirror queue entry: the timeline shape plus the engine EntryId (S6). */
+export interface PlayerQueueEntry extends QueueEntry {
+  /** Local: library track id; remote: `remote_tracks` row id. */
+  engineId: number;
+}
 
 export const CROSSFADE_CHOICES = [0, 3, 6, 9, 12];
 
@@ -57,14 +65,25 @@ const DEFAULT_SETTINGS: Settings = {
 const PERSIST_KEY = 'tansen:playback';
 const SETTINGS_KEY = 'bitchord:player'; // upstream-compatible name, kept
 
+const PERSIST_VERSION = 1;
+
 type Persisted = {
+  /** Bumped when the payload shape changes; older state is discarded. */
+  v: typeof PERSIST_VERSION;
   tracks: Array<{
     videoId: string;
+    kind: 'local' | 'remote';
+    /** Remote rows: the source kind (`youtube` / `addon`). */
+    sourceKind?: string;
+    /** The engine EntryId at persist time (remote ids are re-upserted on restore). */
+    engineId?: number;
     title: string;
     artist: string;
     album: string | null;
     durationSec: number | null;
     thumbnail: string | null;
+    /** Remote rows: the original catalogue artwork URL. */
+    artworkUrl?: string | null;
   }>;
   index: number;
   posMs: number;
@@ -84,6 +103,20 @@ function saveSettings(state: Settings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(state));
 }
 
+/** The saved queue mirror, or null: a corrupt or older payload never throws. */
+export function parsePersisted(raw: string | null): Persisted | null {
+  try {
+    const saved = JSON.parse(raw ?? 'null') as Partial<Persisted> | null;
+    if (!saved || saved.v !== PERSIST_VERSION || !Array.isArray(saved.tracks)) return null;
+    const tracks = saved.tracks.filter(
+      (t) => t && typeof t.videoId === 'string' && typeof t.title === 'string',
+    );
+    return tracks.length ? { ...(saved as Persisted), tracks } : null;
+  } catch {
+    return null;
+  }
+}
+
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 function persistPlayback(get: () => PlayerState) {
   if (persistTimer) clearTimeout(persistTimer);
@@ -91,13 +124,18 @@ function persistPlayback(get: () => PlayerState) {
     const s = get();
     const tracks = s.queue.map((e) => ({
       videoId: e.track.videoId,
+      kind: e.track.videoId.startsWith('local:') ? ('local' as const) : ('remote' as const),
+      sourceKind: e.track.sourceKind,
+      engineId: e.engineId,
       title: e.track.title,
       artist: e.track.artists[0]?.name ?? '',
       album: e.track.album?.name ?? null,
       durationSec: e.track.durationSec,
       thumbnail: e.track.thumbnail,
+      artworkUrl: e.track.artworkUrl ?? null,
     }));
     const body: Persisted = {
+      v: PERSIST_VERSION,
       tracks,
       index: s.index,
       posMs: Math.round(playhead.posMs),
@@ -115,11 +153,12 @@ function persistPlayback(get: () => PlayerState) {
 type Status = 'idle' | 'loading' | 'playing' | 'paused' | 'buffering' | 'error';
 
 interface PlayerState {
-  queue: QueueEntry[];
+  queue: PlayerQueueEntry[];
   index: number;
   nowPlaying: NowPlaying | null;
   status: Status;
   error: string | null;
+  streamInfo: StreamInfoView | null;
   /** Bumped whenever the position source is replaced (engine restart) — scrubber re-subscribes. */
   deck: number;
   /** The automix blend indicator; always false until phase 6 lands. */
@@ -135,10 +174,10 @@ interface PlayerState {
   automixBars: number;
   showNerdStats: boolean;
 
-  playTracks: (tracks: Track[], startIndex: number, source: QueueSource | null) => void;
-  playTrack: (track: Track, source: QueueSource | null) => void;
-  playNext: (tracks: Track[], source?: QueueSource | null) => void;
-  addToQueue: (tracks: Track[], source?: QueueSource | null) => void;
+  playTracks: (tracks: Track[], startIndex: number, source: QueueSource | null) => Promise<void>;
+  playTrack: (track: Track, source: QueueSource | null) => Promise<void>;
+  playNext: (tracks: Track[], source?: QueueSource | null) => Promise<void>;
+  addToQueue: (tracks: Track[], source?: QueueSource | null) => Promise<void>;
   jumpTo: (i: number) => void;
   removeAt: (i: number) => void;
   move: (from: number, to: number) => void;
@@ -159,17 +198,73 @@ interface PlayerState {
   refresh: () => Promise<void>;
 }
 
-/** The library ids behind a set of Track objects (local tracks are `local:<id>`). */
-function idsOf(tracks: Track[]): number[] {
-  return tracks.map((t) => Number(t.videoId.replace('local:', '')));
+/** A remote (source-keyed) track: anything without the `local:` prefix. */
+export function isRemoteTrack(track: Track): boolean {
+  return !track.videoId.startsWith('local:');
 }
 
-function entryIdOf(track: Track): number {
-  return Number(track.videoId.replace('local:', ''));
+/** The RemoteKey ([source, id]) a remote track maps to; null for local. */
+function remoteKeyOf(track: Track): [string, string] | null {
+  return isRemoteTrack(track) ? [track.sourceKind ?? 'youtube', track.videoId] : null;
 }
 
-function toEntry(track: Track, i: number, source: QueueSource | null): QueueEntry {
-  return { entryId: `${track.videoId}#${i}`, track, tier: 'context', source };
+function toEntry(track: Track, i: number, source: QueueSource | null, engineId: number): PlayerQueueEntry {
+  return { entryId: `${track.videoId}#${i}`, track, tier: 'context', source, engineId };
+}
+
+/** A prepared entry: the track plus its resolved engine EntryId (S6). */
+interface PreparedEntry {
+  track: Track;
+  engineId: number;
+}
+
+/** One autoplay row announced by the backend (S11). */
+interface AutoplayRow {
+  engineId: number;
+  videoId: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  durationSec: number | null;
+  thumbnailUrl: string | null;
+}
+
+/**
+ * S6: resolves the engine EntryId for each track — the library id for local
+ * tracks, or the `remote_tracks` row id returned by the upsert for remote
+ * ones (metadata written through the single DB writer BEFORE any command).
+ */
+async function prepareEngineIds(tracks: Track[]): Promise<PreparedEntry[]> {
+  return Promise.all(
+    tracks.map(async (track): Promise<PreparedEntry> => {
+      if (!isRemoteTrack(track)) {
+        const id = Number(track.videoId.slice('local:'.length));
+        return { track, engineId: Number.isFinite(id) && id > 0 ? id : 0 };
+      }
+      // Tauri names command arguments in camelCase; snake_case keys are
+      // rejected with "missing required key" before the command body runs.
+      const engineId = await invoke<number>('remote_track_upsert', {
+        keySource: track.sourceKind ?? 'youtube',
+        keyId: track.videoId,
+        title: track.title,
+        artist: track.artists[0]?.name ?? '',
+        album: track.album?.name ?? null,
+        durationSec: track.durationSec ?? 0,
+        artworkUrl: track.artworkUrl?.startsWith('https://') ? track.artworkUrl : null,
+      });
+      return { track, engineId };
+    }),
+  );
+}
+
+/** The Enqueue `remote` list for prepared entries ([rowId, [source, id]]). */
+function remotePairsOf(prepared: PreparedEntry[]): Array<[number, [string, string]]> {
+  const pairs: Array<[number, [string, string]]> = [];
+  for (const p of prepared) {
+    const key = remoteKeyOf(p.track);
+    if (key && p.engineId > 0) pairs.push([p.engineId, key]);
+  }
+  return pairs;
 }
 
 /** A Track for a queue row: local library files and catalogue rows alike. */
@@ -191,20 +286,34 @@ export function trackFromRef(t: {
 
 /** One Command over the `engine_command` bridge (serde externally tagged). */
 type CommandDto =
-  | { Play: { entry: number } }
+  | { Play: { entry: number; remote?: [string, string] | null } }
   | 'Pause'
   | 'Resume'
   | 'Next'
   | 'Prev'
   | { Seek: { ms: number } }
   | { SetVolume: number }
-  | { Enqueue: { tracks: number[]; placement: 'Next' | 'Append' } }
+  | {
+      Enqueue: {
+        tracks: number[];
+        /** S6: remote row ids paired with their TrackKeys. */
+        remote?: Array<[number, [string, string]]>;
+        placement: 'Next' | 'Append';
+      };
+    }
+  | { Remove: { entry: number } }
+  | { Move: { entry: number; to: number } }
   | 'ClearQueue';
 
-function send(cmd: CommandDto): void {
-  invoke('engine_command', { cmd }).catch(() => {
+/** Sends one command; resolves false when the engine refused it (error shown). */
+async function send(cmd: CommandDto): Promise<boolean> {
+  try {
+    await invoke('engine_command', { cmd });
+    return true;
+  } catch {
     usePlayer.setState({ status: 'error', error: 'The playback engine is not running' });
-  });
+    return false;
+  }
 }
 
 /** Freshest position: the last published anchor, advanced by the local clock. */
@@ -245,6 +354,7 @@ function nowPlayingFrom(track: Track | undefined): NowPlaying | null {
 
 export const usePlayer = create<PlayerState>((set, get) => ({
   queue: [],
+  streamInfo: null,
   index: -1,
   nowPlaying: null,
   status: 'idle',
@@ -253,62 +363,116 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   mixing: false,
   ...loadSettings(),
 
-  playTracks: (tracks, startIndex, _source) => {
+  playTracks: async (tracks, startIndex, _source) => {
     if (!tracks.length) return;
-    const ids = idsOf(tracks);
+    let prepared: PreparedEntry[];
+    try {
+      prepared = await prepareEngineIds(tracks);
+    } catch {
+      usePlayer.setState({ status: 'error', error: 'Could not register remote track metadata' });
+      return;
+    }
+    if (prepared.some((p) => p.engineId <= 0)) return;
+    const ids = prepared.map((p) => p.engineId);
+    const remote = remotePairsOf(prepared);
     const start = Math.min(Math.max(startIndex, 0), ids.length - 1);
-    send('ClearQueue');
-    send({ Enqueue: { tracks: ids, placement: 'Append' } });
-    send({ Play: { entry: ids[start]! } });
+    const startKey = remote.find(([id]) => id === ids[start])?.[1] ?? null;
+    // Sequential: the engine applies commands in send order, so the entry
+    // must be enqueued before Play names it.
+    if (!(await send('ClearQueue'))) return;
+    if (!(await send({ Enqueue: { tracks: ids, remote, placement: 'Append' } }))) return;
+    if (!(await send({ Play: { entry: ids[start]!, remote: startKey } }))) return;
     set({
-      queue: tracks.map((t, i) => toEntry(t, i, null)),
+      queue: prepared.map((p, i) => toEntry(p.track, i, null, p.engineId)),
       index: start,
-      nowPlaying: nowPlayingFrom(tracks[start]),
+      nowPlaying: nowPlayingFrom(prepared[start]!.track),
       status: 'loading',
       error: null,
     });
     persistPlayback(get);
   },
 
-  playTrack: (track, source) => {
-    get().playTracks([track], 0, source);
+  playTrack: async (track, source) => {
+    await get().playTracks([track], 0, source);
   },
 
-  playNext: (tracks, _source) => {
-    const ids = idsOf(tracks);
-    if (!ids.length) return;
-    send({ Enqueue: { tracks: ids, placement: 'Next' } });
+  playNext: async (tracks, _source) => {
+    if (!tracks.length) return;
+    let prepared: PreparedEntry[];
+    try {
+      prepared = await prepareEngineIds(tracks);
+    } catch {
+      return;
+    }
+    if (prepared.some((p) => p.engineId <= 0)) return;
+    const ids = prepared.map((p) => p.engineId);
+    const remote = remotePairsOf(prepared);
+    send({ Enqueue: { tracks: ids, remote, placement: 'Next' } });
     set((s) => {
       const at = s.index + 1;
-      const queue = [...s.queue.slice(0, at), ...tracks.map((t, i) => toEntry(t, at + i, null)), ...s.queue.slice(at)];
+      const queue = [
+        ...s.queue.slice(0, at),
+        ...prepared.map((p, i) => toEntry(p.track, at + i, null, p.engineId)),
+        ...s.queue.slice(at),
+      ];
       return { queue };
     });
     persistPlayback(get);
   },
 
-  addToQueue: (tracks, _source) => {
-    const ids = idsOf(tracks);
-    if (!ids.length) return;
-    send({ Enqueue: { tracks: ids, placement: 'Append' } });
-    set((s) => ({ queue: [...s.queue, ...tracks.map((t, i) => toEntry(t, s.queue.length + i, null))] }));
+  addToQueue: async (tracks, _source) => {
+    if (!tracks.length) return;
+    let prepared: PreparedEntry[];
+    try {
+      prepared = await prepareEngineIds(tracks);
+    } catch {
+      return;
+    }
+    if (prepared.some((p) => p.engineId <= 0)) return;
+    const ids = prepared.map((p) => p.engineId);
+    const remote = remotePairsOf(prepared);
+    send({ Enqueue: { tracks: ids, remote, placement: 'Append' } });
+    set((s) => ({
+      queue: [...s.queue, ...prepared.map((p, i) => toEntry(p.track, s.queue.length + i, null, p.engineId))],
+    }));
     persistPlayback(get);
   },
 
   jumpTo: (i) => {
     const entry = get().queue[i];
     if (!entry) return;
-    send({ Play: { entry: entryIdOf(entry.track) } });
+    send({ Play: { entry: entry.engineId, remote: remoteKeyOf(entry.track) } });
     set({ index: i, nowPlaying: nowPlayingFrom(entry.track), status: 'loading', error: null });
   },
 
-  // The M5 Command set has no queue-edit primitives; the old IPC commands
-  // are gone. The controls stay visible (layout unchanged) and report
-  // honestly until queue editing lands as commands.
   removeAt: (i) => {
-    console.warn('queue editing is not wired to the task engine yet (remove at', i, ')');
+    const snapshot = get();
+    const entry = snapshot.queue[i];
+    if (!entry || i === snapshot.index) return;
+    send({ Remove: { entry: entry.engineId } });
+    set((s) => ({
+      queue: s.queue.filter((_, at) => at !== i),
+      index: i < s.index ? s.index - 1 : s.index,
+    }));
+    persistPlayback(get);
   },
   move: (from, to) => {
-    console.warn('queue editing is not wired to the task engine yet (move', from, '→', to, ')');
+    const snapshot = get();
+    const entry = snapshot.queue[from];
+    const target = Math.max(0, Math.min(to, snapshot.queue.length - 1));
+    if (!entry || from === snapshot.index || from === target) return;
+    send({ Move: { entry: entry.engineId, to: target } });
+    set((s) => {
+      const queue = [...s.queue];
+      const [moved] = queue.splice(from, 1);
+      if (!moved) return s;
+      queue.splice(target, 0, moved);
+      let index = s.index;
+      if (from < index && target >= index) index -= 1;
+      else if (from > index && target <= index) index += 1;
+      return { queue, index };
+    });
+    persistPlayback(get);
   },
 
   clearUpNext: () => {
@@ -324,7 +488,10 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const s = get();
     if (s.status === 'playing') send('Pause');
     else if (s.status === 'paused') send('Resume');
-    else if (s.queue[s.index]) send({ Play: { entry: entryIdOf(s.queue[s.index]!.track) } });
+    else if (s.queue[s.index]) {
+      const entry = s.queue[s.index]!;
+      send({ Play: { entry: entry.engineId, remote: remoteKeyOf(entry.track) } });
+    }
   },
 
   seek: (sec) => {
@@ -390,6 +557,66 @@ export async function initPlayerStore(): Promise<void> {
   if (started) return;
   started = true;
 
+  // M11 + S6: on a new `queue_rev`, refresh the mirror's metadata from the
+  // DB for BOTH entry kinds — local library ids and remote row ids (order
+  // and unknown ids stay as the mirror holds them).
+  let lastQueueRev = -1;
+  let lastStreamInfoEntry: number | null = null;
+  let streamInfoFetch = 0;
+  let refreshToken = 0;
+  const refreshQueueRows = async () => {
+    const token = ++refreshToken;
+    const snapshot = usePlayer.getState();
+    const ids: number[] = [];
+    const remote_ids: number[] = [];
+    for (const en of snapshot.queue) {
+      if (en.engineId <= 0) continue;
+      if (en.track.videoId.startsWith('local:')) ids.push(en.engineId);
+      else remote_ids.push(en.engineId);
+    }
+    if (!ids.length && !remote_ids.length) return;
+    try {
+      const rows = await invoke<QueueRow[]>('queue_tracks_get', { ids, remoteIds: remote_ids });
+      if (token !== refreshToken) return; // a newer rev superseded this fetch
+      // Remote artwork: route through the allowlisted fetch command once
+      // (best-effort), so queue rows show cached local art:// paths.
+      const remoteThumbs = new Map<number, string | null>();
+      await Promise.all(
+        rows
+          .filter((r) => r.kind === 'remote' && r.artwork_url)
+          .map(async (r) => {
+            try {
+              const path = await invoke<string>('fetch_artwork', { url: r.artwork_url });
+              remoteThumbs.set(r.id, convertFileSrc(path, 'art'));
+            } catch {
+              remoteThumbs.set(r.id, null);
+            }
+          }),
+      );
+      usePlayer.setState((s) => {
+        const tracks = mergeTrackRows(
+          s.queue.map((en) => ({ track: en.track, engineId: en.engineId })),
+          rows,
+          (row) =>
+            row.kind === 'remote'
+              ? remoteThumbs.get(row.id) ?? null
+              : row.art_path
+                ? convertFileSrc(row.art_path, 'art')
+                : null,
+        );
+        const queue = s.queue.map((en, i) => ({ ...en, track: tracks[i] ?? en.track }));
+        const current = s.index >= 0 ? queue[s.index]?.track : undefined;
+        return {
+          queue,
+          nowPlaying: current ? nowPlayingFrom(current) : s.nowPlaying,
+        };
+      });
+      persistPlayback(usePlayer.getState);
+    } catch {
+      // The refresh is an upgrade; the mirror stays authoritative on failure.
+    }
+  };
+
   await listen<{
     rev: number;
     status: EngineStatus;
@@ -403,10 +630,38 @@ export async function initPlayerStore(): Promise<void> {
     playhead.posMs = st.anchor.pos_ms;
     playhead.receivedAt = performance.now();
     playhead.rate = st.anchor.rate;
+    if (st.queue_rev !== lastQueueRev) {
+      lastQueueRev = st.queue_rev;
+      void refreshQueueRows();
+    }
+
+    // F5: stream-info fetch on entry change — event-driven, no polling. The
+    // first publish for an entry is Resolving (nothing resolved yet); when
+    // the answer is Playing and no info is known, one re-fetch covers the
+    // resolve that just landed (and mid-play re-resolve upgrades).
+    const entryChanged = st.entry !== lastStreamInfoEntry;
+    if (entryChanged) {
+      lastStreamInfoEntry = st.entry;
+      streamInfoFetch += 1;
+      usePlayer.setState({ streamInfo: null });
+    }
+    // One in-flight query per publish; stale responses are dropped by token.
+    if (st.entry !== null && (entryChanged || (st.status === 'Playing' && !usePlayer.getState().streamInfo))) {
+      const token = ++streamInfoFetch;
+      void invoke<StreamInfoDto | null>('stream_info_get', { entry: st.entry })
+        .then((dto) => {
+          if (dto && token === streamInfoFetch) {
+            usePlayer.setState({ streamInfo: mapStreamInfo(dto) });
+          }
+        })
+        .catch(() => {
+          /* read-only query; absence is fine */
+        });
+    }
 
     usePlayer.setState((s) => {
       const entry = st.entry;
-      const idx = entry !== null ? s.queue.findIndex((en) => entryIdOf(en.track) === entry) : -1;
+      const idx = entry !== null ? s.queue.findIndex((en) => en.engineId === entry) : -1;
       const current = idx >= 0 ? s.queue[idx]!.track : undefined;
       const patch: Partial<PlayerState> = {
         status: mapped.status,
@@ -422,42 +677,120 @@ export async function initPlayerStore(): Promise<void> {
     });
   });
 
+  // S11: autoplay rows appended engine-side. The queue_rev refresh above
+  // only resolves ids the mirror already knows, so the backend announces
+  // each appended row; adopt them into the mirror here (remote artwork
+  // routed through the allowlisted fetch, as everywhere else).
+  void listen<AutoplayRow[]>('autoplay_enqueued', async (e) => {
+    const entries = await Promise.all(
+      e.payload.map(async (r): Promise<PlayerQueueEntry> => {
+        let thumbnail: string | null = null;
+        if (r.thumbnailUrl) {
+          try {
+            thumbnail = convertFileSrc(await invoke<string>('fetch_artwork', { url: r.thumbnailUrl }), 'art');
+          } catch {
+            thumbnail = null;
+          }
+        }
+        const track: Track = {
+          videoId: r.videoId,
+          title: r.title,
+          artists: [{ name: r.artist || 'Unknown Artist', id: null }],
+          album: r.album ? { id: null, name: r.album } : null,
+          durationSec: r.durationSec && r.durationSec > 0 ? r.durationSec : null,
+          explicit: false,
+          thumbnail,
+          index: null,
+          plays: null,
+          sourceKind: 'youtube',
+          artworkUrl: r.thumbnailUrl,
+        };
+        return { entryId: `${r.videoId}#a${r.engineId}`, track, tier: 'context', source: null, engineId: r.engineId };
+      }),
+    );
+    usePlayer.setState((s) => ({ queue: [...s.queue, ...entries] }));
+  });
+
   // Restart persistence: re-seed the engine queue from the mirror, paused at
   // the saved position (Play+Pause+Seek — the Command set has no
-  // load-paused; the blip is milliseconds).
+  // load-paused; the blip is milliseconds). Remote rows are re-upserted to
+  // recover their row ids and re-seeded with fresh TrackKeys only — no
+  // stored stream URLs ever restore; the engine resolves fresh (S6).
   try {
-    const saved = JSON.parse(localStorage.getItem(PERSIST_KEY) ?? 'null') as Persisted | null;
+    const saved = parsePersisted(localStorage.getItem(PERSIST_KEY));
     if (saved && saved.tracks.length) {
-      const ids = saved.tracks.map((t) => Number(t.videoId.replace('local:', ''))).filter((n) => Number.isFinite(n));
+      const rebuilt: PreparedEntry[] = [];
+      for (const t of saved.tracks) {
+        if (!t.videoId.startsWith('local:')) {
+          try {
+            const engineId = await invoke<number>('remote_track_upsert', {
+              keySource: t.sourceKind ?? 'youtube',
+              keyId: t.videoId,
+              title: t.title,
+              artist: t.artist,
+              album: t.album ?? null,
+              durationSec: t.durationSec ?? 0,
+              artworkUrl: t.artworkUrl?.startsWith('https://') ? t.artworkUrl : null,
+            });
+            rebuilt.push({
+              track: {
+                videoId: t.videoId,
+                title: t.title,
+                artists: [{ name: t.artist || 'Unknown Artist', id: null }],
+                album: t.album ? { id: null, name: t.album } : null,
+                durationSec: t.durationSec,
+                explicit: false,
+                thumbnail: t.thumbnail,
+                index: null,
+                plays: null,
+                sourceKind: t.sourceKind,
+                artworkUrl: t.artworkUrl ?? null,
+              },
+              engineId,
+            });
+          } catch {
+            // A remote row that cannot be re-registered is dropped.
+          }
+        } else {
+          const id = Number(t.videoId.replace('local:', ''));
+          if (!Number.isFinite(id) || id <= 0) continue;
+          rebuilt.push({
+            track: {
+              videoId: t.videoId,
+              title: t.title,
+              artists: [{ name: t.artist || 'Unknown Artist', id: null }],
+              album: t.album ? { id: null, name: t.album } : null,
+              durationSec: t.durationSec,
+              explicit: false,
+              thumbnail: t.thumbnail,
+              index: null,
+              plays: null,
+            },
+            engineId: id,
+          });
+        }
+      }
+      if (!rebuilt.length) return;
+      const ids = rebuilt.map((r) => r.engineId);
+      const remote = remotePairsOf(rebuilt);
       const index = Math.min(Math.max(saved.index, 0), ids.length - 1);
-      const tracks: Track[] = saved.tracks.map((t) => ({
-        videoId: t.videoId,
-        title: t.title,
-        artists: [{ name: t.artist || 'Unknown Artist', id: null }],
-        album: t.album ? { id: null, name: t.album } : null,
-        durationSec: t.durationSec,
-        explicit: false,
-        thumbnail: t.thumbnail,
-        index: null,
-        plays: null,
-      }));
+      const tracks = rebuilt.map((r) => r.track);
       usePlayer.setState({
-        queue: tracks.map((t, i) => toEntry(t, i, null)),
+        queue: tracks.map((t, i) => toEntry(t, i, null, ids[i]!)),
         index,
         nowPlaying: nowPlayingFrom(tracks[index]),
         volume: saved.volume,
         muted: saved.muted,
       });
-      if (ids.length) {
-        send({ Enqueue: { tracks: ids, placement: 'Append' } });
-        send({ Play: { entry: ids[index]! } });
-        send('Pause');
-        if (saved.posMs > 500) send({ Seek: { ms: saved.posMs } });
-        send({ SetVolume: saved.muted ? 0 : saved.volume });
-        playhead.posMs = saved.posMs;
-        playhead.receivedAt = performance.now();
-        playhead.rate = 0;
-      }
+      const startKey = remote.find(([id]) => id === ids[index])?.[1] ?? null;
+      await send({ Enqueue: { tracks: ids, remote, placement: 'Append' } });
+      await send({ Play: { entry: ids[index]!, remote: startKey } });
+      await send('Pause');
+      if (saved.posMs > 500) await send({ Seek: { ms: saved.posMs } });
+      await send({ SetVolume: saved.muted ? 0 : saved.volume });
+      playhead.posMs = saved.posMs;
+      playhead.receivedAt = performance.now();
+      playhead.rate = 0;
     }
   } catch {
     // No restorable state: start clean.

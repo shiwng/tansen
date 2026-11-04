@@ -27,5 +27,5 @@ export interface Folder {
   path: string;
 }
 
-export type ScanProgress = { scanned: number; total: number; folder: string };
+export type ScanProgress = { scanned: number; total: number; folder_id: number };
 export type ScanSummary = { added: number; updated: number; marked_missing: number; errors: number };

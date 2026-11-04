@@ -203,7 +203,7 @@
 
 /*
  * A type token from tokens.css (`type-body`), or a one-off `weight size/leading`
- * in DM Sans (`type-[700_19px/24px]`). Either way the `font` shorthand, as the
+ * in the app face (`type-[700_19px/24px]`). Either way the `font` shorthand, as the
  * tokens are written.
  */
 @utility type-* {
@@ -233,7 +233,7 @@
 
   &::before {
     z-index: -1;
-    background-color: var(--glassMaterialBackground);
+    background-color: var(--pillMaterialBackground);
     backdrop-filter: saturate(2.2) blur(16px);
     box-shadow: 0 10px 40px var(--glassMaterialShadowColor);
   }
@@ -278,38 +278,6 @@
     right: 0;
     border-top: 0.5px solid var(--labelDivider);
   }
-}
-
-/*
- * The phone's lyric typeface (SF Pro Display, app/src/main/res/font), cut to
- * Latin, Greek and Cyrillic. Other scripts fall through to DM Sans and the
- * system fonts. Its own family name, so a copy installed on a Mac can't stand in.
- */
-@font-face {
-  font-family: 'DM Sans';
-  font-style: normal;
-  font-weight: 100 1000;
-  font-display: block;
-  src: url('../assets/fonts/dm-sans-variable-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-@font-face {
-  font-family: 'Tansen SF Pro Display';
-  src: url('../assets/fonts/sf-pro-display-regular.woff2') format('woff2');
-  font-weight: 400;
-  font-display: block;
-  unicode-range: U+0000-024F, U+0259, U+02B0-036F, U+0370-03FF, U+0400-052F, U+1E00-1EFF, U+2000-206F, U+20A0-20CF,
-    U+2100-214F, U+2190-21FF, U+2212, U+FEFF, U+FFFD;
-}
-
-@font-face {
-  font-family: 'Tansen SF Pro Display';
-  src: url('../assets/fonts/sf-pro-display-bold.woff2') format('woff2');
-  font-weight: 700;
-  font-display: block;
-  unicode-range: U+0000-024F, U+0259, U+02B0-036F, U+0370-03FF, U+0400-052F, U+1E00-1EFF, U+2000-206F, U+20A0-20CF,
-    U+2100-214F, U+2190-21FF, U+2212, U+FEFF, U+FFFD;
 }
 
 @layer base {
@@ -406,6 +374,7 @@
     *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
       transition-duration: 0.01ms !important;
     }

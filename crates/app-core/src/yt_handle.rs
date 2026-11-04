@@ -46,6 +46,15 @@ pub struct CatalogRow {
     pub thumbnail_url: Option<String>,
 }
 
+/// S10 discovery typeahead rows: playable tracks plus browse cards.
+#[derive(Debug, serde::Serialize)]
+pub struct DiscoverySuggest {
+    pub tracks: Vec<sources::yt::DiscoveryTrack>,
+    pub cards: Vec<sources::yt::DiscoveryCard>,
+    pub queries: Vec<String>,
+    pub continuation: Option<String>,
+}
+
 /// Await a future from sync code. Callers here are Tauri sync commands and
 /// the resolve-ahead thread — no ambient runtime, so a one-shot
 /// current-thread runtime is enough (and block_on from inside one would
@@ -64,7 +73,9 @@ impl YtHandle {
     pub fn stream_blocking(&self, video_id: &str) -> Result<sources::SourceStream, String> {
         let source = self.source.clone();
         let id = video_id.to_string();
-        let result = await_sync(async move { source.stream(&id, &StreamRequest::Best).await })
+        let key = sources::TrackKey::new(sources::SourceKind::YouTube, id)
+            .map_err(|e| e.to_string())?;
+        let result = await_sync(async move { source.stream(&key, &StreamRequest::Best).await })
             .map_err(|e| e.to_string())?;
         result
             .map_err(|e| e.to_string())?
@@ -73,7 +84,7 @@ impl YtHandle {
 
     /// Mixed search across the catalogue.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<CatalogRow>, String> {
-        let rows = await_sync(self.source.search(query, limit, None))
+        let rows = await_sync(self.source.search(query, limit))
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         Ok(rows
@@ -92,6 +103,79 @@ impl YtHandle {
     /// Health read for the Settings screen.
     pub fn health(&self) -> Result<sources::SourceHealth, String> {
         await_sync(self.source.health())
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    // ---- S10: discovery (read-only, unauthenticated upstream) ----------------
+
+    /// Blocking typeahead read (sidecar round trip, per-call deadline in the
+    /// client). Unauthenticated: no account sign-in, cookies or tokens.
+    pub fn suggest(&self, query: &str) -> Result<DiscoverySuggest, String> {
+        let page = await_sync(self.source.suggest(query))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Ok(DiscoverySuggest {
+            tracks: page.tracks,
+            cards: page.cards,
+            queries: page.queries,
+            continuation: page.continuation,
+        })
+    }
+
+    /// Blocking album-page read (first page, capped).
+    pub fn album(&self, id: &str) -> Result<sources::yt::DiscoveryPage, String> {
+        await_sync(self.source.album(id))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    /// Blocking artist-page read.
+    pub fn artist(&self, id: &str) -> Result<sources::yt::DiscoveryPage, String> {
+        await_sync(self.source.artist(id))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    /// Blocking playlist-page read.
+    pub fn playlist(&self, id: &str) -> Result<sources::yt::DiscoveryPage, String> {
+        await_sync(self.source.playlist(id))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn search_page(
+        &self,
+        query: &str,
+        filter: &str,
+        continuation: Option<String>,
+    ) -> Result<sources::yt::DiscoverySearchPage, String> {
+        let continuation = continuation.as_deref();
+        await_sync(self.source.search_page(query, filter, continuation))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn browse_continuation(&self, token: &str) -> Result<sources::yt::DiscoveryPage, String> {
+        await_sync(self.source.browse_continuation(token))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn home(&self) -> Result<sources::yt::DiscoveryHome, String> {
+        await_sync(self.source.home())
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn home_continuation(&self, token: &str) -> Result<sources::yt::DiscoveryHome, String> {
+        await_sync(self.source.home_continuation(token))
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn explore(&self, section: &str) -> Result<sources::yt::DiscoveryHome, String> {
+        await_sync(self.source.explore(section))
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())
     }

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { AppError } from '@/shell/AppError';
 import { LyricsSettings } from '@/shell/LyricsSettings';
 import { usePlayer, CROSSFADE_CHOICES } from '@/state/player';
 import { q } from '@/lib/rows';
@@ -15,13 +16,14 @@ export function SettingsPage() {
   return (
     <div>
       <h1 className="mx-(--body-gutter) pt-11 type-header-emphasized">Settings</h1>
+      {/* One broken section must not blank the page: each is its own boundary. */}
       <div className="mx-(--body-gutter) mb-12 flex max-w-3xl flex-col gap-8">
-        <PlaybackSection />
-        <LibrarySection />
-        <LyricsSection />
-        <SourcesSection />
-        <IntegrationsSection />
-        <AboutSection />
+        <AppError inline><PlaybackSection /></AppError>
+        <AppError inline><LibrarySection /></AppError>
+        <AppError inline><LyricsSection /></AppError>
+        <AppError inline><SourcesSection /></AppError>
+        <AppError inline><IntegrationsSection /></AppError>
+        <AppError inline><AboutSection /></AppError>
       </div>
     </div>
   );
@@ -39,7 +41,7 @@ function PlaybackSection() {
           </button>
         </Row>
         <Row label="Shuffle" hint="Shuffles the next selection when you press play on a list">
-          <input type="checkbox" className={player_settings_checkbox} checked={player.shuffle} onChange={player.toggleShuffle} />
+          <input type="checkbox" aria-label="Shuffle" className={player_settings_checkbox} checked={player.shuffle} onChange={player.toggleShuffle} />
         </Row>
         <Row label="Crossfade" hint="Stored now; the two-deck fade arrives with phase 6">
           <select
@@ -54,6 +56,8 @@ function PlaybackSection() {
             ))}
           </select>
         </Row>
+        <QualityRow />
+        <AutoplayRow />
         <Row label="Gapless playback" hint="Always on for local files">
           <span className="type-callout text-secondary">Always on</span>
         </Row>
@@ -62,6 +66,53 @@ function PlaybackSection() {
         </Row>
       </div>
     </section>
+  );
+}
+
+/** S11: autoplay related tracks when the queue tail plays (default off). */
+function AutoplayRow() {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    void invoke<boolean>('autoplay_get').then(setOn);
+  }, []);
+  return (
+    <Row label="Autoplay" hint="Adds related tracks when the queue ends (catalogue sources)">
+      <input
+        type="checkbox"
+        className={player_settings_checkbox}
+        checked={on}
+        onChange={(e) => {
+          const next = e.currentTarget.checked;
+          setOn(next);
+          void invoke('autoplay_set', { on: next }).catch(() => setOn(!next));
+        }}
+      />
+    </Row>
+  );
+}
+
+/** Audio ceiling: maps 1:1 onto the catalogue's StreamRequest. */
+function QualityRow() {
+  const [quality, setQuality] = useState<string | null>(null);
+  useEffect(() => {
+    void invoke<string>('quality_get').then(setQuality);
+  }, []);
+  return (
+    <Row label="Audio quality" hint="Data-saver caps streams at 64 kbps; Lossless requests bit-exact copies">
+      <select
+        className={player_settings_button}
+        value={quality ?? 'best'}
+        onChange={(e) => {
+          const v = e.currentTarget.value;
+          setQuality(v);
+          void invoke('quality_set', { quality: v }).catch(() => setQuality('best'));
+        }}
+      >
+        <option value="data-saver">Data saver</option>
+        <option value="best">Best</option>
+        <option value="lossless">Lossless</option>
+      </select>
+    </Row>
   );
 }
 
@@ -85,6 +136,7 @@ function LibrarySection() {
         <Row label="Watch folders" hint="Re-index automatically when files change on disk">
           <input
             type="checkbox"
+            aria-label="Watch folders"
             className={player_settings_checkbox}
             checked={watch ?? true}
             onChange={(e) => {
@@ -137,13 +189,39 @@ function SourcesSection() {
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const add = useMutation({
-    mutationFn: (base_url: string) => invoke<SourceRow['config']>('source_add', { new: { base_url } }),
+    mutationFn: (base_url: string) => invoke<SourceConfig>('source_add', { new: { base_url } }),
     onSuccess: () => {
       setUrl('');
       setError(null);
       void client.invalidateQueries({ queryKey: ['sources'] });
     },
     onError: (e) => setError(String(e)),
+  });
+  // S9 Subsonic: the password lives only in this transient form field until
+  // submit hands it to the backend, which stores it in the macOS Keychain.
+  // It is never written to settings, the query cache, or local storage.
+  const [subUrl, setSubUrl] = useState('');
+  const [subUser, setSubUser] = useState('');
+  const [subPass, setSubPass] = useState('');
+  const [subAllowHttp, setSubAllowHttp] = useState(false);
+  const [subError, setSubError] = useState<string | null>(null);
+  const addSubsonic = useMutation({
+    mutationFn: () =>
+      invoke<SourceConfig>('subsonic_add', {
+        baseUrl: subUrl.trim(),
+        username: subUser.trim(),
+        password: subPass,
+        allowHttp: subAllowHttp,
+      }),
+    onSuccess: () => {
+      setSubUrl('');
+      setSubUser('');
+      setSubPass('');
+      setSubAllowHttp(false);
+      setSubError(null);
+      void client.invalidateQueries({ queryKey: ['sources'] });
+    },
+    onError: (e) => setSubError(String(e)),
   });
 
   return (
@@ -155,36 +233,78 @@ function SourcesSection() {
       </p>
       <div className="flex flex-col gap-2">
         <CatalogueToggle />
-        {sources.data?.map(({ config, health }) => (
-          <div key={config.config_id} className="flex items-center gap-3 rounded-[10px] bg-quinary px-3 py-2.5">
+        {sources.data?.map((row, i, all) => {
+          const { config_id, kind, name, base_url, enabled, health } = row;
+          // Health is optional on the wire: a cache entry written by a
+          // health-less caller, or a backend that could not probe, is unknown.
+          const healthState = health?.state ?? null;
+          return (
+          <div key={config_id} className="flex items-center gap-3 rounded-[10px] bg-quinary px-3 py-2.5">
             <span
               className="size-2 flex-none rounded-full"
-              style={{ background: health.state === 'ok' ? 'var(--systemGreen)' : health.state === 'rejected' ? 'var(--systemRed)' : 'var(--systemGray)' }}
-              title={health.state}
+              style={{ background: healthState === 'ok' ? 'var(--healthDot)' : healthState === 'rejected' ? 'var(--systemRed)' : 'var(--systemGray)' }}
+              title={healthState ?? 'Status unavailable'}
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 type-body">
-                <span className="truncate">{config.name}</span>
-                {!config.enabled && <span className="type-callout text-secondary">(off)</span>}
+                <span className="truncate">{name}</span>
+                {!enabled && <span className="type-callout text-secondary">(off)</span>}
               </div>
               <div className="truncate type-callout text-secondary">
-                {health.state === 'ok' ? config.base_url : health.state === 'unreachable' ? `Unreachable — ${health.reason}` : `Rejected — ${'reason' in health ? health.reason : ''}`}
+                {healthState === 'ok'
+                  ? base_url
+                  : healthState === 'unreachable'
+                    ? `Unreachable — ${health?.reason ?? ''}`
+                    : healthState === 'rejected'
+                      ? `Rejected — ${health?.reason ?? ''}`
+                      : 'Status unavailable'}
               </div>
             </div>
+            {/* F5: user rank order (source_reorder takes the full id list). */}
+            {/* F5: rank order is per-kind (the roster sorts by kind rank
+                first), so cross-kind moves are invisible — disable at the
+                kind boundaries instead of pretending. */}
+            {i > 0 && all[i - 1].kind === kind && (
+              <button
+                aria-label={`Move ${name} up`}
+                className="type-callout-emphasized text-secondary hover:text-primary"
+                onClick={() => {
+                  const ids = all.map((s) => s.config_id);
+                  [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+                  void invoke('source_reorder', { ids }).then(() => client.invalidateQueries({ queryKey: ['sources'] }));
+                }}
+              >
+                ↑
+              </button>
+            )}
+            {i < all.length - 1 && all[i + 1].kind === kind && (
+              <button
+                aria-label={`Move ${name} down`}
+                className="type-callout-emphasized text-secondary hover:text-primary"
+                onClick={() => {
+                  const ids = all.map((s) => s.config_id);
+                  [ids[i], ids[i + 1]] = [ids[i + 1], ids[i]];
+                  void invoke('source_reorder', { ids }).then(() => client.invalidateQueries({ queryKey: ['sources'] }));
+                }}
+              >
+                ↓
+              </button>
+            )}
             <button
               className="type-callout-emphasized text-secondary hover:text-primary"
-              onClick={() => void invoke('source_set_enabled', { configId: config.config_id, enabled: !config.enabled }).then(() => client.invalidateQueries({ queryKey: ['sources'] }))}
+              onClick={() => void invoke('source_set_enabled', { configId: config_id, enabled: !enabled }).then(() => client.invalidateQueries({ queryKey: ['sources'] }))}
             >
-              {config.enabled ? 'Disable' : 'Enable'}
+              {enabled ? 'Disable' : 'Enable'}
             </button>
             <button
               className="type-callout-emphasized text-key"
-              onClick={() => void invoke('source_remove', { configId: config.config_id }).then(() => client.invalidateQueries({ queryKey: ['sources'] }))}
+              onClick={() => void invoke('source_remove', { configId: config_id }).then(() => client.invalidateQueries({ queryKey: ['sources'] }))}
             >
               Remove
             </button>
           </div>
-        ))}
+          );
+        })}
         {sources.data && sources.data.length === 0 && (
           <p className="type-callout text-secondary">No sources yet — add an addon server below.</p>
         )}
@@ -207,6 +327,63 @@ function SourcesSection() {
           </button>
         </form>
         {error && <p className="type-callout text-key">{error}</p>}
+        {/* S9: Subsonic / OpenSubsonic server. No bundled server list — the
+            user enters their own server. */}
+        <form
+          className="mt-2 flex flex-col gap-2 border-t border-quaternary pt-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (subUrl.trim() && subUser.trim() && subPass) addSubsonic.mutate();
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <input
+              value={subUrl}
+              onChange={(e) => setSubUrl(e.currentTarget.value)}
+              placeholder="https://music.my-server.example"
+              className="min-w-0 flex-1 rounded-[10px] border-0 bg-quinary px-3 py-2 type-body text-primary outline-none"
+              aria-label="Subsonic server URL"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={subUser}
+              onChange={(e) => setSubUser(e.currentTarget.value)}
+              placeholder="Username"
+              autoComplete="off"
+              className="min-w-0 flex-1 rounded-[10px] border-0 bg-quinary px-3 py-2 type-body text-primary outline-none"
+              aria-label="Subsonic username"
+            />
+            <input
+              type="password"
+              value={subPass}
+              onChange={(e) => setSubPass(e.currentTarget.value)}
+              placeholder="Password"
+              autoComplete="new-password"
+              className="min-w-0 flex-1 rounded-[10px] border-0 bg-quinary px-3 py-2 type-body text-primary outline-none"
+              aria-label="Subsonic password"
+            />
+          </div>
+          <label className="flex items-center gap-2 type-callout text-secondary">
+            <input
+              type="checkbox"
+              checked={subAllowHttp}
+              onChange={(e) => setSubAllowHttp(e.currentTarget.checked)}
+            />
+            Allow http (LAN / localhost servers only)
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={addSubsonic.isPending || !subUrl.trim() || !subUser.trim() || !subPass}
+              className="rounded-pill bg-key px-4 py-2 type-callout-emphasized text-white disabled:opacity-50"
+            >
+              {addSubsonic.isPending ? 'Adding…' : 'Add Subsonic server'}
+            </button>
+            <span className="type-callout text-secondary">Password is stored in the macOS Keychain.</span>
+          </div>
+        </form>
+        {subError && <p className="type-callout text-key">{subError}</p>}
       </div>
     </section>
   );
@@ -239,9 +416,28 @@ function CatalogueToggle() {
   );
 }
 
+// F9: the wire shape is FLATTENED — SourceWithHealth flattens `config`
+// into the row (serde), so `config` never exists as a nested object.
 interface SourceRow {
-  config: { config_id: string; name: string; base_url: string; enabled: boolean; rank: number };
+  config_id: string;
+  kind: string;
+  name: string;
+  base_url: string;
+  enabled: boolean;
+  rank: number;
+  username?: string | null;
+  allow_http?: boolean;
   health: { state: 'ok' | 'unreachable' | 'rejected'; detail?: string | null; reason?: string };
+}
+
+/** `source_add`/`subsonic_add` return the bare flat SourceConfig. */
+interface SourceConfig {
+  config_id: string;
+  kind: string;
+  name: string;
+  base_url: string;
+  enabled: boolean;
+  rank: number;
 }
 
 function IntegrationsSection() {
