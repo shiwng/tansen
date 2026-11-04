@@ -18,10 +18,15 @@
         "minWidth": 960,
         "minHeight": 620,
         "center": true,
-        "backgroundColor": "#1f1f22",
+        "transparent": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 18, "y": 18 }
+        "trafficLightPosition": { "x": 18, "y": 18 },
+        "windowEffects": {
+          "effects": ["sidebar"],
+          "state": "followsWindowActiveState",
+          "radius": 0
+        }
       }
     ],
     "security": {
