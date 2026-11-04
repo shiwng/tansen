@@ -1,0 +1,7 @@
+Third-party notices
+===================
+
+glisse (apps/desktop dependency)
+  Copyright (c) Kelvin Zhang (https://github.com/0kzh/glisse)
+  License: MIT (https://github.com/0kzh/glisse/blob/main/LICENSE)
+  Used for Apple-style "Liquid Glass" surface components in the desktop UI.

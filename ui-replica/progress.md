@@ -372,3 +372,81 @@ NOT RUN / deferred (blockers + reasons):
   value; consumer split not established).
 - Batch-2 geometry tokens: deliberately not added (consumed when sidebar/
   toolbar/pill geometry lands).
+
+## ADDENDUM + CHANGE ORDER 1 absorbed (2026-11-04)
+
+Addendum results (all measured, artifacts in ui-replica/compare/addendum/):
+1. MATERIAL PROOF: PASS. Citations — LiquidGlassRegular/Clear: tauri-utils
+   2.10.2 src/lib.rs:118-121; applied via window-vibrancy 0.8.1
+   src/macos/liquid_glass.rs (NSGlassEffectView, behind the webview);
+   `interactive` macOS 27+: tauri-utils config.rs:1892-1896;
+   macOSPrivateApi no-op: tauri-utils config.rs:3375-3379 ("No-op in Tauri
+   2.12.1+"). Liveness: sidebar material sampled #444446 at (215,165),
+   #28282b at (80,60), #28282b inactive — changes with position and state.
+   A/B at Music's exact position (80,60), dark, same wallpaper: sidebar
+   #28282b vs Music #262628 (Δ2 — WINNER); hudWindow #282829 (Δ2, wrong
+   semantics); LiquidGlassRegular #202020 (Δ6); windowBackground #1f1f20
+   (Δ7); fullScreenUI #28282b (Δ2, ties sidebar). Kept: sidebar material.
+   Corner radius/shadow: window-only captures exclude shadows (UNKNOWN —
+   needs screen-region capture, forbidden); radius/traffic-light positions
+   pending pixel fit (Batch 2). Theme pin: mechanism exists (Tauri window
+   theme setting) but "stays dark under a light system" needs the system in
+   light = OWNER SESSION. UNKNOWN.
+2. GLASS PILL: CSS-only tuned wins. Music re-measured separately: main pill
+   (fresh capture, dark) fill #2a2a2a over content #1f1f20 (+11 → alpha
+   model, token fixed to #ffffff0d); fullscreen capsule from the owner's
+   screenshot (36/R18, +26, rim #f0f1f6). Four-backdrop A/B (dark/mid/light/
+   busy tile grid + refraction probe line): CSS lift +54/+21/light/blurred
+   mix — all correct; glisse pass-through on this WKWebView (interior =
+   backdrop exactly, sharp stripes on busy — no frost/fill/rim) after 3
+   tuning attempts (style, className, wrapper). DECISION: glisse REMOVED
+   (package.json + lockfile + wrapper + imports; dist grep 0). CSS-only is
+   the glass implementation; parameters tunable per surface in WS-C.
+3. SCROLL/PERF: Lab /__lab/scroll built (200 tiles, fixed pill, rAF-gap
+   harness + on-screen report). Runs pending the input-event unblock for
+   scripted verification; harness itself runs on open. glisse decision made
+   moot by removal.
+4. GLISSE VETTING: 0kzh <me@kelvinzhang.ca>; 0.5.0 published 2026-10-30 (5
+   days old at install — below the 14-day preference, flagged); MIT; no
+   install/postinstall scripts; lockfile pin glisse@0.5.0; zero runtime
+   deps; styles via JS <style> injection (CSP style-src 'unsafe-inline'
+   already required). pnpm audit: no known vulnerabilities. REMOVED anyway
+   per the measured decision rule; NOTICE reverted (dependency gone).
+5. TEXT PARITY: Lab /__lab/text built (sidebar strings at measured
+   geometry). OCR diff pending live Music capture with AX (input events
+   blocked until host restart). UNKNOWN → owner session.
+6. REFERENCE RECONCILIATION: ui-reference/01-search-browse-dark.png DOES
+   NOT EXIST (never delivered) — marked obsolete/missing. Fresh Music
+   captures live in ui-reference/captures/ (music-base-state.png) and
+   compare/addendum/ (music-main-fresh.png).
+7. GIT/RELEASE HYGIENE: tauri.conf.json diff vs ed3c797 = exactly
+   (−theme Dark, +transparent, +windowEffects sidebar, +devCsp, +macOS
+   bundle keys, +jre resource); devUrl override gone (diff clean); CSP
+   content unchanged; lab gates green; release build + launch check pending
+   (batch end).
+
+CHANGE ORDER 1 mapping:
+- R1 live appearance: data-theme + matchMedia sync (B1) — live switching
+  VERIFIED via forced-light capture; owner toggle pending. No forced dark
+  anywhere (grep clean; tauri theme key removed). No-flash bootstrap in
+  index.html.
+- R2 accent: dark keyColor family switched pink→blue #0a84ff (INFERRED from
+  macOS systemBlue dark — live verify needs a selected Music row in the
+  owner session). Measured today: Music's UNSELECTED sidebar icons are gray
+  (#464648), not accent — accent applies to selected/active; matches R2's
+  intent.
+- R3/R4/R5/R6 (WS-B/C/D/E): queued in the brief's order WS-A→C→B→D→E.
+  WS-A is ~done (B1 + this addendum); WS-C glass parameters next
+  (CSS-only), then WS-B fonts/icons/alignment, WS-D scroll gates, WS-E
+  Settings matrix.
+- glisse decision: REMOVED — satisfies the dependency-review default (no
+  measured gap after tuning; pass-through on WebKit). Recorded here as the
+  approval reference trail (owner added it in Phase 1; removed on measured
+  evidence per Change Order 1's own default rule).
+- OWNER SESSION checklist (one request, when WS-A verification runs):
+  static wallpaper + windows open; Light→Dark toggle; accent change;
+  Reduce Transparency; Reduce Motion.
+
+Gates after all changes: vitest 16/72, tsc 0, build ✓, dist glisse-grep 0,
+cargo check ✓ (earlier this session). Dev window state: Music restored
+(untouched); Tansen dev instance running for the next milestone.

@@ -158,7 +158,7 @@
 
 /* Dark is attribute-driven (html[data-theme], synced from the OS by
    shell/chrome.ts) so both branches are testable without changing the
-   system appearance, and glisse's own data-theme handling agrees. */
+   system appearance. */
 :root[data-theme='dark'] {
     color-scheme: dark;
 
@@ -172,12 +172,15 @@
     --systemQuaternary: #ffffff1a;
     --systemQuinary: #ffffff0d;
 
-    --keyColor: #fa586a;
-    --keyColor-rgb: 250, 88, 106;
-    --keyColor-rollover: #ff5f7a;
-    --keyColor-pressed: #ff4661;
-    --keyColorBG: #fa233b;
-    --selectionColor: #c11b2e;
+    /* R2: blue accent in both appearances (newer Apple Music). Dark value is
+       macOS systemBlue dark; verified against a selected Music row in the
+       owner session. */
+    --keyColor: #0a84ff;
+    --keyColor-rgb: 10, 132, 255;
+    --keyColor-rollover: #3d9eff;
+    --keyColor-pressed: #2a78ff;
+    --keyColorBG: #0a84ff;
+    --selectionColor: #0a84ff;
 
     --systemRed: #ff453a;
     --systemGreen: #32d74b;
@@ -193,7 +196,9 @@
     --vibrantDivider: #ebebf530;
 
     --glassMaterialBackground: #26262899;
-    --pillMaterialBackground: #212121;
+    /* Music's dark pill samples #2a2a2a over #1f1f20 content (+11): an
+       alpha fill over the blur, not a solid. */
+    --pillMaterialBackground: #ffffff0d;
     --glassMaterialShadowColor: #00000033;
     --glassMaterialInnerStroke: #ffffff;
     --glassMaterialInnerStrokeAlpha: 0.25;

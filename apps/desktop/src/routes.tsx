@@ -4,15 +4,25 @@ import { RouteError } from '@/shell/AppError';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { PAGE_ROUTES, pageElement } from '@/pageRegistry';
 
-// Design Lab: dev-only route, dynamically imported so the release bundle
-// never contains it (guarded by lab/lab-route-grep.test.ts).
+// Design Lab: dev-only routes, dynamically imported so the release bundle
+// never contains them (guarded by lab/lab-route-grep.test.ts).
 const labRoutes: RouteObject[] = import.meta.env.DEV
   ? [
       {
         path: '/__lab/fullscreen-player',
-        // Bypasses AppShell on purpose: the Lab must render without the
-        // production chrome so the fixture is the whole window.
         lazy: async () => ({ Component: (await import('@/lab/LabFullscreenPlayer')).default }),
+      },
+      {
+        path: '/__lab/glass',
+        lazy: async () => ({ Component: (await import('@/lab/LabGlass')).default }),
+      },
+      {
+        path: '/__lab/scroll',
+        lazy: async () => ({ Component: (await import('@/lab/LabScroll')).default }),
+      },
+      {
+        path: '/__lab/text',
+        lazy: async () => ({ Component: (await import('@/lab/LabText')).default }),
       },
     ]
   : [];

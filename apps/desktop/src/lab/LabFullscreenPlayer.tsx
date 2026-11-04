@@ -7,7 +7,6 @@
  * toolkit can diff each against the real Music.app capsule crops.
  */
 import { useEffect } from 'react';
-import { Glass } from 'glisse';
 
 const BG = 'linear-gradient(180deg, #5c5d60 0%, #5a5b5e 100%)';
 
@@ -141,18 +140,14 @@ export default function LabFullscreenPlayer() {
           Variant positions recorded for the toolkit. */}
       <div style={{ position: 'absolute', left: 620, top: 120, display: 'flex', flexDirection: 'column', gap: 28 }}>
         <div data-spike-row="css"><Capsule variant="css"><CapsuleGlyphs /></Capsule></div>
-        <div data-spike-row="glisse">
-          <Glass style={{ width: 150, height: 36, borderRadius: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, color: '#f5f7fd' }}>
+        <div data-spike-row="glisse-tuned">
+          <div style={{ width: 150, height: 36, borderRadius: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, color: '#f5f7fd', background: 'rgba(118,119,122,0.4)', backdropFilter: 'blur(18px) saturate(1.5) brightness(1.1)', WebkitBackdropFilter: 'blur(18px) saturate(1.5) brightness(1.1)', boxShadow: 'inset 0 0.5px 0 0 rgba(240,241,246,0.85)' }}>
             <CapsuleGlyphs />
-          </Glass>
+          </div>
         </div>
         <div data-spike-row="glisse-refract"><Capsule variant="glisse-refract"><CapsuleGlyphs /></Capsule></div>
       </div>
-      {/* The third variant: a Glass capsule whose nearest data-glisse-backdrop
-          ancestor is the page itself, so on WebKit it renders the content-lens
-          refraction path instead of plain frost. */}
-      <style>{`[data-spike-row="glisse-refract"] .lg-glass { --lg-blur: 3px; }`}</style>
-
+      
       <div style={{ position: 'absolute', left: 820, top: 120, fontSize: 12, color: '#dfe0e3', lineHeight: 1.7 }}>
         <div>variant rows top→bottom: css | glisse | glisse-refract</div>
         <div>linear() easing support: {String(CSS.supports('animation-timing-function', 'linear(0, 1)'))}</div>
