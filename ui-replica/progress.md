@@ -290,3 +290,37 @@ CSS paints. Runtime appearance-aware background needs M2 window work.
 Next: M2 window chrome (overlay title bar behaviour, traffic-light inset,
 drag regions, min/default size, launch background per appearance). Stop for
 `continue` after the M1 report.
+
+## UI REPLICA v3 — Phase 1 feasibility spike (2026-11-04, branch ui-replica)
+
+Branch `ui-replica` created per brief rule 6; baseline commit d325d06 = full
+working-tree snapshot (engine M10 + security run-2 remediation); M0 commit
+ba714fa = spike. Music 1.7.2, macOS 27.2, capture permission WORKING.
+
+Key facts (details in ui-replica/feasibility.md):
+- tauri 2.12.5 supports native windowEffects incl. LiquidGlassRegular/Clear
+  (macOS 26+) and `interactive` (27+) — applied `transparent: true` +
+  `windowEffects: [sidebar]`, removed `backgroundColor`. macOSPrivateApi not
+  needed (no-op since 2.12.1). Traffic lights cannot be hidden via config
+  (tao supports it; a ~10-line objc2 addition to platform_macos.rs would).
+- glisse 0.5.0 installed (owner-approved, MIT, zero deps, ~25 KB gzip). On
+  WKWebView: frost + lit rim for arbitrary backdrops, FULL content-lens
+  refraction for content marked data-glisse-backdrop (live-backdrop path is
+  Chromium-only, UA-gated). Over a flat gradient refraction adds nothing —
+  the player capsules are a tuning problem (CSS +15 vs reference +26 lighten;
+  rim dimmer), not a capability gap.
+- linear() easing SUPPORTED in this WKWebView → real spring curves.
+- Reference: owner-supplied full-screen player screenshot measured to
+  ui-replica/fullscreen-player-reference.md (all geometry in pt; capsules
+  36/R18, artwork 262.5, transport centers, gradient bg #5c5d60→#5a5b5e).
+- Design Lab: /__lab/* dev-only, double-guarded (vitest grep test +
+  scripts/ui-compare/check-release-lab.sh on dist; both green).
+
+Blockers: Music.app AX reads denied to the host until ZCode restart
+(granted but not trusted; osascript -1719) → live AX-driven capture recipes
+BLOCKED; capture-only works (base state captured). Escalation: none (no
+critical spike item unclosable).
+
+Next (after owner "continue"): Batch 1 foundation (tokens, window chrome,
+native-feel hygiene, sidebar vibrancy region), live captures once the host
+restart restores AX, then Batch 2 shell with the glass player.

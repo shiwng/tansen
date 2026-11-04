@@ -928,3 +928,44 @@ Manual script:
    settings-hardening/no-secrets-in-logs/capabilities all intact or
    strengthened. One-copy rule unaffected (dev testing only; installed app
    untouched).
+
+## 2026-11-04 — UI REPLICA v3, PHASE 1 report (feasibility spike; branch ui-replica)
+
+1. Built/measured: branch ui-replica (baseline d325d06 = full snapshot incl.
+   security remediation; M0 ba714fa = spike). New: Design Lab route
+   /__lab/fullscreen-player (dev-only, double-guarded; 2 guard tests),
+   glisse@0.5.0 (owner-approved, MIT, zero deps), tauri.conf transparent +
+   windowEffects [sidebar] (native vibrancy; macOSPrivateApi not needed),
+   ui-replica/fullscreen-player-reference.md (full-screen player measured
+   from the owner's screenshot: capsules 36pt/R18, artwork 262.5pt, gradient
+   #5c5d60→#5a5b5e, rims), scripts/ui-compare/check-release-lab.sh,
+   feasibility.md. Dependencies added: glisse (owner-approved), getrandom
+   (prior security remediation).
+2. Feasibility verdicts: (a) sidebar/window material CLOSABLE natively —
+   LiquidGlassRegular/Clear available on this macOS 27 stack (windowEffects),
+   spike launched clean with vibrancy; (b) glass capsules CLOSABLE — CSS
+   backdrop-filter +15 lighten vs reference +26 is tuning, not a gap; glisse
+   refracts marked content on WKWebView (live-backdrop path Chromium-only,
+   UA-gated off) and adds nothing over flat gradients; (c) linear() easing
+   SUPPORTED → real springs; (d) scroll, (e) context menus, (f) text
+   rendering deferred to their batches. Escalation: none.
+3. Spike numbers: css capsule #6b6b6f on #5c5d60 (+15; reference +26 →
+   #76777a), rim #c8c9cd vs #f0f1f6; glisse dark glass #3c3c3e (var-tunable);
+   glisse-refract interior = backdrop exactly (no lighten over flat gradient).
+4. Gates run for M0 (in apps/desktop): vitest 16 files / 72 tests pass;
+   tsc --noEmit clean; pnpm build ✓; check-release-lab.sh ✓ (no lab code in
+   dist). Cargo NOT RUN for M0 (no Rust source changed; last green run = the
+   security remediation suite earlier today).
+5. Regression: spike only added a dev-only route + config keys; production
+   routes untouched (guard test proves no production import). One-copy rule:
+   NOT APPLICABLE yet (no install performed; installed app untouched).
+6. Owner decisions/checklist: (a) confirm glisse as THE glass implementation
+   for in-page surfaces (native LiquidGlass stays available for the window
+   layer); (b) restart ZCode to restore AX (granted, not trusted) so live
+   Music capture recipes can run; (c) light-appearance capture still needs
+   the owner to switch appearance once; (d) confirm the fidelity scorecard
+   thresholds as proposed in the brief.
+7. Visual fidelity verified by: NUMERIC METRICS (spike) / VISION REVIEW
+   (screenshots read directly). Music.app state restored: YES (untouched;
+   base capture only). AUDIBLE CONFIRMATION: PENDING OWNER. Stopped at the
+   OWNER CHECKPOINT per the brief — waiting for "continue" to start Batch 1.
