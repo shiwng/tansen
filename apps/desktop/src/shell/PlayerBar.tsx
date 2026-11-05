@@ -51,7 +51,7 @@ export function PlayerBar() {
       data-panel-open={sidePanel !== null}
     >
       <div
-        className="glass-pill group/pill pointer-events-auto relative grid h-(--player-pill-height) w-[min(600px,100%)] grid-cols-[168px_minmax(0,1fr)_auto] items-center rounded-pill px-3.5"
+        className="glass-pill group/pill pointer-events-auto relative grid h-(--player-pill-height) w-[min(700px,100%)] grid-cols-[168px_minmax(0,1fr)_auto] items-center rounded-pill px-3.5"
         role="region"
         aria-label="Player"
       >

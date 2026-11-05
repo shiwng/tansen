@@ -22,26 +22,28 @@ interface NavItem {
 const PRIMARY: NavItem[] = [
   { to: '/search', label: 'Search', Icon: SearchIcon },
   { to: '/home', label: 'Home', Icon: HomeIcon },
-  { to: '/radio', label: 'Radio', Icon: (props) => <Radio size={20} {...props} /> },
+  { to: '/radio', label: 'Radio', Icon: (props) => <Radio size={16} {...props} /> },
 ];
 
 const LIBRARY: NavItem[] = [
-  { to: '/library/recent', label: 'Recently Added', Icon: (props) => <Clock size={20} {...props} /> },
+  { to: '/library/recent', label: 'Recently Added', Icon: (props) => <Clock size={16} {...props} /> },
   { to: '/library/artists', label: 'Artists', Icon: ArtistsIcon },
   { to: '/library/albums', label: 'Albums', Icon: AlbumsIcon },
   { to: '/library/songs', label: 'Songs', Icon: SongsIcon },
 ];
 
 // Where Music lists Store — Tansen has no store, so Settings lives here.
-const SETTINGS: NavItem[] = [{ to: '/settings', label: 'Settings', Icon: (props) => <Settings size={20} {...props} /> }];
+const SETTINGS: NavItem[] = [{ to: '/settings', label: 'Settings', Icon: (props) => <Settings size={16} {...props} /> }];
 
 // A sidebar row; NavLink sets aria-current on the page's own row.
+// Measured (Music, light): row 32 pt, pill inset x10, icon 16 pt centred
+// x≈30, label 13 pt at x54, radius 8.
 const item =
-  'group flex h-7 items-center gap-2 mb-px rounded-[6px] px-2 type-body-reduced text-primary hover:bg-quinary aria-[current=page]:bg-nav-selected';
-// Glyphs at 20px in a fixed column, so every label starts at the same x.
-const icon = 'inline-grid size-5 flex-none place-items-center text-key';
+  'group flex h-8 items-center gap-4 mb-px rounded-lg pl-[10px] pr-2 type-body text-primary hover:bg-quinary aria-[current=page]:bg-nav-selected';
+// Glyphs at 16px in a fixed column, so every label starts at the same x.
+const icon = 'inline-grid size-4 flex-none place-items-center text-key';
 const navLabel = 'min-w-0 truncate';
-const sectionHeader = 'mt-4 px-2 pb-1 type-callout-emphasized text-secondary';
+const sectionHeader = 'mt-4 pl-[3px] pb-1 text-[11px] leading-[13px] font-normal text-secondary';
 const list = 'flex flex-col';
 
 function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => void }) {
@@ -50,7 +52,7 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => vo
       {items.map(({ to, label, Icon }) => (
         <li key={to}>
           <PrefetchNavLink to={to} className={item} onClick={onNavigate}>
-            <Icon size={20} className={icon} />
+            <Icon size={16} className={icon} />
             <span className={navLabel}>{label}</span>
           </PrefetchNavLink>
         </li>
@@ -87,7 +89,7 @@ export function Sidebar() {
           <ul className={list}>
             <li>
               <PrefetchNavLink to="/library/playlists" className={item} onClick={close}>
-                <AllPlaylistsIcon size={20} className={icon} />
+                <AllPlaylistsIcon size={16} className={icon} />
                 <span className={navLabel}>All Playlists</span>
               </PrefetchNavLink>
             </li>

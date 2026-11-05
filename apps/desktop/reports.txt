@@ -1,0 +1,29 @@
+
+## 2026-11-04 — BATCH 2 report (shell geometry + glass; branch ui-replica)
+
+1. Changed: tokens.css (toolbar 52, pill 54/19, gutter 34), Sidebar.tsx
+   (rows 32, icons 16, labels 13 pt x54, headers 11 pt x15, radius 8),
+   Toolbar.tsx (h-52), SearchField.tsx (421×38), PlayerBar.tsx (700 px pill).
+   Dependencies: none (glisse removed earlier this session).
+2. Measured vs Music (dark, same wallpaper): pill interior #2a2a2f vs
+   #2a2a2a (Δ5 ≤ 6 PASS); content Δ2 PASS; sidebar geometry structural
+   match (rows 32/icons 16/labels 13 pt); search field 421 wide centred in
+   content column. Light branch (forced): content/pill/search exact matches.
+   Iterations: 1 (no tuning needed — geometry landed within thresholds).
+3. WS-A: live switching via matchMedia VERIFIED (forced-light capture);
+   native material pairing needs the owner's real toggle (INFERRED ✓).
+   Minimum macOS: windowEffects sidebar works 10.14+; LiquidGlass 26+;
+   fallback = sidebar material (documented, no config change).
+4. Gates: vitest 16/72 ✓, tsc 0 ✓, build ✓, release-lab grep ✓. cargo check
+   ✓ earlier this session (no Rust change since). NOT RUN: interactive
+   regression (input blocked — host restart pending), cargo test (no Rust
+   change; last full run green today).
+5. Regression: dev window functional (owner navigating it live); no
+   backend/IPC change; installed app in Trash (owner decision this session)
+   — ONE-COPY reinstall at batch end will restore a current /Applications
+   build. No commit push.
+6. Owner decisions: ZCode restart (unblocks AX/input + text OCR + live
+   captures); Appearance setting (WS-A.5) deferred; Settings placeholder
+   rows (3) flagged for removal in WS-E.
+7. Visual fidelity verified by: NUMERIC METRICS / VISION REVIEW. Music.app
+   state restored: YES (untouched). AUDIBLE CONFIRMATION: PENDING OWNER.

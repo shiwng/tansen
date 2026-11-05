@@ -36,11 +36,12 @@
 
   /* ---- Layout ------------------------------------------------------------ */
   --web-navigation-width: 208px;
-  --body-gutter: 29px;
-  --player-pill-height: 50px;
-  --player-bottom-offset: 20px;
+  --body-gutter: 34px;
+  --player-pill-height: 54px;
+  --player-bottom-offset: 19px;
   --side-panel-width: 300px;
   --mobile-top-bar-height: 52px;
+  --toolbar-height: 52px;
   --mini-player-height: 52px;
 
   /* ---- Radii ------------------------------------------------------------- */

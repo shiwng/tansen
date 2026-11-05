@@ -45,7 +45,7 @@ export function Toolbar() {
   };
 
   return (
-    <div data-tauri-drag-region className="chrome-dim relative z-10 flex h-[60px] flex-none select-none items-center justify-center px-6">
+    <div data-tauri-drag-region className="chrome-dim relative z-10 flex h-(--toolbar-height) flex-none select-none items-center justify-center px-6">
       <SearchField initial={query} placeholder={placeholder} onSearch={search} />
       <div className="absolute right-5 flex items-center gap-px rounded-pill bg-segmented p-[3px]" role="tablist" aria-label="Search scope">
         {scopes.map((scope) => (
