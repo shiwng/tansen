@@ -1023,3 +1023,99 @@ Change Order 1: R1 live appearance already implemented (data-theme + matchMedia;
 Gates: vitest 16/72 · tsc 0 · build ✓ · dist glisse-grep 0 · cargo check ✓. Music.app untouched.
 Decisions for owner: restart ZCode (unblocks AX/input → text OCR, interactive regression, live captures); Appearance setting (WS-A.5) — needs set-theme capability, propose skip unless requested; SF Symbols runtime option (WS-B.3B) — needs approval if any icon fails 3 iterations.
 Visual fidelity verified by: NUMERIC METRICS / VISION REVIEW. Music.app state restored: YES (untouched). AUDIBLE CONFIRMATION: PENDING OWNER.
+
+## 2026-11-04 — WS-C/WS-E pass report (UNCOMMITTED — awaiting commit authorization)
+
+1. Changed (working tree only, NO commit per instruction): SettingsPage.tsx
+   (Integrations section removed, equalizer placeholder row removed,
+   crossfade select hidden, Add-folder row added), SearchField.tsx (focus
+   ring 3px per measured light spec), GlassSurface wrapper + lab pages
+   de-glissed. Dependencies: glisse REMOVED (measured decision, addendum).
+2. WS-C per-surface status: sidebar-vibrancy PASS (Δ2 dark, material live);
+   floating-pill PASS (interior Δ5 dark, #fefefe light exact; rim/hairline
+   as built); search-field PASS after ring 3px (border was already Δ1 —
+   agent math corrected); side-panel/mobile-top-bar/context-menu UNKNOWN
+   (no Music measurements — owner session); fullscreen capsules NOT BUILT
+   (Batch 3; dual-tone rim + ~10-16% white fill specified in inventory).
+   NOT claiming full WS-C completion.
+3. WS-E: 24 controls verified functional (matrix in progress.md); 4 dead
+   disclosures removed (Integrations ×3, equalizer row); crossfade hidden
+   (no engine consumer — store field kept); Add-folder wired into Settings
+   Library (existing commands); lyrics options verified wired. NOT claiming
+   full WS-E: relaunch-persistence E2E and runtime effect proofs need
+   input events (blocked until host restart).
+4. Gates: tsc 0 · vitest 16/72 ✓ · build ✓ · release-lab grep ✓ · dist
+   contains no removed-placeholder strings. NOT RUN: cargo test (no Rust
+   change), Settings visual capture post-cleanup (navigation blocked).
+5. Regression: no backend/IPC/engine change; installed app already in
+   Trash (owner decision) — no install this pass, so one-copy state =
+   zero installed copies until the batch-end install of the current build.
+6. Owner decisions: (a) commit authorization for the uncommitted working
+   tree; (b) ZCode restart → AX/input unblock; (c) Appearance setting
+   (WS-A.5) — recommend deferring (needs set-theme capability);
+   (d) lyrics-cache-clear needs a NEW backend command — banned, skipped.
+7. Visual fidelity verified by: NUMERIC METRICS / VISION REVIEW. Music.app
+   state restored: YES (untouched). AUDIBLE CONFIRMATION: PENDING OWNER.
+
+=== CHANGE ORDER 1 — BATCH 3 (WS-A appearance) — 2026-11-05 ===
+1) WHAT CHANGED (this batch, uncommitted until the commit below)
+   apps/desktop/index.html                     + color-scheme meta (no-flash hint)
+   apps/desktop/src/shell/LyricsSettings.tsx   dark-only #333336 -> bg-quaternary
+   apps/desktop/src/lyrics/sources.ts          wordmark removed from provider text
+   apps/desktop/src/shell/theme-grep.test.ts   NEW guard (no forced dark, OS-derived theme)
+   plus the pending WS-C/WS-E pass already in the tree:
+   SearchField.tsx (focus ring 3pt), SettingsPage.tsx (dead controls removed,
+   Add folder added), package.json + pnpm-lock.yaml (glisse removed).
+   Dependencies: none added. glisse REMOVED (approval trail: progress.md
+   "GLISSE VETTING" + "glisse decision: REMOVED", measured pass-through on WebKit).
+
+2) SCORECARD (both appearances)
+   Dark shell, installed build, 1280x820 @2x: content #1f1f22, sidebar material
+   #262628 (native), pill #212121, selection #59595a — unchanged from Batch 2.
+   Light shell: NOT RE-MEASURED this pass (needs the owner's Light toggle; the
+   agent may not change macOS appearance). Last measured light values stand:
+   content #ffffff, sidebar #ededec, pill #fefefe, accent #3478f6.
+   No new iterations this batch; no shell element is outside threshold.
+
+3) WS-A EVIDENCE
+   Live switch: code-verified (matchMedia change -> data-theme) and both
+   branches render (previous forced-light captures + today's dark run).
+   Real OS toggle: NOT RUN — owner session.
+   No-flash: transparent window + native sidebar material is the pre-paint
+   surface, plus a color-scheme meta; frame-accurate proof NOT RUN (no recorder;
+   owner observation required).
+   Minimum macOS: 10.15, using `sidebar` NSVisualEffectView (10.10+). Liquid
+   Glass 26+ is not used, so no fallback branch is needed.
+   Forced-dark grep: 0 offenders in production source; tauri theme key absent.
+
+4) CHECKS ACTUALLY RUN
+   tsc --noEmit                       PASS (0 errors)
+   vitest run                         PASS 17 files / 74 tests
+   vite build                         PASS
+   scripts/ui-compare/check-release-lab.sh  PASS (exit 0)
+   dist grep: glisse 0, lab 0; one am-lyrics-internal " (Apple Music)" key
+   remains (third-party bundle, not our UI text) — flagged, not patched.
+   pnpm tauri build --bundles app      PASS (64.75 MiB)
+   codesign --verify /Applications/Tansen.app  PASS after ad-hoc re-sign
+   (Tauri's own ad-hoc signature leaves the resource seal unsealed).
+   Installed-app regression: Settings opens with real controls; "radiohead"
+   search returned 12 catalogue rows with artwork; Play button present.
+   Play -> Playing with audio: NOT RUN this pass (would produce sound; owner).
+   cargo test --workspace: NOT RUN (no Rust change this batch).
+
+5) ONE-COPY PROOF
+   Finder-deleted the previous /Applications/Tansen.app, ditto'd the new one,
+   re-signed, Finder-deleted target/release/bundle/macos/Tansen.app.
+   `ls -d /Applications/Tansen.app*` -> exactly one.
+
+6) OPEN OWNER DECISIONS / CHECKLIST
+   - OWNER SESSION (blocking all live-appearance evidence): keep Music and
+     Tansen open on a static wallpaper; toggle macOS Light -> Dark; change the
+     system accent once; toggle Reduce Transparency; toggle Reduce Motion.
+   - Appearance override in Settings: deliberately omitted (follow-system).
+   - " (Apple Music)" string inside the am-lyrics bundle: accept or fork.
+
+7) Visual fidelity verified by: NUMERIC METRICS (dark shell, this batch) /
+   PENDING OWNER (light branch + live switch)
+   Music.app state restored: YES (untouched this batch; no Music interaction)
+   AUDIBLE CONFIRMATION: PENDING OWNER

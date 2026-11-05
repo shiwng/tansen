@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { AppError } from '@/shell/AppError';
 import { LyricsSettings } from '@/shell/LyricsSettings';
-import { usePlayer, CROSSFADE_CHOICES } from '@/state/player';
+import { usePlayer } from '@/state/player';
+import { open } from '@tauri-apps/plugin-dialog';
 import { q } from '@/lib/rows';
 
 
@@ -22,7 +23,6 @@ export function SettingsPage() {
         <AppError inline><LibrarySection /></AppError>
         <AppError inline><LyricsSection /></AppError>
         <AppError inline><SourcesSection /></AppError>
-        <AppError inline><IntegrationsSection /></AppError>
         <AppError inline><AboutSection /></AppError>
       </div>
     </div>
@@ -43,26 +43,10 @@ function PlaybackSection() {
         <Row label="Shuffle" hint="Shuffles the next selection when you press play on a list">
           <input type="checkbox" aria-label="Shuffle" className={player_settings_checkbox} checked={player.shuffle} onChange={player.toggleShuffle} />
         </Row>
-        <Row label="Crossfade" hint="Stored now; the two-deck fade arrives with phase 6">
-          <select
-            className={player_settings_button}
-            value={player.crossfadeSec}
-            onChange={(e) => player.setCrossfade(Number(e.currentTarget.value))}
-          >
-            {CROSSFADE_CHOICES.map((sec) => (
-              <option key={sec} value={sec}>
-                {sec === 0 ? 'Off' : `${sec} seconds`}
-              </option>
-            ))}
-          </select>
-        </Row>
         <QualityRow />
         <AutoplayRow />
         <Row label="Gapless playback" hint="Always on for local files">
           <span className="type-callout text-secondary">Always on</span>
-        </Row>
-        <Row label="Equalizer / loudness / skip silence" hint="The DSP chain lands in phase 6">
-          <span className="type-callout text-secondary">Not yet implemented</span>
         </Row>
       </div>
     </section>
@@ -117,6 +101,7 @@ function QualityRow() {
 }
 
 function LibrarySection() {
+  const queryClient = useQueryClient();
   const folders = useQuery({ queryKey: ['local', 'folders'], queryFn: () => invoke<{ id: number; path: string }[]>('folders_get') });
   const albums = useQuery(q.albums());
   const [watch, setWatch] = useState<boolean | null>(null);
@@ -133,6 +118,24 @@ function LibrarySection() {
         {albums.data ? `${albums.data.length} albums indexed` : '…'}
       </p>
       <div className="flex flex-col gap-2">
+        <Row
+          label="Add folder"
+          hint="Indexes a folder into the library — the same import as the Library page"
+        >
+          <button
+            className={player_settings_button}
+            onClick={async () => {
+              const sel = await open({ directory: true, multiple: false, title: 'Choose a music folder' });
+              if (typeof sel === 'string') {
+                await invoke('folder_add', { path: sel });
+                await invoke('scan_start');
+                void queryClient.invalidateQueries({ queryKey: ['local', 'folders'] });
+              }
+            }}
+          >
+            Choose…
+          </button>
+        </Row>
         <Row label="Watch folders" hint="Re-index automatically when files change on disk">
           <input
             type="checkbox"
@@ -438,25 +441,6 @@ interface SourceConfig {
   base_url: string;
   enabled: boolean;
   rank: number;
-}
-
-function IntegrationsSection() {
-  return (
-    <section>
-      <h2 className="mb-3 type-title-2-emphasized">Integrations</h2>
-      <div className="flex flex-col gap-2">
-        <Row label="Last.fm / ListenBrainz scrobbling" hint="Phase 7">
-          <span className="type-callout text-secondary">Not yet implemented</span>
-        </Row>
-        <Row label="Discord Rich Presence" hint="Phase 7">
-          <span className="type-callout text-secondary">Not yet implemented</span>
-        </Row>
-        <Row label="Listening parties" hint="Protocol exists upstream; desktop client is phase 7">
-          <span className="type-callout text-secondary">Not yet implemented</span>
-        </Row>
-      </div>
-    </section>
-  );
 }
 
 function AboutSection() {

@@ -450,3 +450,83 @@ CHANGE ORDER 1 mapping:
 Gates after all changes: vitest 16/72, tsc 0, build ✓, dist glisse-grep 0,
 cargo check ✓ (earlier this session). Dev window state: Music restored
 (untouched); Tansen dev instance running for the next milestone.
+
+## WS-C + WS-E pass (2026-11-04, uncommitted — commit awaiting owner authorization)
+
+WS-C glass (measured):
+- search-field: agent border claim was wrong math (#00000026 on white = #d9d9d9,
+  already Δ1 from measured #d8d8d8 — no change); REAL gap was the focus ring
+  1.5px vs measured 3pt → ring-[3px] applied (light; dark unmeasured).
+- floating-pill: interior Δ5 PASS (no change); light gradient optional, skipped.
+- sidebar-vibrancy: Δ2 PASS (no change).
+- side-panel / mobile-top-bar / context-menu: NO measured Music reference —
+  owner session required (menu blur 32 unverified; panel fill unmeasured).
+- fullscreen capsules: Batch 3 build item — needs dual-tone rim variant
+  (light top/bottom #f0f1f6/#f5f7fd, dark sides #2a2a2c) + ~white-10-16% fill.
+- pill light bottom gradient #faf9f9: optional, skipped.
+
+WS-E Settings (audit matrix complete; changes applied):
+- REMOVED: Integrations section (Last.fm/Discord/Listening parties — zero
+  backing commands, grep-verified) + the Equalizer/DSP placeholder row +
+  the Crossfade select (persists to localStorage but NO engine consumer —
+  looks-functional-was-not; store field kept, re-add at phase 6).
+- ADDED: "Add folder" row in Library (wires existing folder_add + scan_start
+  + plugin dialog — same pattern as LibraryPage.tsx:79; Settings is now
+  self-contained for folders).
+- Audit matrix: 24 controls YES-code-verified functional; settings_set
+  allowlist intact (2 keys); no secrets displayed; sections keep AppError
+  boundaries. Lyrics options verified wired (providers/order/key).
+- MISSING (needs NEW backend command — banned without approval): lyrics
+  cache clear UI. Appearance control: deferred (WS-A.5 decision).
+- Verified: tsc 0, vitest 16/72, build ✓, release-lab grep ✓, dist contains
+  no "Listening parties"/"Last.fm" strings (0 files).
+- NOT RUN: visual Settings capture post-cleanup (dev app opened Home; page
+  navigation needs AX/input — blocked until host restart) → next session.
+
+## WS-A APPEARANCE audit + fixes (2026-11-05, branch ui-replica)
+
+State found (verified this session, installed app PID 55214, 1280x820 at 80,60):
+- No forced dark anywhere: `theme` key absent from tauri.conf.json; tokens use
+  `:root` (light) + `:root[data-theme='dark']`; index.html sets the attribute
+  before first paint from matchMedia; `shell/chrome.ts` re-derives it on the
+  media-query `change` event. Grep for `dark:` variants / `data-theme="dark"`
+  literals / `prefers-color-scheme: dark` in production source: 0 offenders
+  (now enforced by `src/shell/theme-grep.test.ts`, 2 tests).
+- Native layer: window `transparent: true` + `windowEffects: [sidebar]`
+  (NSVisualEffectView, 10.10+), so the material, traffic lights, scrollbars and
+  caret follow the system appearance natively; `.chrome-dim` handles inactive.
+  Liquid Glass (26+) is NOT used, so shipping min macOS 10.15 has no fallback
+  gap: the `sidebar` material is the oldest supported effect.
+- Settings had ONE dark-only hardcode: LyricsSettings' close circle
+  `bg-[#333336]` in a modal also used on the light Settings page. Now
+  `bg-quaternary` (systemQuaternary: light #0000001a / dark #ffffff1a).
+- `index.html` gained `<meta name="color-scheme" content="light dark">` so form
+  controls/scrollbars cannot flash before the attribute is read. No painted
+  html background: the window must stay transparent for the native material,
+  which is itself the pre-paint surface.
+- Decision (WS-A.5): NO in-app appearance override. The owner's standing
+  decision is "follow macOS"; an override needs a new `set-theme` capability
+  and would desync the native material/scrollbars from the tokens. Recorded as
+  a deliberate omission, not a disabled placeholder.
+- Decision (dependency): `glisse` stays REMOVED (package.json, lockfile,
+  wrapper, imports all clean; dist grep 0). No measured gap left after CSS
+  tuning on WebKit.
+- Release grep: dist has no lab code and no glisse. One third-party string
+  remains, `apple_music: " (Apple Music)"`, vendored inside the `am-lyrics`
+  renderer bundle — not Tansen's own UI text (our labels come from
+  `lyrics/sources.ts`, which was reworded to drop the wordmark). Not patched:
+  forking a dependency to remove an attribution key is out of scope; flagged
+  to the owner.
+- Also reworded `lyrics/sources.ts` provider details to drop the wordmark.
+
+Gates this pass: tsc 0 errors; vitest 17 files / 74 tests pass; `vite build` OK;
+`check-release-lab.sh` OK (exit 0); release bundle built, ad-hoc re-signed
+(`codesign --verify` passes), installed as the single /Applications/Tansen.app,
+relaunched and verified living (window 1280x820, Settings page and a real
+"radiohead" search with 12 catalogue rows + covers).
+
+LIVE SWITCH / LIGHT-BRANCH EVIDENCE: NOT RUN this pass — changing macOS
+appearance is the owner's action (forbidden to the agent). Previous batches
+proved both token branches render via a temporary forced-light build; the real
+toggle, accent change, Reduce Transparency and Reduce Motion stay on the owner
+session checklist below.

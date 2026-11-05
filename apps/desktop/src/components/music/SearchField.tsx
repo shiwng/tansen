@@ -86,7 +86,7 @@ export function SearchField({
         <Search size={15} strokeWidth={2.4} className="pointer-events-none absolute left-2.5 text-secondary" aria-hidden="true" />
         <input
           ref={input}
-          className="h-[38px] w-full rounded-pill border border-search-border bg-page pt-1.5 pr-[30px] pb-[5px] pl-7 type-body text-primary placeholder:text-tertiary focus-visible:border-key focus-visible:ring-[1.5px] focus-visible:ring-key/70 focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
+          className="h-[38px] w-full rounded-pill border border-search-border bg-page pt-1.5 pr-[30px] pb-[5px] pl-7 type-body text-primary placeholder:text-tertiary focus-visible:border-key focus-visible:ring-[3px] focus-visible:ring-key/60 focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
           type="search"
           value={value}
           placeholder={placeholder}

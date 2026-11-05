@@ -40,7 +40,7 @@ export function LyricsSettings({ onClose }: { onClose: () => void }) {
       >
         <header className="flex items-center justify-between px-5 pt-[18px] pb-2">
           <h2 className="type-title-2-emphasized">Lyrics</h2>
-          <button className="grid size-[30px] place-items-center rounded-full bg-[#333336] text-secondary" aria-label="Close" onClick={onClose}>
+          <button className="grid size-[30px] place-items-center rounded-full bg-quaternary text-secondary" aria-label="Close" onClick={onClose}>
             <X size={16} />
           </button>
         </header>

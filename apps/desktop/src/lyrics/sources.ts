@@ -6,9 +6,9 @@
 export const LYRICS_SOURCES = [
   { id: 'lrc-red', label: 'lrc.red', detail: 'Apple timings by recording, syllable by syllable', wordSynced: true },
   { id: 'bini', label: 'BiniLyrics', detail: 'The same Apple timings, matched on the recording itself', wordSynced: true },
-  { id: 'better-lyrics', label: 'BetterLyrics', detail: 'Apple Music timings, word by word', wordSynced: true },
+  { id: 'better-lyrics', label: 'BetterLyrics', detail: 'Word-by-word timings', wordSynced: true },
   { id: 'better-lyrics-portato', label: 'BetterLyrics Portato', detail: 'QQ Music karaoke timings through BetterLyrics', wordSynced: true },
-  { id: 'paxsenix', label: 'PaxSenix', detail: 'Apple Music timings through the original keyless provider', wordSynced: true },
+  { id: 'paxsenix', label: 'PaxSenix', detail: 'Word timings through the original keyless provider', wordSynced: true },
   { id: 'paxsenix-spotify', label: 'PaxSenix: Spotify', detail: 'Spotify lyrics with PaxSenix fallback; API key required', wordSynced: false },
   { id: 'paxsenix-musixmatch', label: 'PaxSenix: Musixmatch', detail: 'Musixmatch timings with PaxSenix fallback; API key required', wordSynced: true },
   { id: 'lyrics-plus', label: 'LyricsPlus', detail: 'Syllable by syllable, on community mirrors', wordSynced: true },
