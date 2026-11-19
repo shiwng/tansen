@@ -38,6 +38,9 @@ jobs:
           ref: 7d956f211b8a46a87184fd3ff87432b51a111dfa
           path: BitChord
           fetch-depth: 1
+          # build-sidecar.sh resolves v1.8.1 (the tag the pinned SHA was
+          # audited at); a depth-1 checkout ships no tags, so fetch them.
+          fetch-tags: true
           persist-credentials: false
 
       - name: Set up JDK 17
