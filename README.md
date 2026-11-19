@@ -1,18 +1,44 @@
-# Tansen
+<div align="center">
+  <img src="docs/media/tansen-lockup.png" alt="Tansen — three-bar sound mark beside the name" width="620"/>
 
-![Tansen demo — search, playback, full-screen synced lyrics](docs/media/demo.gif)
+  # Tansen
 
-**A local-first desktop music player for macOS: your library on disk, optional
-catalogue sources when you want them, and nothing leaving your machine.**
+  <p><strong>A local-first desktop music player for macOS: your library on
+  disk, optional catalogue sources when you want them, and nothing leaving
+  your machine.</strong></p>
 
-Tansen is named after the legendary musician. Its architecture, design, and
-features follow [BitChord](https://github.com/kushagrasinghx/BitChord) (a
-YouTube Music client) and borrow from its GPL-3.0 code under the same license.
-**Not affiliated with or endorsed by BitChord, YouTube, or Google.**
+  <p>
+    <a href="#features">Features</a> ·
+    <a href="#architecture">Architecture</a> ·
+    <a href="#installation">Installation</a> ·
+    <a href="#development">Development</a> ·
+    <a href="#contributing--community">Contributing</a> ·
+    <a href="#security">Security</a> ·
+    <a href="#license">License</a>
+  </p>
+</div>
 
-▶ **[Full 40-second demo (MP4, 2560×1440, no audio)](docs/media/demo.mp4)** —
-home browsing, search typeahead, playback, the full-screen player with synced
-lyrics, and Settings.
+> [!IMPORTANT]
+> Tansen is named after the legendary musician. Its architecture, design, and
+> features follow [BitChord](https://github.com/kushagrasinghx/BitChord) (a
+> YouTube Music client) and borrow from its GPL-3.0 code under the same
+> license. **Not affiliated with or endorsed by BitChord, YouTube, or Google.**
+
+---
+
+<div align="center">
+  <img src="docs/media/screenshot-home.png" alt="Tansen — Browse Categories with the sidebar and player pill" width="920"/>
+</div>
+
+### Demo
+
+<div align="center">
+  <img src="docs/media/demo.gif" alt="Tansen demo — search, playback, full-screen synced lyrics" width="700"/>
+
+  ▶ **[Full 40-second demo (MP4, 2560×1440, no audio)](docs/media/demo.mp4)** —
+  home browsing, search typeahead, playback, the full-screen player with synced
+  lyrics, and Settings.
+</div>
 
 ## Features
 
@@ -154,7 +180,7 @@ accepted risks are in [docs/security/](docs/security/). Highlights:
 - Credentials live in the macOS Keychain; SQLite, logs, and frontend state never store them.
 - All outbound URLs and redirects are validated by `crates/netguard`; HTTP response bodies are size-bounded.
 - The bundled sidecar is loopback-only with a per-launch random token, and anonymous by design.
-- The demo GIF/MP4 in this README were recorded from the real app; nothing in them is staged or mocked.
+- The demo GIF/MP4 and screenshots in this README were recorded from the real app; nothing in them is staged or mocked.
 
 ## License
 
