@@ -29,7 +29,7 @@ interface AppearanceState {
   setMeshBackdrop: (on: boolean) => void;
 }
 
-const KEY = 'bitchord:appearance';
+const KEY = 'tansen:appearance';
 
 interface Stored {
   theme: ThemeMode;

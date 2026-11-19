@@ -4,9 +4,9 @@ Statuses (per the project brief): `NOT AUDITED · AUDITED · NOT IMPLEMENTED · 
 
 - **IMPLEMENTED** = present in the code. **TESTED** = passed its required test (unit, integration, or verified behavior — never "it compiles").
 - **BLOCKED** / **NOT APPLICABLE** always carry the reason.
-- Reference: upstream = BitChord Android v1.8.1 (repo == APK) and its GPL web player (`BitChord/web/app`), which is the desktop design reference we vendor from.
+- Reference: upstream = the pinned upstream Kotlin sources the sidecar compiles against (see `scripts/build-sidecar.sh`).
 
-Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attribution in README) · [P] ported/reimplemented in Rust/TS · [R] Rust backend.
+Legend for "how": [V] parity-checked against the upstream web player (GPL-3.0) · [P] ported/reimplemented in Rust/TS · [R] Rust backend.
 
 ## 1. Shell & navigation (design parity)
 
@@ -98,7 +98,7 @@ Legend for "how": [V] vendored from the upstream web player (GPL-3.0, attributio
 | Racing resolver (`bestAcross`, lossless upgrades, strict matching) | `SourceResolver.kt` | NOT IMPLEMENTED | | Resolution is sequential, not raced: pinned source → one transient retry → ranked fallback ladder with strict metadata matching. Racing waits for ≥2 real non-local sources |
 | QuickJS modules | `ModuleManager.kt` | NOT IMPLEMENTED | | Via `rquickjs` |
 | JioSaavn | `JioSaavnSource.kt` | NOT IMPLEMENTED | | |
-| **YouTube Music via Kotlin sidecar** (search, track metadata, albums/playlists, lyrics, AAC stream resolution) | `:shared` Innertube/StreamResolver | TESTED | [R]+[K] | Upstream's own Kotlin client runs as a local HTTP sidecar (`BitChord/sidecar/`, GPL-3.0, touches nothing in `:shared`); Rust `YtMusicSource` supervises the JVM process (spawn → health-retry → kill-on-drop) and implements the `MusicSource` trait. Round-trip test: search → `?prefer=aac` stream → **Symphonia decodes 5 s, RMS 0.126 (non-silence)**. Live observations: itag 140/131 progressive AAC resolves in ~2 s with **no PoToken needed** on this client path |
+| **YouTube Music via Kotlin sidecar** (search, track metadata, albums/playlists, lyrics, AAC stream resolution) | `:shared` Innertube/StreamResolver | TESTED | [R]+[K] | The pinned upstream Kotlin client runs as a local HTTP sidecar (GPL-3.0, touches nothing in `:shared`); Rust `YtMusicSource` supervises the JVM process (spawn → health-retry → kill-on-drop) and implements the `MusicSource` trait. Round-trip test: search → `?prefer=aac` stream → **Symphonia decodes 5 s, RMS 0.126 (non-silence)**. Live observations: itag 140/131 progressive AAC resolves in ~2 s with **no PoToken needed** on this client path |
 | Catalogue feature flag | — | TESTED | [R] | `catalogue_sources` setting gates `YtMusicSource` construction (`registry::build_active`); off by default, local sources unaffected; a failed launch leaves the source out with a warning, never breaks local playback |
 | Stream format selection (progressive itags) | StreamResolver itags | IN PROGRESS | | `?prefer=aac` guarantees MP4/AAC via `resolveForDownload(requireM4a)`; the default (no param) may return Opus/WebM, which this Symphonia build cannot decode — recorded below |
 | HLS / DASH streaming | media3 DASH/HLS | BLOCKED | | Reason: upstream's phone player handles manifests via media3; the desktop rodio/Symphonia stack decodes progressive files only. Sidecar serves progressive itags; manifest support needs a demuxer/player change |

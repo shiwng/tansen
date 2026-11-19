@@ -2,7 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { useRouteError } from 'react-router';
 
 /** Tansen's own persisted frontend keys; the backend library and settings stay. */
-const UI_KEY_PREFIXES = ['tansen:', 'bitchord:'];
+const UI_KEY_PREFIXES = ['tansen:'];
 
 function resetUiState() {
   for (const key of Object.keys(localStorage)) {

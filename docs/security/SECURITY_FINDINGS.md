@@ -430,7 +430,7 @@ approval, not a code change.
   artifact (18,548,947 bytes; SHA-256
   `eedbb8e3fdc645a48e77a5e1b5c8ce9ca74312e36f135015de0578775d8aca69`, rebuilt
   2026-11-19). The build
-  script pins upstream BitChord commit `7f45c768a461fd7e68bf4613f71e8a767e643d4c`
+  script pins the upstream shared-module commit `7f45c768a461fd7e68bf4613f71e8a767e643d4c`
   (the v1.9.1 tag — re-pinned on 2026-11-19 from v1.8.1 `7d956f21…`, which the
   overlay no longer compiles against; the previously recorded jar was built
   from a newer upstream checkout, so the old pin understated its provenance)

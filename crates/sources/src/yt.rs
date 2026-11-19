@@ -603,7 +603,7 @@ impl YtMusicSource {
     /// Spawns the sidecar jar on a free loopback port and waits for /health.
     ///
     /// Jar and java discovery (first hit wins):
-    /// 1. `BITCHORD_SIDECAR_JAR` env,
+    /// 1. `TANSEN_SIDECAR_JAR` env,
     /// 2. the `sidecar_jar` setting,
     /// 3. `sidecar/build/libs/sidecar-all.jar` next to the running executable
     ///    or in the workspace checkout.
@@ -616,7 +616,7 @@ impl YtMusicSource {
         let token = sidecar_token()?;
         let jar = jar_path.or_else(discover_jar).ok_or_else(|| {
             SourceError::Protocol(
-                "sidecar jar not found (set BITCHORD_SIDECAR_JAR or the sidecar_jar setting)"
+                "sidecar jar not found (set TANSEN_SIDECAR_JAR or the sidecar_jar setting)"
                     .into(),
             )
         })?;
@@ -980,7 +980,7 @@ fn free_port() -> Result<u16, SourceError> {
 }
 
 fn discover_jar() -> Option<PathBuf> {
-    if let Ok(env) = std::env::var("BITCHORD_SIDECAR_JAR") {
+    if let Ok(env) = std::env::var("TANSEN_SIDECAR_JAR") {
         let p = PathBuf::from(env);
         if p.is_file() {
             return Some(p);

@@ -19,10 +19,9 @@
 </div>
 
 > [!IMPORTANT]
-> Tansen is named after the legendary musician. Its architecture, design, and
-> features follow [BitChord](https://github.com/kushagrasinghx/BitChord) (a
-> YouTube Music client) and borrow from its GPL-3.0 code under the same
-> license. **Not affiliated with or endorsed by BitChord, YouTube, or Google.**
+> Tansen is named after the legendary musician. Every part of it — the Rust
+> playback engine, the React UI, the Kotlin sidecar overlay — is implemented
+> in this repository. **Not affiliated with or endorsed by YouTube or Google.**
 
 ---
 
@@ -184,8 +183,6 @@ accepted risks are in [docs/security/](docs/security/). Highlights:
 
 ## License
 
-Tansen is licensed under the **[GNU GPL v3 or later](LICENSE)**, matching
-upstream [BitChord](https://github.com/kushagrasinghx/BitChord) (whose GPL-3.0
-web player UI and sidecar logic this project adapts). See [NOTICE](NOTICE)
-for third-party notices. The Tansen name and three-bar sound mark are this
-project's own.
+Tansen is licensed under the **[GNU GPL v3 or later](LICENSE)**. See
+[NOTICE](NOTICE) for third-party notices. The Tansen name and three-bar
+sound mark are this project's own.

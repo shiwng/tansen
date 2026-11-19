@@ -3,7 +3,7 @@
 //! seconds with the playback crate's probe. Asserts the decoded audio is not
 //! digital silence — the closest a test gets to "it actually plays".
 //!
-//! Needs: the sidecar jar (`../BitChord/sidecar/build/libs/sidecar-all.jar`)
+//! Needs: a built sidecar jar (the fallback path the test resolves below)
 //! and network access to YouTube. Skipped by default so `cargo test` stays
 //! hermetic; run explicitly with:
 //!

@@ -1,8 +1,9 @@
 /*
- * BitChord sidecar — a local HTTP server over :shared's YouTube Music client.
+ * Tansen sidecar — a local HTTP server over the shared module's YouTube Music
+ * client. Compiled against the pinned upstream sources (see
+ * scripts/build-sidecar.sh in the desktop repo for provenance).
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Part of BitChord (https://github.com/kushagrasinghx/BitChord), GPL-3.0.
  *
  * Design rules:
  *  - Binds 127.0.0.1 only. This is a private helper for the desktop app on
@@ -48,7 +49,7 @@ fun main(args: Array<String>) {
     val port = args
         .firstOrNull { it.startsWith("--port") }?.substringAfter('=')?.toIntOrNull()
         ?: args.getOrNull(args.indexOf("--port") + 1)?.toIntOrNull()
-        ?: System.getenv("BITCHORD_SIDECAR_PORT")?.toIntOrNull()
+        ?: System.getenv("TANSEN_SIDECAR_PORT")?.toIntOrNull()
         ?: 8765
 
     // Per-launch shared secret from the Rust launcher: every request must

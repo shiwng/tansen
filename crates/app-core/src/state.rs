@@ -298,9 +298,11 @@ pub fn data_dir_default() -> PathBuf {
     dirs_data_root().join("tansen")
 }
 
-/// One-time migration from the pre-rename data directory
-/// (`bitchord-desktop` → `tansen`): renames the directory and its database
-/// files. Runs before `AppState::open`; a no-op when either side is absent.
+/// One-time migration from the pre-rename data directory used by early
+/// internal builds: renames the directory and its database files so an
+/// existing library survives the rename. Runs before `AppState::open`; a
+/// no-op when either side is absent. The legacy artifact names below are
+/// load-bearing — they match data written by those builds; do not rename.
 pub fn migrate_legacy_data_dir() {
     let new = data_dir_default();
     if new.exists() {

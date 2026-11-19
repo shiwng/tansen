@@ -22,11 +22,11 @@ describe('appearance store', () => {
   });
 
   it('sanitizes hostile or corrupt stored values back to defaults', () => {
-    localStorage.setItem('bitchord:appearance', '{"theme":"neon","glass":"yes","reduceBlur":1}');
+    localStorage.setItem('tansen:appearance', '{"theme":"neon","glass":"yes","reduceBlur":1}');
     expect(readAppearance().theme).toBe('system');
     expect(readAppearance().glass).toBe(true);
     expect(readAppearance().reduceBlur).toBe(false);
-    localStorage.setItem('bitchord:appearance', 'not json');
+    localStorage.setItem('tansen:appearance', 'not json');
     expect(readAppearance().theme).toBe('system');
   });
 
@@ -39,7 +39,7 @@ describe('appearance store', () => {
     expect(root.dataset.glass).toBe('off');
     expect(root.dataset.reduceBlur).toBe('on');
     expect(root.dataset.reduceMotion).toBe('on');
-    const stored = JSON.parse(localStorage.getItem('bitchord:appearance') ?? '{}');
+    const stored = JSON.parse(localStorage.getItem('tansen:appearance') ?? '{}');
     expect(stored).toMatchObject({ glass: false, reduceBlur: true, reduceMotion: true, theme: 'dark' });
     // The persisted blob is data only — the setters must not leak into it.
     expect(Object.keys(stored)).toEqual(['theme', 'glass', 'reduceBlur', 'reduceMotion', 'fullScreenArt', 'meshBackdrop']);
@@ -47,7 +47,7 @@ describe('appearance store', () => {
 
   it('re-reads from storage on the next module read (restart path)', () => {
     localStorage.setItem(
-      'bitchord:appearance',
+      'tansen:appearance',
       JSON.stringify({ theme: 'light', fullScreenArt: false, meshBackdrop: false }),
     );
     expect(readAppearance().theme).toBe('light');

@@ -5,9 +5,10 @@
 # resource, shipped inside the packaged app).
 #
 # Env:
-#   BITCHORD_REF   upstream tag/commit to build against (default: v1.8.1)
-#   BITCHORD_DIR   where the upstream checkout lives / should be cloned
-#                  (default: <repo>/../BitChord, the documented dev layout)
+#   UPSTREAM_REF   upstream tag/commit to build against (default: v1.9.1)
+#   UPSTREAM_DIR   where the upstream checkout lives / should be cloned
+#                  (default: the BitChord sibling checkout, the documented
+#                  dev layout)
 #   JAVA_HOME      JDK 17+ home (required by Gradle)
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -15,22 +16,22 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REF="${BITCHORD_REF:-v1.9.1}"
+REF="${UPSTREAM_REF:-v1.9.1}"
 # Content identity of the upstream the shipped jar is built from. The tag
 # name alone is mutable; whoever controls it could change shipped code
 # without any Tansen-side commit. Both this script and CI pin the SHA and
 # refuse to build from anything else. Keep in sync with
 # .github/workflows/ci.yml.
 #
-# Re-pinned 2026-11-19 from v1.8.1 (7d956f21…) to v1.9.1: the sidecar overlay
-# (:sidecar) uses HomeShelf.layout and friends that upstream added after
-# v1.8.1 — the jar actually shipped since 2026-11-02 was built from a newer
-# upstream checkout, so the old pin never reflected real provenance. The
-# audit in docs/audit-bitchord.md covered upstream at 04a4a8388 (v1.8.1-era
-# main); the delta to v1.9.1 is limited to :shared APIs the overlay compiles
-# against and is re-verified at every build by the digest pins below.
-BITCHORD_SHA="${BITCHORD_SHA:-7f45c768a461fd7e68bf4613f71e8a767e643d4c}"
-UP="${BITCHORD_DIR:-$(cd "$REPO_ROOT/.." && pwd)/BitChord}"
+# Re-pinned 2026-11-19 from v1.8.1 to v1.9.1: the sidecar overlay
+# (:sidecar) uses shared-module APIs (`HomeShelf.layout` and friends) that
+# upstream added after v1.8.1 — the jar actually shipped since 2026-11-02
+# was built from a newer upstream checkout, so the old pin never reflected
+# real provenance. The delta to v1.9.1 is limited to shared APIs the overlay
+# compiles against and is re-verified at every build by the digest pins
+# below.
+UPSTREAM_SHA="${UPSTREAM_SHA:-7f45c768a461fd7e68bf4613f71e8a767e643d4c}"
+UP="${UPSTREAM_DIR:-$(cd "$REPO_ROOT/.." && pwd)/BitChord}"
 OVERLAY="$REPO_ROOT/sidecar-overlay"
 OUT="$REPO_ROOT/apps/desktop/src-tauri/resources"
 
@@ -47,7 +48,7 @@ else
   # A dirty or custom checkout is the developer's live tree: never clobber it.
   if [ -n "$(git -C "$UP" status --porcelain)" ]; then
     echo "ERROR: $UP has uncommitted changes; commit/stash them or point" >&2
-    echo "BITCHORD_DIR at a clean checkout." >&2
+    echo "UPSTREAM_DIR at a clean checkout." >&2
     exit 1
   fi
   current="$(git -C "$UP" rev-parse HEAD)"
@@ -64,7 +65,7 @@ else
     echo "checking out $REF in $UP (from $current)"
     # Check out the resolved commit, not the tag name: the SHA is always a
     # valid pathspec, and the provenance gate below still pins HEAD to
-    # BITCHORD_SHA, so this stays safe.
+    # UPSTREAM_SHA, so this stays safe.
     git -C "$UP" checkout --quiet "$target"
   fi
 fi
@@ -72,10 +73,10 @@ fi
 # --- provenance gate: the built jar is executable content shipped in the
 # app; build only the audited commit, never "whatever the tag means now".
 built="$(git -C "$UP" rev-parse HEAD)"
-if [ "$built" != "$BITCHORD_SHA" ]; then
-  echo "ERROR: upstream checkout $built is not the pinned commit $BITCHORD_SHA" >&2
+if [ "$built" != "$UPSTREAM_SHA" ]; then
+  echo "ERROR: upstream checkout $built is not the pinned commit $UPSTREAM_SHA" >&2
   echo "(tag $REF may have moved; verify the new commit and update" >&2
-  echo "BITCHORD_SHA here and in .github/workflows/ci.yml)" >&2
+  echo "UPSTREAM_SHA here and in .github/workflows/ci.yml)" >&2
   exit 1
 fi
 echo "upstream provenance OK: $built"

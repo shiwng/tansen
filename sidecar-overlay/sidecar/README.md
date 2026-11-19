@@ -1,14 +1,13 @@
-# BitChord sidecar
+# Tansen sidecar module
 
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-Part of BitChord (https://github.com/kushagrasinghx/BitChord) — GPL-3.0, as upstream.
-This module is a thin HTTP wrapper over :shared's YouTube Music client. It changes
-nothing in :shared; every seam lives here.
+A thin HTTP wrapper over the pinned upstream shared module's YouTube Music
+client. It changes nothing in that module; every seam lives here.
 -->
 
-A local HTTP server that exposes `:shared`'s catalogue and stream resolution to
-the Rust desktop app (BitChord Desktop, `crates/sources`). It exists so the
+A local HTTP server that exposes the shared module's catalogue and stream
+resolution to the Rust desktop app (`crates/sources`). It exists so the
 working Kotlin YouTube Music client does not have to be rewritten in Rust.
 
 - Binds **127.0.0.1 only**; it is a private helper for the app on the same machine.
@@ -28,7 +27,7 @@ JAVA_HOME=/path/to/jdk-17 ./gradlew :sidecar:fatJar
 
 ```bash
 java -jar sidecar/build/libs/sidecar-all.jar --port 8765
-# or: BITCHORD_SIDECAR_PORT=8765 java -jar ...
+# or: TANSEN_SIDECAR_PORT=8765 java -jar ...
 ```
 
 The Rust side spawns and supervises this process itself (`--port` with a free
@@ -50,5 +49,5 @@ Rust field mappings. Short form:
 
 ## License
 
-GPL-3.0-or-later, matching upstream BitChord. Everything this module calls is
-part of the same GPL codebase.
+GPL-3.0-or-later. Everything this module calls is part of the same GPL
+codebase; provenance and the pinned commit live in `scripts/build-sidecar.sh`.

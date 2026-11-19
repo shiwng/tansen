@@ -5,12 +5,11 @@ use super::err;
 // Spotify playlist import
 //
 // No-auth import of PUBLIC playlists through Spotify's embed page — the same
-// document Spotify serves for its embeddable player (upstream BitChord's
-// import used the same surface). The Web API now demands a user token for
-// /v1/playlists (401 without one), and the embed exposes at most the first
-// 100 tracks, so a playlist at that cap is REFUSED rather than imported
-// incomplete. No Spotify audio is touched: rows carry metadata only, and
-// playback resolves through Tansen's own sources.
+// document Spotify serves for its embeddable player. The Web API now demands
+// a user token for /v1/playlists (401 without one), and the embed exposes at
+// most the first 100 tracks, so a playlist at that cap is REFUSED rather
+// than imported incomplete. No Spotify audio is touched: rows carry metadata
+// only, and playback resolves through Tansen's own sources.
 
 const SPOTIFY_EMBED_URL: &str = "https://open.spotify.com/embed/playlist/";
 

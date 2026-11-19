@@ -65,7 +65,7 @@ const DEFAULT_SETTINGS: Settings = {
 
 /** Player settings + the queue mirror: what a restart restores. */
 const PERSIST_KEY = 'tansen:playback';
-const SETTINGS_KEY = 'bitchord:player'; // upstream-compatible name, kept
+const SETTINGS_KEY = 'tansen:player';
 
 const PERSIST_VERSION = 1;
 

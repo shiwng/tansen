@@ -1,6 +1,7 @@
 # Sidecar API contract
 
-The Kotlin sidecar (upstream `BitChord/sidecar/`) is a local HTTP server over
+The Kotlin sidecar (the pinned upstream module built by
+`scripts/build-sidecar.sh`) is a local HTTP server over
 `:shared`'s YouTube Music client. The Rust `YtMusicSource`
 (`crates/sources/src/yt.rs`) spawns it, health-checks it, and translates its
 JSON. All traffic is `127.0.0.1` only; no cookies, anonymous Innertube access.
@@ -12,7 +13,7 @@ java -jar sidecar-all.jar --port <free port>
 ```
 
 - Port: `--port` (either `--port=N` or `--port N`), else env
-  `BITCHORD_SIDECAR_PORT`, else 8765.
+  `TANSEN_SIDECAR_PORT`, else 8765.
 - The Rust side finds a free port itself and always passes `--port`.
 - `GET /health` is polled (400 ms interval, 20 s budget) until `{ok: true}`.
 - SIGTERM → clean exit 0. The Rust supervisor also kills the child on drop.
@@ -21,7 +22,7 @@ Discovery on the Rust side (first hit wins):
 
 | What | Order |
 |---|---|
-| Jar | `BITCHORD_SIDECAR_JAR` env → `sidecar_jar` setting → `<exe>/../BitChord/sidecar/build/libs/sidecar-all.jar` → `<cwd>/../BitChord/...` |
+| Jar | `TANSEN_SIDECAR_JAR` env → `sidecar_jar` setting → `<exe>/../BitChord/sidecar/build/libs/sidecar-all.jar` → `<cwd>/../BitChord/...` |
 | Java | `java_path` setting → `$JAVA_HOME/bin/java` → `java` on PATH |
 
 The source participates in playback only when the `catalogue_sources` setting

@@ -1,10 +1,10 @@
 /*
- * BitChord sidecar — a local HTTP server exposing :shared's YouTube Music
- * client to the Rust desktop app.
+ * Tansen sidecar — a local HTTP server exposing the shared module's YouTube
+ * Music client to the Rust desktop app.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Part of BitChord (https://github.com/kushagrasinghx/BitChord), GPL-3.0.
- * This module changes nothing in :shared; it only calls it.
+ * Compiled against the pinned upstream sources; this module changes nothing
+ * in :shared, it only calls it. See scripts/build-sidecar.sh.
  */
 
 plugins {

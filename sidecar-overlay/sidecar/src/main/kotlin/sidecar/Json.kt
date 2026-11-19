@@ -1,7 +1,8 @@
 /*
- * BitChord sidecar — JSON mappings from :shared's models to the wire shapes
- * the Rust desktop app reads. Field names here are the sidecar contract; the
- * Rust side mirrors them in crates/sources/src/yt (see docs/sidecar-api.md).
+ * Tansen sidecar — JSON mappings from the shared module's models to the wire
+ * shapes the Rust desktop app reads. Field names here are the sidecar
+ * contract; the Rust side mirrors them in crates/sources/src/yt (see
+ * docs/sidecar-api.md).
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */

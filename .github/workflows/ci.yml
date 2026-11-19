@@ -34,7 +34,7 @@ jobs:
           repository: kushagrasinghx/BitChord
           # Immutable commit of the v1.9.1 tag the sidecar overlay compiles
           # against; the tag itself is mutable. Keep in sync with
-          # BITCHORD_SHA in scripts/build-sidecar.sh.
+          # UPSTREAM_SHA in scripts/build-sidecar.sh.
           ref: 7f45c768a461fd7e68bf4613f71e8a767e643d4c
           path: BitChord
           fetch-depth: 1
@@ -62,7 +62,7 @@ jobs:
         env:
           # The script defaults to <repo>/../BitChord for the local sibling
           # layout; this job checks BitChord out inside the workspace.
-          BITCHORD_DIR: ${{ github.workspace }}/BitChord
+          UPSTREAM_DIR: ${{ github.workspace }}/BitChord
         run: ./scripts/build-sidecar.sh
 
       - name: Set up Rust

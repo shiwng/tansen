@@ -31,7 +31,7 @@ webviews, dialogs, and OS media integration.
 | `crates/sources` | `MusicSource` trait, registry, search fan-out, resolver, addons, Subsonic, YouTube sidecar source |
 | `crates/app-core` | `AppState`, task-based playback engine, playback types, library watcher, sidecar handle |
 | `crates/netguard` | outbound URL checks and DNS/IP validation shared by media fetches |
-| `sidecar-overlay` | Kotlin sidecar module; built against pinned upstream BitChord sources |
+| `sidecar-overlay` | Kotlin sidecar module; built against the pinned upstream shared module |
 | `scripts/build-sidecar.sh` | the only supported sidecar build path |
 | `tests/fixtures` | generated audio fixtures used by scanner and format tests |
 
@@ -110,7 +110,7 @@ The catalogue is off by default and enabled in Settings → Sources.
 ## Sidecar
 
 `sidecar-overlay/sidecar` is the source of truth for the Kotlin module. It
-builds against upstream BitChord's `:shared` module, so it is not a standalone
+builds against the pinned upstream `:shared` module, so it is not a standalone
 Gradle project. `scripts/build-sidecar.sh` checks out the pinned upstream
 commit, applies the overlay, builds `sidecar-all.jar`, and copies it into the
 Tauri resources directory. The HTTP contract is in

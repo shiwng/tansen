@@ -82,4 +82,4 @@ Please do not open public GitHub issues for suspected security vulnerabilities. 
 
 ## Licensing
 
-Contributions must be compatible with the project's license (currently `GPL-3.0-or-later` matching upstream BitChord; see the repository license notice).
+Contributions must be compatible with the project's license (`GPL-3.0-or-later`; see the repository license notice).
