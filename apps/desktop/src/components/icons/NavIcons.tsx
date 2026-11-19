@@ -77,6 +77,22 @@ export const MadeForYouIcon = make([
   },
 ]);
 
+// dot.radiowaves.left.and.right (Apple Music sidebar Radio): filled dot plus
+// stroked arc pairs, ink 17.1×12.2 units to match the other glyphs at 28px.
+export const RadioWavesIcon = function RadioWaves({ size = 28, ...props }: NavIconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" {...props}>
+      <circle cx="12" cy="12" r="2.1" fill="currentColor" />
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+        <path d="M8.55 15.45a4.9 4.9 0 0 1 0-6.9" />
+        <path d="M15.45 8.55a4.9 4.9 0 0 1 0 6.9" />
+        <path d="M5.9 18.1a8.8 8.8 0 0 1 0-12.2" />
+        <path d="M18.1 5.9a8.8 8.8 0 0 1 0 12.2" />
+      </g>
+    </svg>
+  );
+};
+
 export const AllPlaylistsIcon = make([
   {
     transform: 'translate(.7 .94)scale(.92237)',

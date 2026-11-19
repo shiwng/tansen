@@ -62,7 +62,7 @@ export function normalizedSyllables(parts: LyricSyllable[], length: number): Lyr
   }));
 }
 
-// ---- SyllableRuns.kt --------------------------------------------------------------------
+// SyllableRuns.kt
 
 /** One stamped run as a provider wrote it, spacing untouched: a word, or one syllable of one. */
 export interface TimedRun {
@@ -116,7 +116,7 @@ export function wordsFromRuns(runs: TimedRun[], spacingIsExplicit = false): Lyri
   return words;
 }
 
-// ---- LyricGaps.kt ---------------------------------------------------------------------
+// LyricGaps.kt
 
 /** Shorter instrumental breaks aren't worth interrupting the line for. */
 export const MIN_GAP_MS = 4000;
@@ -136,7 +136,7 @@ export function withInstrumentalGaps(lines: LyricLine[]): LyricLine[] {
   return out;
 }
 
-// ---- BackgroundVocals.kt ----------------------------------------------------------------
+// BackgroundVocals.kt
 
 function bracketStart(text: string): number | null {
   if (!text.endsWith(')')) return null;
@@ -183,7 +183,7 @@ export function withBackgroundVocals(lines: LyricLine[]): LyricLine[] {
   });
 }
 
-// ---- LyricAlignments.kt ---------------------------------------------------------------------
+// LyricAlignments.kt
 
 const MOSTLY_RIGHT = 0.85;
 

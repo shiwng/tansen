@@ -31,7 +31,6 @@ export function PlayerBar() {
   const sidePanel = useUi((s) => s.sidePanel);
   const toggleSidePanel = useUi((s) => s.toggleSidePanel);
   const hasTrack = usePlayer((s) => s.nowPlaying !== null);
-  const videoId = usePlayer((s) => s.nowPlaying?.videoId ?? null);
   // The queue's entry for what's playing: the track menu needs the full track.
   const track = usePlayer((s) => {
     const entry = s.queue[s.index]?.track;
@@ -92,7 +91,7 @@ export function PlayerBar() {
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setVolumeOpen(false);
           }}
         >
-          <FavoriteButton videoId={videoId} className={fading} />
+          <FavoriteButton track={track} className={fading} />
           {track && <TrackMenu track={track} className={fading} placement="above-end" />}
           {/* Always here: the panel itself says whether this track has lyrics, and from where. */}
           <button className={fading} aria-label="Lyrics" aria-pressed={sidePanel === 'lyrics'} onClick={() => toggleSidePanel('lyrics')}>

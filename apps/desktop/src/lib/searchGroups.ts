@@ -1,6 +1,6 @@
 import type { Track } from '@/data/music/types';
 
-/** One search row as `search_tracks` returns it (F5 unified search). */
+/** One search row as `search_tracks` returns it (unified search). */
 export interface SearchTrackRow {
   key: { source: string; id: string };
   title: string;

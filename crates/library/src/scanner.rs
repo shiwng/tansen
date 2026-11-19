@@ -16,14 +16,14 @@ use std::sync::Arc;
 pub struct ScanProgress {
     pub scanned: usize,
     pub total: usize,
-    /// Folder id — the path stays inside the backend (TAN-11).
+    /// Folder id; the path stays inside the backend.
     pub folder_id: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct ScanSummary {
     pub added: usize,
-    /// M12: files whose stored mtime+size matched and were skipped without
+    /// Files whose stored mtime+size matched and were skipped without
     /// parsing (the field was never written before).
     pub unchanged: usize,
     pub marked_missing: usize,
@@ -66,17 +66,22 @@ impl Scanner {
         let done = Arc::new(AtomicUsize::new(0));
         let errors = Arc::new(AtomicUsize::new(0));
 
-        // M12, phase 1 (parallel parse): stat-compare against the stored
-        // mtime+size and read tags only for changed or missing rows. Nothing
-        // touches the database here.
+        // Phase 1 (parallel parse): stat-compare against the stored
+        // mtime+size and read tags only for changed or missing rows. The
+        // stat map is read once; nothing touches the database here.
+        let stats = repo::track_stats(db)?;
         let writes: Vec<(repo::TrackWrite, bool)> = jobs
             .par_iter()
             .filter_map(|(folder_id, path)| {
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if n % 25 == 0 || n == total {
-                    on_progress(ScanProgress { scanned: n, total, folder_id: *folder_id });
+                    on_progress(ScanProgress {
+                        scanned: n,
+                        total,
+                        folder_id: *folder_id,
+                    });
                 }
-                match self.parse_job(db, *folder_id, path) {
+                match self.parse_job(*folder_id, path, &stats) {
                     Ok(Some(pair)) => Some(pair),
                     Ok(None) => None,
                     Err(e) => {
@@ -89,12 +94,20 @@ impl Scanner {
             .collect();
         summary.unchanged = total - writes.len();
 
-        // M12, phase 2 (batched write): every insert of a chunk commits
+        // Phase 2 (batched write): every insert of a chunk commits
         // inside one transaction instead of two autocommits per file.
         let mut added = 0usize;
         for chunk in writes.chunks(200) {
-            let items: Vec<repo::TrackWrite> =
-                chunk.iter().map(|(w, _)| repo::TrackWrite { track: w.track.clone(), folder_id: w.folder_id, mtime: w.mtime, size: w.size, art_path: w.art_path.clone() }).collect();
+            let items: Vec<repo::TrackWrite> = chunk
+                .iter()
+                .map(|(w, _)| repo::TrackWrite {
+                    track: w.track.clone(),
+                    folder_id: w.folder_id,
+                    mtime: w.mtime,
+                    size: w.size,
+                    art_path: w.art_path.clone(),
+                })
+                .collect();
             match repo::upsert_batch(db, &items, now_secs()) {
                 Ok(_) => {
                     added += chunk.iter().filter(|(_, existed)| !existed).count();
@@ -121,9 +134,7 @@ impl Scanner {
                 .collect();
             let gone: Vec<i64> = known
                 .into_iter()
-                .filter(|(_, p, exists)| {
-                    !seen.contains(p) && !Path::new(p).exists() && *exists
-                })
+                .filter(|(_, p, exists)| !seen.contains(p) && !Path::new(p).exists() && *exists)
                 .map(|(id, _, _)| id)
                 .collect();
             summary.marked_missing += repo::mark_missing(db, &gone, true)?;
@@ -133,17 +144,18 @@ impl Scanner {
         Ok(summary)
     }
 
-    /// Stats + parses one file. `Ok(None)` = unchanged row skipped (M12):
+    /// Stats + parses one file. `Ok(None)` = unchanged row skipped:
     /// the stored mtime+size match the file and the row is not missing, so
     /// no metadata is parsed and nothing is written. `existed` distinguishes
     /// inserts from updates for the summary.
     fn parse_job(
         &self,
-        db: &Db,
         folder_id: i64,
         path: &Path,
+        stats: &std::collections::HashMap<String, (i64, i64, bool)>,
     ) -> std::result::Result<Option<(repo::TrackWrite, bool)>, String> {
-        let stat = repo::stat_by_path(db, &path.to_string_lossy()).map_err(|e| e.to_string())?;
+        let key = path.to_string_lossy();
+        let stat = stats.get(key.as_ref()).copied();
         let mtime = file_mtime(path);
         let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
         if let Some((st_mtime, st_size, missing)) = stat {
@@ -161,7 +173,13 @@ impl Scanner {
             .flatten()
             .and_then(|p| p.to_str().map(str::to_owned));
         Ok(Some((
-            repo::TrackWrite { track, folder_id, mtime, size, art_path },
+            repo::TrackWrite {
+                track,
+                folder_id,
+                mtime,
+                size,
+                art_path,
+            },
             existed,
         )))
     }

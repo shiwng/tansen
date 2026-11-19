@@ -23,6 +23,12 @@ importers:
       '@uimaxbai/am-lyrics':
         specifier: ^1.5.0
         version: 1.8.8(react@19.3.1)
+      glisse:
+        specifier: ^0.5.0
+        version: 0.5.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      lenis:
+        specifier: ^1.3.27
+        version: 1.3.27(react@19.3.1)
       lucide-react:
         specifier: ^0.545.0
         version: 0.545.0(react@19.3.1)
@@ -832,6 +838,12 @@ packages:
     resolution: {integrity: sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==}
     engines: {node: '>=6.9.0'}
 
+  glisse@0.5.0:
+    resolution: {integrity: sha512-FVL7wBj6JS9hx7FrikqLGiJojy4RX1sIRlBSUDZW/3f9+LwILqX9hsILHPgi54PsKSfHFL+C4k6YB411f0mJhA==}
+    peerDependencies:
+      react: '>=18'
+      react-dom: '>=18'
+
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
@@ -855,6 +867,20 @@ packages:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
     hasBin: true
+
+  lenis@1.3.27:
+    resolution: {integrity: sha512-QIHNH4LIfWyLfgH/5K0aTGZgyFJJ7GfHNcaH/AIgyKjb8gstLh5siNGvrVqz1w5ClLXzOvllBVk7vby8JzUVPQ==}
+    peerDependencies:
+      '@nuxt/kit': '>=3.0.0'
+      react: '>=17.0.0'
+      vue: '>=3.0.0'
+    peerDependenciesMeta:
+      '@nuxt/kit':
+        optional: true
+      react:
+        optional: true
+      vue:
+        optional: true
 
   lightningcss-android-arm64@1.32.0:
     resolution: {integrity: sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==}
@@ -1790,6 +1816,11 @@ snapshots:
 
   gensync@1.0.0-beta.2: {}
 
+  glisse@0.5.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
+    dependencies:
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+
   graceful-fs@4.2.11: {}
 
   happy-dom@21.0.4:
@@ -1812,6 +1843,10 @@ snapshots:
   jsesc@3.1.0: {}
 
   json5@2.2.3: {}
+
+  lenis@1.3.27(react@19.3.1):
+    optionalDependencies:
+      react: 19.3.1
 
   lightningcss-android-arm64@1.32.0:
     optional: true

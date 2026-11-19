@@ -26,7 +26,8 @@ dependencies {
     implementation(project(":shared"))
     // NewPipe is compileOnly in :shared (the phone ships a trimmed jar);
     // the sidecar runs the real thing, so it supplies it here.
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")
+    // Pinned to the commit v0.26.3 pointed at; tags are mutable on JitPack.
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:caae86c943857cc6e1a762e3488d6a14e9cf7800")
 }
 
 /**

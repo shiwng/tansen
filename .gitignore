@@ -4,17 +4,52 @@ dist/
 *.log
 .DS_Store
 apps/desktop/src-tauri/resources/
+# local OAuth configuration, environment files, signing keys, and databases
+apps/desktop/src-tauri/google-oauth.env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+*.jks
+*.keystore
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
 
 # graphify artifacts (generated)
 graphify-out/
 raw/
 
-# UI replica: reference screenshots and study clones are local-only
+# UI clone study artifacts are local-only
 ui-reference/
-ui-replica/compare/
-ui-replica/captures/
 ui-study/
+ui-replica/
+apps/desktop/ui-replica/
 
-# UI replica dev tooling
-ui-replica/.venv/
-ui-replica/ax/
+# Local agent/scratch workspaces: never part of the repository
+.agents/
+.freebuff/
+.opencode/
+.zcode/
+floorplan/
+screenshot-to-code/
+implementation.txt
+reports.txt
+skills-lock.json
+
+# Dependency management lives in apps/desktop
+/package.json
+/package-lock.json
+/pnpm-lock.yaml
+
+# Original media masters stay local; optimized copies live in docs/media
+/pictures/
+
+# Local launch-prep drafts (Show HN, release notes) are not repository content
+/launch-prep/
+

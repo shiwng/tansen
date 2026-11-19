@@ -1,4 +1,4 @@
-//! Per-command IPC call counters (M2 instrumentation).
+//! Per-command IPC call counters (instrumentation).
 //!
 //! Debug builds only: `hit()` compiles to a no-op in release, so the invoke
 //! wrapper costs nothing there. std atomics + a mutex'd map — no new deps.
@@ -41,7 +41,11 @@ pub mod cmd {
                     .get(name)
                     .map(|c| c.load(Ordering::Relaxed))
                     .unwrap_or(0);
-                let prev = last.lock().ok().and_then(|l| l.get(name).copied()).unwrap_or(0);
+                let prev = last
+                    .lock()
+                    .ok()
+                    .and_then(|l| l.get(name).copied())
+                    .unwrap_or(0);
                 if total > prev {
                     let delta = total.saturating_sub(prev);
                     if !line.is_empty() {

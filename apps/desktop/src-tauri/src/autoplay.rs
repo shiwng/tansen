@@ -1,4 +1,4 @@
-//! S11: autoplay. An app-crate task — never engine logic — that appends
+//! Autoplay. An app-crate task — never engine logic — that appends
 //! related tracks when the queue tail is playing and the setting is on.
 //!
 //! Event-driven only: the loop awaits the PlaybackState watch and the
@@ -29,7 +29,7 @@ pub struct AutoplayCmds(pub mpsc::UnboundedSender<Command>);
 /// Managed: the autoplay setting as the task reads it (mirrors SQLite).
 pub struct AutoplayFlag(pub Arc<std::sync::atomic::AtomicBool>);
 
-/// One autoplay row pushed to the frontend's queue mirror (S11). The
+/// One autoplay row pushed to the frontend's queue mirror. The
 /// frontend only refreshes ids it already knows, so appended rows must be
 /// announced.
 #[derive(Clone, serde::Serialize)]
@@ -62,7 +62,11 @@ impl QueueMirror {
     /// body (Enqueue placement + the remote-only append; ClearQueue).
     pub fn apply(&mut self, cmd: &Command) {
         match cmd {
-            Command::Enqueue { tracks, remote, placement } => {
+            Command::Enqueue {
+                tracks,
+                remote,
+                placement,
+            } => {
                 let mut entries: Vec<EntryId> = tracks.clone();
                 for (id, _) in remote {
                     // The engine appends remote-only ids after the locals.
@@ -134,7 +138,8 @@ impl QueueMirror {
     pub fn extend_autoplay(&mut self, minted: &[(EntryId, String)]) {
         for (id, key_id) in minted {
             self.order.push(*id);
-            self.keys.insert(*id, ("youtube".to_string(), key_id.clone()));
+            self.keys
+                .insert(*id, ("youtube".to_string(), key_id.clone()));
         }
     }
 }
@@ -330,8 +335,7 @@ mod tests {
             enqueue: {
                 let enqueued = enqueued.clone();
                 Arc::new(move |picked: Vec<DiscoveryTrack>| {
-                    let ids: Vec<String> =
-                        picked.iter().map(|t| t.key.id.clone()).collect();
+                    let ids: Vec<String> = picked.iter().map(|t| t.key.id.clone()).collect();
                     let minted: Vec<(EntryId, String)> = ids
                         .iter()
                         .enumerate()
@@ -344,7 +348,14 @@ mod tests {
         };
         let flag = deps.enabled.clone();
         tokio::spawn(run_autoplay(state_rx, cmd_rx, deps));
-        Harness { state_tx, cmd_tx, enqueued, fetches, related_rows, flag }
+        Harness {
+            state_tx,
+            cmd_tx,
+            enqueued,
+            fetches,
+            related_rows,
+            flag,
+        }
     }
 
     /// Publishes a state and lets the loop settle.
@@ -368,14 +379,18 @@ mod tests {
     #[tokio::test]
     async fn triggers_once_at_tail_with_dedup() {
         let h = harness(true);
-        h.cmd_tx.send(enqueue_cmd(&[1, 2], Placement::Append)).unwrap();
-        *h.related_rows.lock().unwrap() =
-            vec![track("v2"), track("v7"), track("v8")]; // v2 already queued
+        h.cmd_tx
+            .send(enqueue_cmd(&[1, 2], Placement::Append))
+            .unwrap();
+        *h.related_rows.lock().unwrap() = vec![track("v2"), track("v7"), track("v8")]; // v2 already queued
         publish(&h, state(2, Status::Playing)).await;
         wait_for(|| h.fetches.load(Ordering::SeqCst) == 1).await;
         // Exactly one enqueue, without the already-queued row.
         wait_for(|| !h.enqueued.lock().unwrap().is_empty()).await;
-        assert_eq!(*h.enqueued.lock().unwrap(), vec!["v7".to_string(), "v8".to_string()]);
+        assert_eq!(
+            *h.enqueued.lock().unwrap(),
+            vec!["v7".to_string(), "v8".to_string()]
+        );
         // A second event for the same entry (seek, volume, re-publish) does
         // not fetch or enqueue again.
         publish(&h, state(2, Status::Playing)).await;
@@ -425,7 +440,7 @@ mod tests {
         wait_for(|| h.fetches.load(Ordering::SeqCst) == 2).await;
     }
 
-    // ---- mirror semantics ----
+    // mirror semantics
 
     #[test]
     fn mirror_append_insert_next_and_clear() {
@@ -469,7 +484,11 @@ mod tests {
         let mut known: HashSet<String> = ["v1".to_string()].into_iter().collect();
         let rows = vec![track("v1"), track("v2"), track("v3"), track("v4")];
         let picked = pick_related(rows, &mut known, 2);
-        assert_eq!(picked.iter().map(|t| t.key.id.as_str()).collect::<Vec<_>>(), ["v2", "v3"], "dedup + cap");
+        assert_eq!(
+            picked.iter().map(|t| t.key.id.as_str()).collect::<Vec<_>>(),
+            ["v2", "v3"],
+            "dedup + cap"
+        );
         assert!(pick_related(vec![], &mut known, 10).is_empty());
     }
 }

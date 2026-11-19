@@ -1,13 +1,12 @@
 import { MoreHorizontal, X } from 'lucide-react';
 import { useCallback, useState } from 'react';
-import { Menu, MenuHeader, MenuItem, MenuSeparator } from '@/components/Menu';
+import { Menu, MenuItem, MenuSeparator } from '@/components/Menu';
 import { Artwork } from '@/components/music/Artwork';
 import { formatDuration } from '@/components/music/links';
 import { upcomingUserQueueIndices, type QueueEntry } from '@/playback/queue/timeline';
 import { usePlayer } from '@/state/player';
 
-// The panel's square buttons: AutoPlay (the key colour when on) and the options menu.
-const square = 'grid size-7 place-items-center rounded-[6px] text-secondary hover:bg-quinary aria-pressed:text-key';
+// A row's layout: 55px, [art] 40px [title] 1fr [right] 40px, gap 12px, radius 6px.
 const list = 'flex flex-col';
 
 /** A row: 55px, [art] 40px [title] 1fr [right] 40px, gap 12px, radius 6px; a key-colour line where a drag would drop. */
@@ -56,7 +55,7 @@ function Row({
         <Artwork src={track.thumbnail} displayWidth={40} radius="var(--radius-artwork-small)" />
         {/* The ✕ over the artwork's top-left, on hover. */}
         <button
-          className="absolute -top-1.5 -left-1.5 hidden size-[22px] place-items-center rounded-full bg-thick-material text-primary shadow-[0_1px_3px_#0004] [backdrop-filter:blur(10px)] group-hover/row:grid"
+          className="absolute -top-1.5 -left-1.5 hidden size-[22px] place-items-center rounded-full bg-thick-material text-primary shadow-[0_1px_3px_#0004] [backdrop-filter:var(--dynamicBlurSoft)] group-hover/row:grid"
           aria-label={`Remove ${track.title}`}
           onClick={() => removeAt(at)}
         >
@@ -105,12 +104,10 @@ function Row({
 export function UpNext() {
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
-  // AutoPlay (queue extension) and crossfade/automix arrive with the source
-  // system and phase 6; the controls are added back then.
+  // AutoPlay and crossfade are configured in Settings → Playback; this panel
+  // only edits the queue.
   const { clearUpNext, move } = usePlayer.getState();
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
-  const close = useCallback(() => setAnchor(null), []);
 
   const canClear = upcomingUserQueueIndices(queue.map((e) => e.tier), index).length > 0;
   const upcoming = queue.map((entry, at) => ({ entry, at })).filter(({ at }) => at > index);
@@ -142,20 +139,7 @@ export function UpNext() {
             Clear
           </button>
         )}
-        <button className={square} aria-label="Playback options" aria-haspopup="menu" onClick={(e) => setAnchor(e.currentTarget)}>
-          <MoreHorizontal size={16} />
-        </button>
-        {anchor && (
-          <Menu anchor={anchor} onClose={close} label="Playback options">
-            <MenuHeader>Playback options</MenuHeader>
-            <MenuItem disabled onSelect={() => {}}>
-              Crossfade — phase 6
-            </MenuItem>
-            <MenuItem disabled onSelect={() => {}}>
-              AutoPlay — with the source system
-            </MenuItem>
-          </Menu>
-        )}      </div>
+      </div>
       {playingFrom && <p className="truncate px-5 pb-2 type-callout text-secondary">Playing from {playingFrom}</p>}
 
       {upcoming.length === 0 ? (

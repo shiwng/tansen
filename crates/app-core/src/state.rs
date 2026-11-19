@@ -2,16 +2,28 @@
 //! integration; exposes the operations the UI drives. No Tauri dependency —
 //! the desktop shell translates these into commands and events.
 //!
-//! M10: playback state left this module. The task-based engine
+//! Playback state left this module. The task-based engine
 //! (`crate::playback_engine`) is owned by the shell; the queue, transport and
 //! restore concerns moved to the frontend (localStorage mirror) and the
 //! engine itself. The legacy `playback::Engine` path is gone.
 
 use library::Scanner;
-use persistence::models::{Track, TrackRef};
+use persistence::models::{PlaylistMeta, Track, TrackRef};
 use persistence::{repo, Db};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Persisted local-files source switch. Default on: the library behaved this
+/// way before the switch existed, so an upgrade never drops a user's source.
+pub const LOCAL_FILES_SETTING: &str = "local_files_enabled";
+
+pub fn local_files_enabled(db: &Db) -> bool {
+    repo::get_setting(db, LOCAL_FILES_SETTING)
+        .ok()
+        .flatten()
+        .map(|v| v != "false")
+        .unwrap_or(true)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -25,7 +37,7 @@ pub enum CoreError {
 
 pub struct AppState {
     pub db: Arc<Db>,
-    /// M11: read-only WAL connection for query-heavy reads. The writer stays
+    /// Read-only WAL connection for query-heavy reads. The writer stays
     /// `db` alone; the engine never touches either.
     pub db_ro: Arc<Db>,
     pub scanner: Scanner,
@@ -38,7 +50,7 @@ pub struct AppState {
     yt: std::sync::Mutex<Option<Arc<crate::yt_handle::YtHandle>>>,
     /// Jar path found by the shell (Tauri resource dir). Checked first.
     sidecar_hint: std::sync::Mutex<Option<PathBuf>>,
-    /// F7: bundled-JRE java binary found by the shell. Checked before
+    /// Bundled-JRE java binary found by the shell. Checked before
     /// JAVA_HOME/PATH discovery so a clean Mac works without system Java.
     java_hint: std::sync::Mutex<Option<String>>,
     /// Disk cache for streamed tracks, read by the playback pipeline.
@@ -72,14 +84,18 @@ impl AppState {
         })
     }
 
-    // ---- Library -----------------------------------------------------------
+    // Library
 
     pub fn add_folder(&self, path: &str) -> Result<i64, CoreError> {
         let canonical = std::fs::canonicalize(path)
             .map_err(persistence::DbError::Io)?
             .to_string_lossy()
             .into_owned();
-        Ok(repo::add_folder(&self.db, &canonical, library::scanner::now_secs())?)
+        Ok(repo::add_folder(
+            &self.db,
+            &canonical,
+            library::scanner::now_secs(),
+        )?)
     }
 
     pub fn remove_folder(&self, id: i64) -> Result<(), CoreError> {
@@ -97,7 +113,10 @@ impl AppState {
 
     /// Runs one scan pass over every registered folder, on the caller's
     /// blocking thread (Tauri wraps this in spawn_blocking).
-    pub fn scan(&self, on_progress: impl Fn(library::ScanProgress) + Send + Sync) -> Result<library::ScanSummary, CoreError> {
+    pub fn scan(
+        &self,
+        on_progress: impl Fn(library::ScanProgress) + Send + Sync,
+    ) -> Result<library::ScanSummary, CoreError> {
         let _guard = self.scan_lock.lock().unwrap();
         let folders = self.scan_folders()?;
         Ok(self.scanner.scan(&self.db, &folders, on_progress)?)
@@ -110,9 +129,13 @@ impl AppState {
             .collect())
     }
 
-    /// Watcher entry: scans only when the setting is on and no scan is running,
-    /// then reports the summary on `scan_events`.
+    /// Watcher entry: scans only when both the watch and local-files settings
+    /// are on and no scan is running, then reports the summary on
+    /// `scan_events`.
     pub fn scan_if_free(&self) {
+        if !local_files_enabled(&self.db) {
+            return;
+        }
         if repo::get_setting(&self.db, "watch_folders")
             .ok()
             .flatten()
@@ -144,7 +167,7 @@ impl AppState {
         Ok(())
     }
 
-    // ---- Remote (YouTube via sidecar) --------------------------------------
+    // Remote (YouTube via sidecar)
 
     /// Shell-provided jar location (the packaged app's resource directory).
     /// Checked before env/settings/discovery.
@@ -152,7 +175,7 @@ impl AppState {
         *self.sidecar_hint.lock().unwrap() = Some(jar);
     }
 
-    /// F7: the shell points at the bundled JRE's java binary (resource dir).
+    /// The shell points at the bundled JRE's java binary (resource dir).
     pub fn set_java_hint(&self, java: PathBuf) {
         *self.java_hint.lock().unwrap() = Some(java.to_string_lossy().into_owned());
     }
@@ -178,7 +201,9 @@ impl AppState {
             .map(|v| v == "true")
             .unwrap_or(false);
         if !enabled {
-            return Err(CoreError::Catalogue("catalogue sources are disabled (enable them in Settings → Sources)".into()));
+            return Err(CoreError::Catalogue(
+                "catalogue sources are disabled (enable them in Settings → Sources)".into(),
+            ));
         }
         let mut guard = self.yt.lock().unwrap();
         if let Some(handle) = &*guard {
@@ -189,17 +214,25 @@ impl AppState {
         // desktop shell; otherwise a stale setting permanently disables the
         // bundled sidecar/JRE.
         let jar = existing_or_hint(
-            repo::get_setting(&self.db, "sidecar_jar").ok().flatten().map(PathBuf::from),
+            repo::get_setting(&self.db, "sidecar_jar")
+                .ok()
+                .flatten()
+                .map(PathBuf::from),
             self.sidecar_hint.lock().unwrap().clone(),
         );
         let java = existing_or_hint(
-            repo::get_setting(&self.db, "java_path").ok().flatten().map(PathBuf::from),
+            repo::get_setting(&self.db, "java_path")
+                .ok()
+                .flatten()
+                .map(PathBuf::from),
             self.java_hint.lock().unwrap().clone().map(PathBuf::from),
         )
         .map(|p| p.to_string_lossy().into_owned());
         let source = sources::yt::YtMusicSource::launch(jar, java)
             .map_err(|e| CoreError::Catalogue(format!("YouTube sidecar unavailable: {e}")))?;
-        let handle = Arc::new(crate::yt_handle::YtHandle { source: Arc::new(source) });
+        let handle = Arc::new(crate::yt_handle::YtHandle {
+            source: Arc::new(source),
+        });
         *guard = Some(handle.clone());
         Ok(handle)
     }
@@ -212,7 +245,7 @@ impl AppState {
         }
     }
 
-    // ---- Settings ----------------------------------------------------------
+    // Settings
 
     pub fn settings(&self) -> Result<Vec<(String, String)>, CoreError> {
         Ok(repo::list_settings(&self.db)?)
@@ -223,14 +256,22 @@ impl AppState {
         Ok(())
     }
 
-    // ---- Playlists ---------------------------------------------------------
+    // Playlists
 
     pub fn playlist_create(&self, name: &str) -> Result<i64, CoreError> {
-        Ok(repo::create_playlist(&self.db, name, library::scanner::now_secs())?)
+        Ok(repo::create_playlist(
+            &self.db,
+            name,
+            library::scanner::now_secs(),
+        )?)
     }
 
-    pub fn playlists(&self) -> Result<Vec<(i64, String)>, CoreError> {
+    pub fn playlists(&self) -> Result<Vec<PlaylistMeta>, CoreError> {
         Ok(repo::list_playlists(&self.db)?)
+    }
+
+    pub fn playlist_set_favourite(&self, id: i64, favourite: bool) -> Result<(), CoreError> {
+        Ok(repo::set_playlist_favourite(&self.db, id, favourite)?)
     }
 
     pub fn playlist_tracks(&self, id: i64) -> Result<Vec<TrackRef>, CoreError> {
@@ -251,7 +292,6 @@ impl AppState {
         repo::delete_playlist(&self.db, id)?;
         Ok(())
     }
-
 }
 
 pub fn data_dir_default() -> PathBuf {
@@ -317,8 +357,14 @@ mod state_path_tests {
         let trashed = dir
             .path()
             .join("Tansen-old.app/Contents/Resources/resources/sidecar-all.jar");
-        assert_eq!(existing_or_hint(Some(trashed), Some(bundled.clone())), Some(bundled));
-        assert_eq!(existing_or_hint(None, Some(dir.path().join("jre/bin/java"))), Some(dir.path().join("jre/bin/java")));
+        assert_eq!(
+            existing_or_hint(Some(trashed), Some(bundled.clone())),
+            Some(bundled)
+        );
+        assert_eq!(
+            existing_or_hint(None, Some(dir.path().join("jre/bin/java"))),
+            Some(dir.path().join("jre/bin/java"))
+        );
         assert_eq!(existing_or_hint(None, None), None);
     }
 }

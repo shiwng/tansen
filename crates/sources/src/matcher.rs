@@ -1,4 +1,4 @@
-//! S7: pure matching between a target track's metadata and a candidate
+//! Pure matching between a target track's metadata and a candidate
 //! found on another source. No I/O, no dependencies beyond std — only
 //! string normalization + equality + a duration tolerance. Used by the
 //! resolver's fallback ladder.
@@ -11,18 +11,13 @@ pub struct TrackMeta {
     pub duration_sec: Option<f64>,
 }
 
-/// Duration tolerance for a match, in seconds (named const, S7).
+/// Duration tolerance for a match, in seconds (named const).
 pub const DURATION_TOLERANCE_SEC: f64 = 10.0;
 
 /// Marker words whose presence must agree between target and candidate:
 /// a live/remix/remaster/acoustic take is NOT the same track as the
 /// studio original, so marker differences reject the match.
-const MARKER_WORDS: [(&str, u8); 4] = [
-    ("live", 1),
-    ("remix", 2),
-    ("remaster", 4),
-    ("acoustic", 8),
-];
+const MARKER_WORDS: [(&str, u8); 4] = [("live", 1), ("remix", 2), ("remaster", 4), ("acoustic", 8)];
 
 /// Fold one common accented character to its ASCII base (std only; the
 /// common Latin-1 / Latin Extended-A set).
@@ -175,32 +170,57 @@ mod tests {
     use super::*;
 
     fn meta(title: &str, artist: &str, dur: Option<f64>) -> TrackMeta {
-        TrackMeta { title: title.into(), artist: artist.into(), duration_sec: dur }
+        TrackMeta {
+            title: title.into(),
+            artist: artist.into(),
+            duration_sec: dur,
+        }
     }
 
-    /// Regression (audit run-1: resolver-ladder-metadata-capture): a
+    /// Regression (resolver-ladder-metadata-capture): a
     /// fallback-ladder server that echoes the leaked "title artist" query
     /// used to win the match with duration omitted, because the `_ =>`
     /// arm passed every unknown-duration pair. Identity is fail-closed:
     /// the duration must be known on both sides and agree.
     #[test]
     fn duration_must_be_known_on_both_sides() {
-        assert!(!matches(&meta("Song", "Artist", Some(200.0)), &meta("Song", "Artist", None)),
-            "candidate without duration must not match");
-        assert!(!matches(&meta("Song", "Artist", None), &meta("Song", "Artist", Some(200.0))),
-            "target without duration must not match");
-        assert!(!matches(&meta("Song", "Artist", None), &meta("Song", "Artist", None)),
-            "two unknown durations must not match");
+        assert!(
+            !matches(
+                &meta("Song", "Artist", Some(200.0)),
+                &meta("Song", "Artist", None)
+            ),
+            "candidate without duration must not match"
+        );
+        assert!(
+            !matches(
+                &meta("Song", "Artist", None),
+                &meta("Song", "Artist", Some(200.0))
+            ),
+            "target without duration must not match"
+        );
+        assert!(
+            !matches(&meta("Song", "Artist", None), &meta("Song", "Artist", None)),
+            "two unknown durations must not match"
+        );
         // Known durations within tolerance still match; echoes with a
         // guessed duration are rejected by the tolerance check itself.
-        assert!(matches(&meta("Song", "Artist", Some(200.0)), &meta("Song", "Artist", Some(201.0))));
-        assert!(!matches(&meta("Song", "Artist", Some(200.0)), &meta("Song", "Artist", Some(230.0))));
+        assert!(matches(
+            &meta("Song", "Artist", Some(200.0)),
+            &meta("Song", "Artist", Some(201.0))
+        ));
+        assert!(!matches(
+            &meta("Song", "Artist", Some(200.0)),
+            &meta("Song", "Artist", Some(230.0))
+        ));
     }
 
     #[test]
     fn normalization_folds_case_punctuation_diacritics_and_feat() {
         assert_eq!(normalize("Café"), "cafe");
-        assert_eq!(normalize("U2 – With or Without You"), "u2 with or without you");
+        assert_eq!(
+            normalize("U2 – With or Without You"),
+            "u2 with or without you"
+        );
         assert_eq!(normalize("Song (feat. Drake)"), "song");
         assert_eq!(normalize("Song ft. Drake & Future"), "song");
         assert_eq!(normalize("Song (live)"), "song live");
@@ -232,13 +252,34 @@ mod tests {
     #[test]
     fn near_miss_false_positives_are_rejected() {
         let studio = meta("Song", "Artist", Some(200.0));
-        assert!(!matches(&studio, &meta("Song (live)", "Artist", Some(200.0))), "live vs studio");
-        assert!(!matches(&studio, &meta("Song (Live At Wembley)", "Artist", Some(200.0))));
-        assert!(!matches(&studio, &meta("Song (remix)", "Artist", Some(200.0))), "remix");
-        assert!(!matches(&studio, &meta("Song (remastered)", "Artist", Some(200.0))), "remaster");
-        assert!(!matches(&studio, &meta("Song (acoustic)", "Artist", Some(200.0))), "acoustic");
-        assert!(!matches(&studio, &meta("Song", "Other Artist", Some(200.0))), "wrong artist");
-        assert!(!matches(&studio, &meta("Other Song", "Artist", Some(200.0))), "wrong title");
+        assert!(
+            !matches(&studio, &meta("Song (live)", "Artist", Some(200.0))),
+            "live vs studio"
+        );
+        assert!(!matches(
+            &studio,
+            &meta("Song (Live At Wembley)", "Artist", Some(200.0))
+        ));
+        assert!(
+            !matches(&studio, &meta("Song (remix)", "Artist", Some(200.0))),
+            "remix"
+        );
+        assert!(
+            !matches(&studio, &meta("Song (remastered)", "Artist", Some(200.0))),
+            "remaster"
+        );
+        assert!(
+            !matches(&studio, &meta("Song (acoustic)", "Artist", Some(200.0))),
+            "acoustic"
+        );
+        assert!(
+            !matches(&studio, &meta("Song", "Other Artist", Some(200.0))),
+            "wrong artist"
+        );
+        assert!(
+            !matches(&studio, &meta("Other Song", "Artist", Some(200.0))),
+            "wrong title"
+        );
     }
 
     #[test]

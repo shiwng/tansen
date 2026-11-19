@@ -1,4 +1,4 @@
-//! M3 sidecar measurements (`#[ignore]`; needs the sidecar jar + network).
+//! Sidecar measurements (`#[ignore]`; needs the sidecar jar + network).
 //!
 //! Measures the app's own spawn path (`YtMusicSource::launch`: free port →
 //! jar discovery → JVM spawn → /health poll):
@@ -23,7 +23,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn sidecar_pid() -> Option<u32> {
-    let out = Command::new("pgrep").args(["-f", "sidecar-all.jar"]).output().ok()?;
+    let out = Command::new("pgrep")
+        .args(["-f", "sidecar-all.jar"])
+        .output()
+        .ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .next()?
@@ -33,7 +36,10 @@ fn sidecar_pid() -> Option<u32> {
 }
 
 fn rss_kib(pid: u32) -> Option<u64> {
-    let out = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().ok()?;
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
@@ -50,24 +56,37 @@ async fn sidecar_measurements() {
     // /usr/bin/java stub exits 1 and is refused by the app's own discovery).
     let java = std::env::var("JAVA_HOME")
         .map(|h| format!("{h}/bin/java"))
-        .unwrap_or_else(|_| "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java".to_string());
+        .unwrap_or_else(|_| {
+            "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java".to_string()
+        });
 
     // 1. spawn → ready, via the app's real path (jar discovery finds the dev
     //    jar the same way the running app does).
     let t0 = Instant::now();
-    let source = YtMusicSource::launch(None, Some(java)).expect("sidecar launches and reports healthy");
+    let source =
+        YtMusicSource::launch(None, Some(java)).expect("sidecar launches and reports healthy");
     let ready_ms = t0.elapsed().as_millis();
     println!("spawn→ready: {ready_ms} ms");
     assert!(source.version().is_some());
 
     let pid = sidecar_pid().expect("sidecar JVM pid found");
     let rss_ready = rss_kib(pid).expect("rss readable");
-    println!("sidecar pid {pid}: RSS at ready {} KiB ({} MiB)", rss_ready, rss_ready / 1024);
+    println!(
+        "sidecar pid {pid}: RSS at ready {} KiB ({} MiB)",
+        rss_ready,
+        rss_ready / 1024
+    );
 
     // One search to pin a track; resolve latency is measured against it.
-    let rows = source.search("Tom Sawyer Rush", 5).await.expect("search succeeds");
+    let rows = source
+        .search("Tom Sawyer Rush", 5)
+        .await
+        .expect("search succeeds");
     let track = &rows[0];
-    println!("track: {} — {} ({})", track.title, track.artist, track.track_id);
+    println!(
+        "track: {} — {} ({})",
+        track.title, track.artist, track.track_id
+    );
 
     // 2. resolve latency ×30. Call 1 is cold (sidecar's first resolve for
     //    this id; later ones may hit its internal caches).
@@ -75,7 +94,13 @@ async fn sidecar_measurements() {
     for i in 0..30 {
         let t = Instant::now();
         let s = source
-            .stream(&TrackKey { source: SourceKind::YouTube, id: track.track_id.clone() }, &StreamRequest::Best)
+            .stream(
+                &TrackKey {
+                    source: SourceKind::YouTube,
+                    id: track.track_id.clone(),
+                },
+                &StreamRequest::Best,
+            )
             .await
             .expect("stream resolves")
             .expect("stream present");
@@ -95,7 +120,11 @@ async fn sidecar_measurements() {
     );
 
     let rss_after = rss_kib(pid).expect("rss readable");
-    println!("sidecar RSS after resolve run: {} KiB ({} MiB)", rss_after, rss_after / 1024);
+    println!(
+        "sidecar RSS after resolve run: {} KiB ({} MiB)",
+        rss_after,
+        rss_after / 1024
+    );
 
     // 3. first-play latency: cold resolve → reader open (moov over ranged
     //    HTTP) → first decoded audio. The reader/decode run on a plain
@@ -103,7 +132,13 @@ async fn sidecar_measurements() {
     //    inside the tokio runtime — same rule the engine follows.
     let t = Instant::now();
     let s = source
-        .stream(&TrackKey { source: SourceKind::YouTube, id: track.track_id.clone() }, &StreamRequest::Best)
+        .stream(
+            &TrackKey {
+                source: SourceKind::YouTube,
+                id: track.track_id.clone(),
+            },
+            &StreamRequest::Best,
+        )
         .await
         .expect("stream resolves")
         .expect("stream present");
@@ -113,9 +148,11 @@ async fn sidecar_measurements() {
         scope
             .spawn(move || {
                 let t = Instant::now();
-                let reader = playback::remote::HttpRangeReader::new(url, vec![]).expect("range reader");
+                let reader =
+                    playback::remote::HttpRangeReader::new(url, vec![]).expect("range reader");
                 let open_ms = t.elapsed().as_secs_f64() * 1000.0;
-                let rms = playback::probe::decode_rms(reader, Duration::from_millis(250)).expect("decode");
+                let rms = playback::probe::decode_rms(reader, Duration::from_millis(250))
+                    .expect("decode");
                 (open_ms, rms)
             })
             .join()
@@ -125,5 +162,8 @@ async fn sidecar_measurements() {
         "first-play: resolve {resolve_ms:.0} ms + reader open {open_ms:.0} ms + first 0.25 s decode = {:.0} ms total, RMS {rms:.4}",
         resolve_ms + open_ms
     );
-    assert!(rms > 0.005, "decoded audio is effectively silence (RMS {rms})");
+    assert!(
+        rms > 0.005,
+        "decoded audio is effectively silence (RMS {rms})"
+    );
 }

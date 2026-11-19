@@ -10,7 +10,7 @@ import { playList } from './play';
 
 // Arrow buttons (report §2): 28×52 glass pills, only ≥1000px, shown on shelf hover.
 const arrow =
-  'absolute top-1/2 z-3 hidden h-13 w-7 -translate-y-1/2 place-items-center rounded-pill bg-thin-material text-secondary opacity-0 transition-[opacity,background-color,color] duration-(--duration-arrow) ease-linear [backdrop-filter:saturate(180%)_blur(60px)] hover:text-primary disabled:pointer-events-none lg:grid lg:enabled:group-hover/shelf:opacity-100';
+  'absolute top-1/2 z-3 hidden h-13 w-7 -translate-y-1/2 place-items-center rounded-pill bg-thin-material text-secondary opacity-0 transition-[opacity,background-color,color] duration-(--duration-arrow) ease-linear [backdrop-filter:var(--dynamicBlurHero)] hover:text-primary disabled:pointer-events-none lg:grid lg:enabled:group-hover/shelf:opacity-100';
 
 function renderItem(shelf: Shelf, item: MusicItem): ReactNode {
   switch (shelf.layout) {

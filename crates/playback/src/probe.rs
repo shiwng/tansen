@@ -17,7 +17,10 @@ pub enum ProbeError {
 
 /// Decodes up to `window` of audio and returns its RMS level (0.0 = digital
 /// silence). Decodes real samples — no device, no rodio.
-pub fn decode_rms(reader: impl Read + Seek + Send + Sync + 'static, window: Duration) -> Result<f32, ProbeError> {
+pub fn decode_rms(
+    reader: impl Read + Seek + Send + Sync + 'static,
+    window: Duration,
+) -> Result<f32, ProbeError> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::formats::FormatOptions;
@@ -32,7 +35,12 @@ pub fn decode_rms(reader: impl Read + Seek + Send + Sync + 'static, window: Dura
     hint.with_extension("m4a");
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| ProbeError::Symphonia(e.to_string()))?;
     let mut format = probed.format;
 
@@ -47,7 +55,10 @@ pub fn decode_rms(reader: impl Read + Seek + Send + Sync + 'static, window: Dura
         .sample_rate
         .ok_or(ProbeError::NoAudioTrack)?;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&format.tracks()[track_index].codec_params, &DecoderOptions::default())
+        .make(
+            &format.tracks()[track_index].codec_params,
+            &DecoderOptions::default(),
+        )
         .map_err(|e| ProbeError::Symphonia(e.to_string()))?;
 
     let frames_target = (track_rate as f64 * window.as_secs_f64()) as u64;
@@ -67,7 +78,8 @@ pub fn decode_rms(reader: impl Read + Seek + Send + Sync + 'static, window: Dura
         };
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                let mut samples = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+                let mut samples =
+                    SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
                 samples.copy_interleaved_ref(decoded);
                 for sample in samples.samples() {
                     let s = *sample;
@@ -131,8 +143,6 @@ impl<R: Read + Seek + Send + Sync> symphonia::core::io::MediaSource for ProbeSou
 mod codec_matrix_tests {
     use super::*;
     use crate::remote::HttpRangeReader;
-    use std::io::{Read, Seek, SeekFrom};
-    use std::sync::Arc;
 
     /// A synthetic WAV (the only self-generatable format without ffmpeg).
     fn wav_bytes(frames: usize) -> Vec<u8> {
@@ -152,7 +162,8 @@ mod codec_matrix_tests {
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&(data_len as u32).to_le_bytes());
         for i in 0..frames {
-            let v = (9000.0 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin()) as i16;
+            let v =
+                (9000.0 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin()) as i16;
             buf.extend_from_slice(&v.to_le_bytes());
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -163,7 +174,7 @@ mod codec_matrix_tests {
     #[test]
     fn wav_decodes_with_sound() {
         let bytes = wav_bytes(22050); // 0.5 s
-        // Pipe through a memory-backed range reader.
+                                      // Pipe through a memory-backed range reader.
         let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -182,9 +193,9 @@ mod codec_matrix_tests {
                 let _ = stream.write_all(data);
             }
         });
-        let reader = HttpRangeReader::new(format!("http://127.0.0.1:{port}/t.wav"), vec![]).unwrap();
+        let reader =
+            HttpRangeReader::new(format!("http://127.0.0.1:{port}/t.wav"), vec![]).unwrap();
         let rms = decode_rms(reader, std::time::Duration::from_millis(300)).unwrap();
         assert!(rms > 0.005, "WAV produced sound, RMS {rms}");
     }
-
 }

@@ -1,4 +1,4 @@
-//! Audio reliability metrics (M4). Debug builds only — release compiles the
+//! Audio reliability metrics. Debug builds only — release compiles the
 //! no-op half of this module and the engine takes the un-instrumented path.
 //!
 //! What is measurable through rodio 0.21:
@@ -12,6 +12,7 @@
 //!   we control and the thing that, if it exceeds the buffer, causes real
 //!   underruns. Recorded as a coarse ns histogram.
 
+#[cfg(debug_assertions)]
 use std::time::Duration;
 
 #[cfg(debug_assertions)]
@@ -21,10 +22,8 @@ pub mod audio {
     use std::sync::{Mutex, OnceLock};
 
     /// Histogram bucket upper bounds in nanoseconds. The last bucket is open.
-    const BUCKETS_NS: [u64; 6] =
-        [1_000, 10_000, 100_000, 1_000_000, 10_000_000, u64::MAX];
-    const BUCKET_LABELS: [&str; 6] =
-        ["<1µs", "1–10µs", "10–100µs", "0.1–1ms", "1–10ms", ">10ms"];
+    const BUCKETS_NS: [u64; 6] = [1_000, 10_000, 100_000, 1_000_000, 10_000_000, u64::MAX];
+    const BUCKET_LABELS: [&str; 6] = ["<1µs", "1–10µs", "10–100µs", "0.1–1ms", "1–10ms", ">10ms"];
 
     pub struct AudioMetrics {
         pub stream_errors: AtomicU64,
@@ -84,7 +83,11 @@ pub mod audio {
         let m = metrics();
         let errors = m.stream_errors.load(Ordering::Relaxed);
         let reads = m.reads.load(Ordering::Relaxed);
-        let counts: Vec<u64> = m.buckets.iter().map(|b| b.load(Ordering::Relaxed)).collect();
+        let counts: Vec<u64> = m
+            .buckets
+            .iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .collect();
         let slowest = m.slowest_ns.load(Ordering::Relaxed);
         let last = m
             .last_error
@@ -93,7 +96,10 @@ pub mod audio {
             .map(|l| l.clone())
             .unwrap_or_default();
 
-        let mut out = format!("stream_errors={errors} reads={reads} slowest={:.1}ms", slowest as f64 / 1e6);
+        let mut out = format!(
+            "stream_errors={errors} reads={reads} slowest={:.1}ms",
+            slowest as f64 / 1e6
+        );
         if errors > 0 && !last.is_empty() {
             out.push_str(&format!(" last_error=“{last}”"));
         }
@@ -124,7 +130,7 @@ pub mod audio {
         out
     }
 
-    /// Wraps a decoder so every `next()` is timed, and (debug-only stress
+    /// Wraps a decoder so every `next()` is timed, and (debug-only stall
     /// hook) optionally sleeps mid-track: `TANSEN_STALL_MS` per every
     /// `TANSEN_STALL_EVERY`-th sample (both env vars, default off).
     /// The sleep lands on rodio's feeder thread, starving the real output
@@ -146,7 +152,12 @@ pub mod audio {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10_000);
-            Self { inner, stall_ms, stall_every, count: 0 }
+            Self {
+                inner,
+                stall_ms,
+                stall_every,
+                count: 0,
+            }
         }
     }
 

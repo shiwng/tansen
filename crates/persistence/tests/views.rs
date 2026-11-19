@@ -14,6 +14,8 @@ fn ref_with(id: i64, title: &str, artist: &str, album: &str, _album_artist: &str
         art_path: None,
         path: format!("/t/{id}.flac"),
         video_id: None,
+        key_source: None,
+        artwork_url: None,
     }
 }
 
@@ -25,7 +27,10 @@ fn playback_state_round_trip() {
     assert!(views::load_playback_state(&db).unwrap().is_none());
 
     let state = PlaybackState {
-        tracks: vec![ref_with(1, "A", "X", "AL", "X"), ref_with(2, "B", "X", "AL", "X")],
+        tracks: vec![
+            ref_with(1, "A", "X", "AL", "X"),
+            ref_with(2, "B", "X", "AL", "X"),
+        ],
         index: Some(1),
         position_sec: 42.5,
         repeat: "all".into(),
@@ -41,7 +46,12 @@ fn playback_state_round_trip() {
     // Overwrite keeps a single row.
     views::save_playback_state(
         &db,
-        &PlaybackState { tracks: vec![], index: None, position_sec: 0.0, repeat: "off".into() },
+        &PlaybackState {
+            tracks: vec![],
+            index: None,
+            position_sec: 0.0,
+            repeat: "off".into(),
+        },
         2000,
     )
     .unwrap();
@@ -112,7 +122,7 @@ fn albums_group_and_order() {
     assert_eq!(artists[1].album_count, 1);
 }
 
-// ---- M11: read-only connections + the queue-rows query --------------------
+// read-only connections + the queue-rows query
 
 #[test]
 fn tracks_by_ids_returns_rows_in_input_order_skipping_missing() {
@@ -203,17 +213,25 @@ fn read_only_connection_reads_and_refuses_writes() {
     let mut wrong = t.clone();
     wrong.id = 0;
     wrong.path = "/t/y.flac".into();
-    assert!(repo::upsert_track(&reader, &wrong, folder, 0, 0, 0).is_err(), "read-only refuses writes");
+    assert!(
+        repo::upsert_track(&reader, &wrong, folder, 0, 0, 0).is_err(),
+        "read-only refuses writes"
+    );
 }
 
-// ---- S2: migration 3 seed + persistence across restart ----
+// migration 3 seed + persistence across restart
 
 #[test]
 fn fresh_db_is_seeded_with_builtin_sources() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(&dir.path().join("t.db")).unwrap();
-    let cfg = repo::get_setting(&db, "sources_config").unwrap().expect("seeded");
-    assert!(cfg.contains("\"config_id\":\"yt\"") && cfg.contains("\"config_id\":\"local\""), "{cfg}");
+    let cfg = repo::get_setting(&db, "sources_config")
+        .unwrap()
+        .expect("seeded");
+    assert!(
+        cfg.contains("\"config_id\":\"yt\"") && cfg.contains("\"config_id\":\"local\""),
+        "{cfg}"
+    );
     assert!(cfg.contains("\"enabled\":true"));
 }
 
@@ -223,15 +241,42 @@ fn upgrade_path_seeds_when_sources_config_missing() {
     let path = dir.path().join("t.db");
     {
         let db = Db::open(&path).unwrap();
-        // Simulate a pre-S2/S6 v2 database: no seed, no remote_tracks, so
-        // the next open reruns migrations 3 (seed) and 4 (remote table).
+        // Simulate a pre-v2 database: no seed and neither remote
+        // table, so the next open reruns migration 3 (seed) plus the
+        // additive table migrations after it.
         let conn = db.lock().unwrap();
-        conn.execute("DELETE FROM settings WHERE key = 'sources_config'", []).unwrap();
+        conn.execute("DELETE FROM settings WHERE key = 'sources_config'", [])
+            .unwrap();
         conn.execute("DROP TABLE remote_tracks", []).unwrap();
+        conn.execute("DROP TABLE IF EXISTS playlist_remote_tracks", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS track_loudness", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS downloads", []).unwrap();
+        // Migration 9 tables too.
+        conn.execute("DROP TABLE IF EXISTS listening_events", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS liked_tracks", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS liked_albums", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS followed_artists", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS dismissed_recommendations", [])
+            .unwrap();
+        // Undo migration 6 as well, or its rerun hits an existing column.
+        conn.execute("ALTER TABLE playlists DROP COLUMN favourite", [])
+            .unwrap();
+        // Migration 10 adds the duration index; a v2 rerun would collide.
+        conn.execute("DROP INDEX IF EXISTS idx_tracks_duration", [])
+            .unwrap();
         conn.pragma_update(None, "user_version", 2).unwrap();
     }
     let db = Db::open(&path).unwrap(); // upgrade: migration 3 reruns
-    assert!(repo::get_setting(&db, "sources_config").unwrap().is_some(), "re-seeded on upgrade");
+    assert!(
+        repo::get_setting(&db, "sources_config").unwrap().is_some(),
+        "re-seeded on upgrade"
+    );
 }
 
 #[test]
@@ -243,10 +288,13 @@ fn settings_persist_across_restart() {
         repo::set_setting(&db, "audio_quality", "lossless").unwrap();
     }
     let db = Db::open(&path).unwrap();
-    assert_eq!(repo::get_setting(&db, "audio_quality").unwrap().as_deref(), Some("lossless"));
+    assert_eq!(
+        repo::get_setting(&db, "audio_quality").unwrap().as_deref(),
+        Some("lossless")
+    );
 }
 
-// ---- S6: remote track metadata round-trip ----
+// remote track metadata round-trip
 
 #[test]
 fn remote_track_round_trip_and_clipping() {
@@ -268,13 +316,16 @@ fn remote_track_round_trip_and_clipping() {
     assert_eq!(rows[0].title, "T");
     assert_eq!(rows[0].key_id, "vid123");
     // Same key re-upserts, id preserved.
-    let id2 = repo::upsert_remote_track(&db, "youtube", "vid123", "T2", "A", None, 1.0, None).unwrap();
+    let id2 =
+        repo::upsert_remote_track(&db, "youtube", "vid123", "T2", "A", None, 1.0, None).unwrap();
     assert_eq!(id, id2);
     let rows = repo::remote_tracks_by_ids(&db, &[id]).unwrap();
     assert_eq!(rows[0].title, "T2");
     // Oversized title is clipped.
     let long = "x".repeat(2000);
-    let id3 = repo::upsert_remote_track(&db, "youtube", "long", long.as_str(), "A", None, 1.0, None).unwrap();
+    let id3 =
+        repo::upsert_remote_track(&db, "youtube", "long", long.as_str(), "A", None, 1.0, None)
+            .unwrap();
     let rows = repo::remote_tracks_by_ids(&db, &[id3]).unwrap();
     assert!(rows[0].title.len() <= repo::REMOTE_MAX_STR);
 }
@@ -312,10 +363,26 @@ fn queue_rows_query_returns_both_kinds_in_input_order() {
     };
     mk("/t/a.flac", "Local A");
     mk("/t/b.flac", "Local B");
-    let local_ids: Vec<i64> = repo::list_tracks(&db).unwrap().into_iter().map(|t| t.id).collect();
+    let local_ids: Vec<i64> = repo::list_tracks(&db)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
 
-    let remote_a = repo::upsert_remote_track(&db, "youtube", "vidA", "Remote A", "RA", Some("R AL"), 200.0, Some("https://i.ytimg.com/x.jpg")).unwrap();
-    let remote_b = repo::upsert_remote_track(&db, "addon", "vidB", "Remote B", "RB", None, 10.0, None).unwrap();
+    let remote_a = repo::upsert_remote_track(
+        &db,
+        "youtube",
+        "vidA",
+        "Remote A",
+        "RA",
+        Some("R AL"),
+        200.0,
+        Some("https://i.ytimg.com/x.jpg"),
+    )
+    .unwrap();
+    let remote_b =
+        repo::upsert_remote_track(&db, "addon", "vidB", "Remote B", "RB", None, 10.0, None)
+            .unwrap();
 
     // Local ids [b, a] (input order preserved), remote ids [a, b] — the
     // combined result keeps each group's input order and tags kinds.
@@ -330,11 +397,55 @@ fn queue_rows_query_returns_both_kinds_in_input_order() {
     assert_eq!(rows[2].title, "Remote A");
     assert_eq!(rows[2].key_source.as_deref(), Some("youtube"));
     assert_eq!(rows[2].video_id.as_deref(), Some("vidA"));
-    assert_eq!(rows[2].artwork_url.as_deref(), Some("https://i.ytimg.com/x.jpg"));
+    assert_eq!(
+        rows[2].artwork_url.as_deref(),
+        Some("https://i.ytimg.com/x.jpg")
+    );
     assert_eq!(rows[3].kind, "remote");
     assert_eq!(rows[3].title, "Remote B");
     assert_eq!(rows[3].album, None);
     // Unknown ids on either side are skipped.
     let rows = repo::queue_rows_by_ids(&db, &[999_999], &[999_999]).unwrap();
     assert!(rows.is_empty());
+}
+
+/// "Recently Added" is library additions, not playback: newest `added_at`
+/// first, and a rescan of an existing file must not move it.
+#[test]
+fn recently_added_orders_by_added_at_not_rescan() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("t.db")).unwrap();
+    let folder = repo::add_folder(&db, "/music", 0).unwrap();
+
+    let track = |path: &str, title: &str| persistence::models::Track {
+        id: 0,
+        folder_id: folder,
+        path: path.into(),
+        file_name: format!("{title}.flac"),
+        title: title.into(),
+        artist: "A".into(),
+        album: "AL".into(),
+        album_artist: "A".into(),
+        track_no: None,
+        disc_no: None,
+        year: None,
+        genre: String::new(),
+        duration_sec: 100.0,
+        codec: "flac".into(),
+        bitrate_kbps: None,
+        sample_rate: None,
+        bit_depth: None,
+        channels: None,
+        art_path: None,
+        missing: false,
+    };
+
+    repo::upsert_track(&db, &track("/m/old.flac", "Old"), folder, 1, 1, 100).unwrap();
+    repo::upsert_track(&db, &track("/m/new.flac", "New"), folder, 1, 1, 200).unwrap();
+    // A later scan re-writes the older file; its added_at must survive.
+    repo::upsert_track(&db, &track("/m/old.flac", "Old"), folder, 2, 2, 300).unwrap();
+
+    let recent = repo::recently_added(&db, 10).unwrap();
+    let titles: Vec<_> = recent.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["New", "Old"]);
 }

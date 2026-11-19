@@ -1,4 +1,5 @@
 import { Search, X } from 'lucide-react';
+import { Glass } from 'glisse';
 import { useCallback, useDeferredValue, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
@@ -20,10 +21,16 @@ export function SearchField({
   initial,
   onSearch,
   placeholder = 'Artists, Songs, Lyrics, and More',
+  onInputChange,
+  suggest = true,
 }: {
   initial: string;
   onSearch: (query: string) => void;
   placeholder?: string;
+  /** Fires per keystroke (and on clear) — a page filtering in place, not navigating. */
+  onInputChange?: (value: string) => void;
+  /** The catalogue suggestions dropdown; off for a scope-limited field. */
+  suggest?: boolean;
 }) {
   const [value, setValue] = useState(initial);
   const [open, setOpen] = useState(false);
@@ -35,7 +42,7 @@ export function SearchField({
   const suggestions = useQuery({
     queryKey: ['catalogue-typeahead', deferredValue],
     queryFn: () => invoke<SuggestResponse>('discovery_suggest', { query: deferredValue }),
-    enabled: deferredValue.length > 0,
+    enabled: suggest && deferredValue.length > 0,
     staleTime: 60_000,
     retry: false,
   });
@@ -75,66 +82,70 @@ export function SearchField({
 
   return (
     <div className="relative w-[min(421px,100%)]">
-      <form
-        className="relative flex items-center"
-        role="search"
-        onSubmit={(e) => {
-          e.preventDefault();
-          pick(active >= 0 ? options[active] : undefined);
-        }}
-      >
-        <Search size={15} strokeWidth={2.4} className="pointer-events-none absolute left-2.5 text-secondary" aria-hidden="true" />
-        <input
-          ref={input}
-          className="h-[38px] w-full rounded-pill border border-search-border bg-page pt-1.5 pr-[30px] pb-[5px] pl-7 type-body text-primary placeholder:text-tertiary focus-visible:border-key focus-visible:ring-[3px] focus-visible:ring-key/60 focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
-          type="search"
-          value={value}
-          placeholder={placeholder}
-          aria-label="Search"
-          role="combobox"
-          aria-expanded={showList}
-          aria-controls={listId}
-          aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(e) => {
-            setValue(e.target.value);
-            setOpen(true);
-            setActive(-1);
+      <Glass className="header-glass rounded-pill">
+        <form
+          className="relative flex h-[38px] items-center rounded-pill"
+          role="search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            pick(active >= 0 ? options[active] : undefined);
           }}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => { if (!menuOpen.current) setOpen(false); }, 120)}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowDown') {
-              e.preventDefault();
-              setActive((i) => Math.min(i + 1, options.length - 1));
-            } else if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              setActive((i) => Math.max(i - 1, -1));
-            } else if (e.key === 'Escape') {
-              setOpen(false);
-            }
-          }}
-        />
-        {value && (
-          <button
-            type="button"
-            className="absolute right-[9px] grid size-4 place-items-center rounded-full bg-tertiary text-page"
-            aria-label="Clear"
-            onClick={() => {
-              setValue('');
-              input.current?.focus();
+        >
+          <Search size={15} strokeWidth={2.4} className="pointer-events-none absolute left-2.5 text-secondary" aria-hidden="true" />
+          <input
+            ref={input}
+            className="h-[38px] w-full rounded-pill bg-transparent pt-1.5 pr-[30px] pb-[5px] pl-7 type-body text-primary placeholder:text-tertiary focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
+            type="search"
+            value={value}
+            placeholder={placeholder}
+            aria-label="Search"
+            role="combobox"
+            aria-expanded={showList}
+            aria-controls={listId}
+            aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setOpen(true);
+              setActive(-1);
+              onInputChange?.(e.target.value);
             }}
-          >
-            <X size={12} strokeWidth={3} />
-          </button>
-        )}
-      </form>
+            onFocus={() => setOpen(true)}
+            onBlur={() => setTimeout(() => { if (!menuOpen.current) setOpen(false); }, 120)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActive((i) => Math.min(i + 1, options.length - 1));
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive((i) => Math.max(i - 1, -1));
+              } else if (e.key === 'Escape') {
+                setOpen(false);
+              }
+            }}
+          />
+          {value && (
+            <button
+              type="button"
+              className="absolute right-[9px] grid size-4 place-items-center rounded-full bg-tertiary text-page"
+              aria-label="Clear"
+              onClick={() => {
+                setValue('');
+                onInputChange?.('');
+                input.current?.focus();
+              }}
+            >
+              <X size={12} strokeWidth={3} />
+            </button>
+          )}
+        </form>
+      </Glass>
       {showList && (
         // The dropdown: 302px of glass, 3px under the field.
         <ul
           id={listId}
-          className="absolute top-[calc(100%+3px)] left-0 z-(--z-contextual-menus) max-h-[min(700px,70vh)] w-[302px] overflow-y-auto rounded-[9px] border border-[#00000033] bg-thick-material py-1.5 shadow-[inset_0_0_0_1px_#ffffff33,0_8px_40px_#0000008c] [backdrop-filter:blur(60px)_saturate(2.2)]"
+          className="glass-edge absolute top-[calc(100%+3px)] left-0 z-(--z-contextual-menus) max-h-[min(700px,70vh)] w-[302px] overflow-y-auto rounded-[9px] bg-thick-material py-1.5 shadow-[0_0_0_0.5px_var(--vibrantDivider),0_8px_40px_#0000008c] [backdrop-filter:var(--dynamicBlurHero)]"
           role="listbox"
         >
           {options.map((option, i) => {

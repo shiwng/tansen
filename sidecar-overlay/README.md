@@ -17,4 +17,5 @@ Gradle build. `scripts/build-sidecar.sh` is the only supported build path:
    resource.
 
 GPL-3.0-or-later, like upstream. See `../docs/sidecar-api.md` for the HTTP
-contract and `../IMPLEMENTATION.md` §6 for how the app consumes it.
+contract and [`../docs/architecture.md`](../docs/architecture.md) for how the
+app consumes it.

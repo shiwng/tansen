@@ -1,4 +1,4 @@
-//! M19: lock-free SPSC sample ring between the decode thread (producer) and
+//! Lock-free SPSC sample ring between the decode thread (producer) and
 //! the audio callback (consumer). Fixed capacity (power of two), no locks,
 //! no allocation after construction — the callback pops with one atomic
 //! load/store pair per sample.
@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn push_pop_preserves_order_across_wraparound() {
         let ring = SpscRing::new(64); // rounds to 64
-        // Push well past one wraparound; pop interleaved.
+                                      // Push well past one wraparound; pop interleaved.
         let mut expected = 0u32;
         for i in 0..1000u32 {
             ring.push(i as f32).unwrap(); // 64-slot ring wraps many times
@@ -118,7 +118,7 @@ mod tests {
         assert!(ring.pop().is_none(), "empty");
     }
 
-    /// The M19 contract: one producer thread, one consumer thread, every
+    /// The contract: one producer thread, one consumer thread, every
     /// sample delivered exactly once, in order.
     #[test]
     fn spsc_across_threads_is_exact() {

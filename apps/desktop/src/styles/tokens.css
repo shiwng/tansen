@@ -10,8 +10,8 @@
  */
 
 :root {
-  /* ---- Type ------------------------------------------------------------ */
-  --font-family: -apple-system, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  /* Type */
+  --font-family: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 
   /* font: <weight> <size>/<line-height> (report §10) */
   --header-emphasized: 700 34px / 40px var(--font-family);
@@ -34,8 +34,8 @@
   --caption-2: 500 10px / 13px var(--font-family);
   --footnote: 400 11px / 14px var(--font-family);
 
-  /* ---- Layout ------------------------------------------------------------ */
-  --web-navigation-width: 208px;
+  /* Layout */
+  --web-navigation-width: 200px;
   --body-gutter: 34px;
   --player-pill-height: 54px;
   --player-bottom-offset: 19px;
@@ -44,7 +44,7 @@
   --toolbar-height: 52px;
   --mini-player-height: 52px;
 
-  /* ---- Radii ------------------------------------------------------------- */
+  /* Radii */
   --radius-artwork-small: 5px; /* 40px track rows, horizontal lockups */
   --radius-artwork-medium: 7px; /* square lockups */
   --radius-artwork-large: 10px; /* album header, editorial cards */
@@ -52,13 +52,13 @@
   --radius-track-row: 6px;
   --radius-pill: 1000px;
 
-  /* ---- Motion ------------------------------------------------------------ */
+  /* Motion */
   --ease-out-panel: cubic-bezier(0.215, 0.61, 0.355, 1);
   --duration-panel: 0.3s;
   --global-transition: opacity 0.1s ease-in;
   --duration-arrow: 0.25s;
 
-  /* ---- z-index ----------------------------------------------------------- */
+  /* z-index */
   --z-default: 1;
   --z-bubbles: 50;
   --z-gpu: 1001;
@@ -66,12 +66,12 @@
   --z-contextual-menus: 9951;
   --z-modal: 10001;
 
-  /* ---- Colour: light ----------------------------------------------------- */
+  /* Colour: light */
   color-scheme: light;
 
   --pageBG: #ffffff;
   --pageBG-rgb: 255, 255, 255;
-  --healthDot: #1e9e33; /* F6: 3.49:1 on pageBG (systemGreen light = 2.12:1) */
+  --healthDot: #1e9e33; /* 3.49:1 on pageBG (systemGreen light = 2.12:1) */
 
   --systemPrimary: #000000e0;
   --systemSecondary: #0000008f;
@@ -113,10 +113,21 @@
   --glassMaterialInnerStroke: #000000;
   --glassMaterialInnerStrokeAlpha: 0.05;
   --glassMaterialBackdropFilter: saturate(220%) blur(16px);
+  /* The liquid signature: light from above catches the top edge of a glass
+     surface (brighter than the full rim). Solid fallbacks keep the edge. */
+  --glassEdgeHighlight: #ffffffd9;
+  /* Toolbar glass (glisse rim + Tansen material): a hairline edge, the rim's
+     own light, and the slight lift the field takes while focused. */
+  --headerGlassEdge: rgb(0 0 0 / 0.08);
+  --headerGlassRimShine: 0.3;
+  --headerGlassActiveBackground: #ffffff;
 
   --systemStandardThinMaterialSover: #f6f6f67a;
   --systemStandardThickMaterialSover: #f6f6f6b8;
   --systemHeaderMaterialSover: #ffffffcc;
+  /* Context menus sample a touch denser than a settings popover. */
+  --contextMenuMaterial: #f6f6f6f0;
+  --contextMenuSelection: #3478f6;
 
   --navSidebarSelectedState: #3c3c431a;
   --tracklistHoverColor: #0000000f;
@@ -203,15 +214,22 @@
     --glassMaterialShadowColor: #00000033;
     --glassMaterialInnerStroke: #ffffff;
     --glassMaterialInnerStrokeAlpha: 0.25;
+    --glassEdgeHighlight: #ffffff66;
+    --headerGlassEdge: rgb(255 255 255 / 0.12);
+    --headerGlassRimShine: 0.13;
+    --headerGlassActiveBackground: #ffffff17;
 
     --systemStandardThinMaterialSover: #28282880;
     --systemStandardThickMaterialSover: #282828b3;
     --systemHeaderMaterialSover: #1e1e1ecc;
+    /* Measured from Music's context menu: #383838 over a #1d1d1d page. */
+    --contextMenuMaterial: #3c3c3ce0;
+    --contextMenuSelection: #347bff;
 
     /* Selection over vibrancy must be an alpha overlay: the material's own
-       colour varies with the wallpaper (run-1 measured #26262b, today
-       #444446). #434347 on the old sample ≈ white @ 11%. */
-    --navSidebarSelectedState: #ffffff1c;
+       colour varies with the wallpaper. The reference pill lifts ~+33 over
+       its vibrancy (#444 on #232); 18% white keeps that lift on Tansen. */
+    --navSidebarSelectedState: #ffffff2e;
     --tracklistHoverColor: #ffffff0f;
     --shelfBG: #ffffff0d;
     --opaqueShelfBG: #2b2b2b;
@@ -236,6 +254,7 @@
 @media (prefers-contrast: more) {
   :root {
     --glassMaterialBackground: #f2f2f2;
+    --glassEdgeHighlight: #ffffff;
     --glassMaterialBackdropFilter: none;
     --systemSecondary: #000000c2;
     --labelDivider: #0000004d;
@@ -245,6 +264,7 @@
 @media (prefers-contrast: more) {
   :root[data-theme='dark'] {
     --glassMaterialBackground: #0e0e0e;
+    --glassEdgeHighlight: #ffffff4d;
     --systemSecondary: #ffffffb3;
     --labelDivider: #ffffff4d;
   }
@@ -270,7 +290,7 @@
 [data-tint='light'] {
   --systemPrimary: #000000e0;
   --systemSecondary: color-mix(in srgb, #000000 60%, var(--page-tint));
-  --systemTertiary: color-mix(in srgb, #000000 46%, var(--page-tint)); /* F6: 46% passes WCAG 3:1 (40% measured 2.85:1) */
+  --systemTertiary: color-mix(in srgb, #000000 46%, var(--page-tint)); /* 46% passes WCAG 3:1 (40% measured 2.85:1) */
   --labelDivider: #0000001f;
   --tracklistHoverColor: #00000012;
   --systemQuinary: #0000000f;

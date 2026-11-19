@@ -1,20 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { FolderPlus, Loader2, RefreshCw, SquarePen } from 'lucide-react';
 import { Artwork } from '@/components/music/Artwork';
+import { EmptyLibrary } from '@/components/music/EmptyLibrary';
 import { TrackList } from '@/components/music/TrackList';
-import { trackFromRef } from '@/state/player';
 import { q, rowsToTracks, sourceFor } from '@/lib/rows';
 import type { ArtistRow } from '@/lib/rows';
-import { EmptyLibrary } from './HomePage';
-import type { Folder, ScanProgress } from '@/types';
+import type { PlaylistRow, ScanProgress } from '@/types';
+import { applyPlaylistView } from '@/lib/playlistView';
 
 /**
- * The library sections: Songs, Albums, Artists, Playlists, Recently Played.
+ * The library sections: Songs, Albums, Artists, Playlists, Recently Added.
  * Albums and Artists render as artwork grids, like the original's library
  * pages; Songs is the full track list.
  */
@@ -112,6 +112,11 @@ interface ScanSummaryDone {
 function SongsSection() {
   const tracks = useQuery(q.tracks());
   const source = sourceFor('library', 'Songs');
+  // An empty library is the whole page: no section header, scan actions or
+  // folder list. Folder management lives in Settings → Library.
+  if (tracks.data && tracks.data.length === 0) {
+    return <EmptyLibrary standalone />;
+  }
   return (
     <div>
       <Header title="Songs">
@@ -124,59 +129,36 @@ function SongsSection() {
           <TrackList tracks={rowsToTracks(tracks.data)} variant="playlist" source={source} />
         </div>
       )}
-      {tracks.data && tracks.data.length === 0 && (
-        <div className="mx-(--body-gutter)">
-          <EmptyLibrary />
-          <FoldersCard />
-        </div>
-      )}
     </div>
-  );
-}
-
-function FoldersCard() {
-  const folders = useQuery({ queryKey: ['local', 'folders'], queryFn: () => invoke<Folder[]>('folders_get') });
-  const client = useQueryClient();
-  const remove = useMutation({
-    mutationFn: (id: number) => invoke('folder_remove', { id }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['local', 'folders'] }),
-  });
-  return (
-    <section className="mb-10 max-w-2xl">
-      <h2 className="mb-2 type-title-3-emphasized text-secondary">Indexed folders</h2>
-      <ul className="overflow-hidden rounded-[10px] bg-quinary">
-        {folders.data?.map((f) => (
-          <li key={f.id} className="flex items-center gap-2 py-2 pr-2.5 pl-3 type-callout [&+&]:border-t-[0.5px] [&+&]:border-t-divider">
-            <span className="min-w-0 flex-1 truncate">{f.path}</span>
-            <button className="text-secondary hover:text-primary" onClick={() => remove.mutate(f.id)} aria-label="Remove folder">
-              ✕
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
 function AlbumsSection() {
   const albums = useQuery(q.albums());
+  // The toolbar's scoped field ("Find in Albums") filters in place.
+  const [params] = useSearchParams();
+  const search = (params.get('q') ?? '').trim();
+  const needle = search.toLowerCase();
+  const shown = needle
+    ? albums.data?.filter((a) => a.album.toLowerCase().includes(needle) || (a.album_artist ?? '').toLowerCase().includes(needle))
+    : albums.data;
   return (
     <div>
-      <Header title="Albums">
-        <ScanButtons />
-      </Header>
+      <Header title="Albums" />
       {albums.isError && <p className="mx-(--body-gutter) type-body text-secondary">{String(albums.error)}</p>}
-      {albums.data && (
+      {shown && shown.length > 0 && (
         <Grid>
-          {albums.data.map((a) => (
+          {shown.map((a) => (
             <Tile key={a.key} to={`/album/${encodeURIComponent(a.key)}`} art={a.art_path} title={a.album} subtitle={a.album_artist || 'Unknown Artist'} />
           ))}
         </Grid>
       )}
+      {shown && shown.length === 0 && albums.data && albums.data.length > 0 && (
+        <p className="mx-(--body-gutter) pb-10 type-body text-secondary">No albums matching “{search}”.</p>
+      )}
       {albums.data && albums.data.length === 0 && (
         <div className="mx-(--body-gutter)">
           <EmptyLibrary />
-          <FoldersCard />
         </div>
       )}
     </div>
@@ -187,9 +169,7 @@ function ArtistsSection() {
   const artists = useQuery(q.artists());
   return (
     <div>
-      <Header title="Artists">
-        <ScanButtons />
-      </Header>
+      <Header title="Artists" />
       {artists.isError && <p className="mx-(--body-gutter) type-body text-secondary">{String(artists.error)}</p>}
       {artists.data && (
         <Grid>
@@ -207,24 +187,35 @@ function ArtistsSection() {
   );
 }
 
+/** Library additions (`added_at`), not playback history — the sidebar's
+ * "Recently Added". An empty library is the whole page, as in Songs. */
 function RecentSection() {
-  const history = useQuery(q.history(200));
-  const source = sourceFor('library', 'Recently Played');
+  const recent = useQuery(q.recentlyAdded(200));
+  const source = sourceFor('library', 'Recently Added');
+  // "Find in Recently Added" filters the additions in place. The hook sits
+  // above the empty return: a state change on that render would be #310.
+  const [params] = useSearchParams();
+  const search = (params.get('q') ?? '').trim();
+  const needle = search.toLowerCase();
+  const rows = needle
+    ? recent.data?.filter((t) =>
+        [t.title, t.artist, t.album].some((value) => (value ?? '').toLowerCase().includes(needle)),
+      )
+    : recent.data;
+  if (recent.data && recent.data.length === 0) {
+    return <EmptyLibrary standalone />;
+  }
   return (
     <div>
-      <Header title="Recently Played" />
-      {history.isError && <p className="mx-(--body-gutter) type-body text-secondary">{String(history.error)}</p>}
-      {history.data && history.data.length > 0 && (
+      <Header title="Recently Added" />
+      {recent.isError && <p className="mx-(--body-gutter) type-body text-secondary">{String(recent.error)}</p>}
+      {rows && rows.length > 0 && (
         <div className="mx-(--body-gutter) mb-10">
-          <TrackList
-            tracks={history.data.map((h) => trackFromRef(h.track))}
-            variant="playlist"
-            source={source}
-          />
+          <TrackList tracks={rowsToTracks(rows)} variant="playlist" source={source} />
         </div>
       )}
-      {history.data && history.data.length === 0 && (
-        <p className="mx-(--body-gutter) pb-10 type-body text-secondary">Nothing played yet.</p>
+      {rows && rows.length === 0 && (
+        <p className="mx-(--body-gutter) pb-10 type-body text-secondary">No recently added songs matching “{search}”.</p>
       )}
     </div>
   );
@@ -233,7 +224,14 @@ function RecentSection() {
 function PlaylistsSection() {
   const client = useQueryClient();
   const navigate = useNavigate();
-  const playlists = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<[number, string][]>('playlists_get') });
+  const [params] = useSearchParams();
+  // Filter, sort and search come from the URL (the toolbar's filter menu and
+  // the scoped search field write them), so one source feeds both controls.
+  const filter = params.get('filter') === 'favourites' ? 'favourites' : 'all';
+  const sortParam = params.get('sort');
+  const sort = sortParam === 'name' || sortParam === 'added' ? sortParam : '';
+  const search = (params.get('q') ?? '').trim().toLowerCase();
+  const playlists = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<PlaylistRow[]>('playlists_get') });
   const create = useMutation({
     mutationFn: (name: string) => invoke<number>('playlist_create', { name }),
     onSuccess: (id) => {
@@ -243,10 +241,11 @@ function PlaylistsSection() {
   });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
+  const shown = applyPlaylistView(playlists.data ?? [], { filter, sort, search });
 
   return (
     <div>
-      <Header title="Playlists">
+      <Header title="All Playlists">
         <button
           onClick={() => setCreating(true)}
           className="flex items-center gap-1.5 rounded-pill bg-key px-3.5 py-2 type-callout-emphasized text-white hover:opacity-90"
@@ -283,13 +282,24 @@ function PlaylistsSection() {
       )}
       {playlists.data && playlists.data.length > 0 && (
         <Grid>
-          {playlists.data.map(([id, name]) => (
-            <Tile key={id} to={`/playlist/${id}`} art={null} title={name} subtitle="Playlist" />
+          {shown.map((p) => (
+            <Tile key={p.id} to={`/playlist/${p.id}`} art={null} title={p.name} subtitle={`${p.track_count} song${p.track_count === 1 ? '' : 's'}`} />
           ))}
         </Grid>
       )}
       {playlists.data && playlists.data.length === 0 && !creating && (
-        <p className="mx-(--body-gutter) pb-10 type-body text-secondary">No playlists yet — create one above.</p>
+        <div className="mx-(--body-gutter)">
+          <EmptyLibrary />
+        </div>
+      )}
+      {playlists.data && playlists.data.length > 0 && shown.length === 0 && (
+        <p className="mx-(--body-gutter) pb-10 type-body text-secondary">
+          {search
+            ? `No playlists matching “${params.get('q')?.trim()}”.`
+            : filter === 'favourites'
+              ? 'No favourites yet — open a playlist and choose Favourite.'
+              : 'No playlists.'}
+        </p>
       )}
     </div>
   );

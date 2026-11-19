@@ -27,7 +27,10 @@ pub fn ip_is_local(ip: IpAddr) -> bool {
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return ip_is_local(IpAddr::V4(mapped));
             }
-            v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local() || v6.is_unspecified()
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_unspecified()
         }
     }
 }
@@ -124,12 +127,12 @@ mod tests {
     #[test]
     fn ipv4_predicate_set_is_complete() {
         for host in [
-            "127.0.0.1",        // loopback
-            "10.0.0.5",         // private
-            "192.168.1.10",     // private
-            "172.16.0.1",       // private
-            "169.254.1.1",      // link-local
-            "0.0.0.0",          // unspecified
+            "127.0.0.1",    // loopback
+            "10.0.0.5",     // private
+            "192.168.1.10", // private
+            "172.16.0.1",   // private
+            "169.254.1.1",  // link-local
+            "0.0.0.0",      // unspecified
         ] {
             assert!(host_is_local(host), "{host} must classify local");
         }
@@ -141,10 +144,10 @@ mod tests {
     #[test]
     fn ipv6_predicate_set_is_complete() {
         for host in [
-            "::1",      // loopback
-            "::",       // unspecified
-            "fd00::1",  // unique-local
-            "fe80::1",  // link-local
+            "::1",              // loopback
+            "::",               // unspecified
+            "fd00::1",          // unique-local
+            "fe80::1",          // link-local
             "::ffff:127.0.0.1", // IPv4-mapped loopback
             "::ffff:10.0.0.5",  // IPv4-mapped private
         ] {

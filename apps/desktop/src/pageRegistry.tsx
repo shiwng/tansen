@@ -17,6 +17,7 @@ const playlist = () => import('@/pages/PlaylistPage').then((m) => ({ default: m.
 const reorder = () => import('@/pages/ReorderPlaylistPage').then((m) => ({ default: m.ReorderPlaylistPage }));
 const settings = () => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage }));
 const discover = () => import('@/pages/DiscoveryPage').then((m) => ({ default: m.DiscoveryPage }));
+const browseCategory = () => import('@/pages/BrowseCategoryPage').then((m) => ({ default: m.BrowseCategoryPage }));
 const radio = () => import('@/pages/RadioPage').then((m) => ({ default: m.RadioPage }));
 
 export const PAGE_ROUTES: PageRoute[] = [
@@ -30,6 +31,7 @@ export const PAGE_ROUTES: PageRoute[] = [
   { path: '/library/:section', load: library },
   { path: '/settings', load: settings },
   { path: '/discover', load: discover },
+  { path: '/browse/:category', load: browseCategory },
   { path: '/radio', load: radio },
 ];
 

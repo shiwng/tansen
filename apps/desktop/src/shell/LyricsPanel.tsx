@@ -3,12 +3,12 @@ import '@uimaxbai/am-lyrics/am-lyrics.js';
 import { Check, ChevronDown, Loader2, Minus, Settings2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Menu, MenuHeader, MenuItem, MenuSeparator } from '@/components/Menu';
-import { LyricClock } from '@/lyrics/clock';
+import { isJump, LyricClock } from '@/lyrics/clock';
 import type { SourceState } from '@/lyrics/repository';
 import { enabledSources } from '@/lyrics/settings';
 import { sourceById, type LyricsSourceId } from '@/lyrics/sources';
 import { useLyrics, useLyricsUi } from '@/lyrics/useLyrics';
-import { getAudio, getPlayhead, usePlayer } from '@/state/player';
+import { getPlayhead, usePlayer } from '@/state/player';
 import { LyricsSettings } from './LyricsSettings';
 
 type AmLyricsElement = HTMLElement & {
@@ -93,8 +93,6 @@ const FULL_SIZE =
 function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const element = useRef<AmLyricsElement | null>(null);
-  const deck = usePlayer((s) => s.deck);
-  const mixing = usePlayer((s) => s.mixing);
   const videoId = usePlayer((s) => s.nowPlaying?.videoId);
 
   // Created by hand, with its TTML set before it's attached: am-lyrics starts
@@ -150,67 +148,83 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
   }, [ttml]);
 
   useEffect(() => {
-    const audio = getAudio();
     const el = element.current;
-    if (!audio || !el) return;
-    if (mixing) {
-      // A loop mix plays the song from a deck while its element sits paused:
-      // follow the mix's playhead, which loops and moves at the ramped tempo.
-      // A loop's wrap (or the handover) is a jump on purpose, not drift to steer out.
-      const start = getPlayhead()?.sec ?? audio.currentTime;
-      const clock = new LyricClock(start * 1000);
-      let discontinuity = 0;
-      let last = start;
-      let frame = 0;
-      const tick = () => {
-        const now = performance.now();
-        const sec = getPlayhead()?.sec ?? last;
-        if (sec < last - 0.15 || sec > last + 1) discontinuity++;
-        last = sec;
-        el.currentTime = clock.frame(now, Math.trunc(sec * 1000), now, discontinuity);
-        frame = requestAnimationFrame(tick);
-      };
-      frame = requestAnimationFrame(tick);
-      return () => cancelAnimationFrame(frame);
-    }
-    const clock = new LyricClock(audio.currentTime * 1000);
-    let discontinuity = 0;
+    if (!el) return;
+    // The engine is the only clock — this backend has no media element — so
+    // each frame reads the published playhead, stamps the reading, and lets
+    // the clock steer the words instead of setting them.
+    const start = getPlayhead()?.sec ?? 0;
+    const clock = new LyricClock(start * 1000);
     let frame = 0;
+    let jumps = 0;
+    let prevSec = start;
+    let prevAt = performance.now();
+    let wasPaused: boolean | null = null;
+    // Where the words settled while paused: a frozen playhead only moves on a
+    // seek, and the frame loop that would catch it is stopped.
+    let pausedAtSec: number | null = null;
+
+    const stop = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+    };
     const tick = () => {
+      const head = getPlayhead();
+      if (!head) {
+        frame = 0;
+        return;
+      }
       const now = performance.now();
-      // The reading and its stamp are taken together.
-      el.currentTime = clock.frame(now, Math.trunc(audio.currentTime * 1000), now, discontinuity);
+      if (isJump(prevSec, head.sec, now - prevAt)) jumps += 1;
+      prevSec = head.sec;
+      prevAt = now;
+      el.currentTime = clock.frame(now, Math.trunc(head.sec * 1000), now, jumps);
       frame = requestAnimationFrame(tick);
     };
-    const hold = () => {
-      cancelAnimationFrame(frame);
-      const ms = audio.currentTime * 1000;
-      clock.hold(ms, performance.now());
-      el.currentTime = ms;
+    // Only a store publish can change playback state, so this runs on those
+    // and never on a timer: start the frame loop when the song starts, settle
+    // exactly on the anchor when it stops.
+    const sync = () => {
+      const head = getPlayhead();
+      if (!head) return stop();
+      if (head.paused !== wasPaused) {
+        wasPaused = head.paused;
+        pausedAtSec = head.paused ? head.sec : null;
+        if (head.paused) {
+          stop();
+          clock.hold(head.sec * 1000, performance.now());
+          el.currentTime = Math.trunc(head.sec * 1000);
+          prevSec = head.sec;
+          prevAt = performance.now();
+          return;
+        }
+        clock.restart();
+      }
+      if (head.paused) {
+        // A seek while paused moves the anchor with no frame loop running and
+        // no other publish to catch it — re-settle the words on the new spot.
+        if (pausedAtSec !== null && Math.abs(head.sec - pausedAtSec) > 0.001) {
+          clock.hold(head.sec * 1000, performance.now());
+          el.currentTime = Math.trunc(head.sec * 1000);
+          prevSec = head.sec;
+          prevAt = performance.now();
+          pausedAtSec = head.sec;
+        }
+        return;
+      }
+      if (!head.paused && !frame) {
+        prevSec = head.sec;
+        prevAt = performance.now();
+        frame = requestAnimationFrame(tick);
+      }
     };
-    const resume = () => {
-      cancelAnimationFrame(frame);
-      clock.restart();
-      frame = requestAnimationFrame(tick);
-    };
-    const onSeeking = () => {
-      discontinuity++;
-      if (audio.paused) hold();
-    };
-    audio.addEventListener('seeking', onSeeking);
-    audio.addEventListener('seeked', onSeeking);
-    audio.addEventListener('pause', hold);
-    audio.addEventListener('play', resume);
-    if (audio.paused) hold();
-    else resume();
+    sync();
+    const unsubscribe = usePlayer.subscribe(sync);
     return () => {
-      cancelAnimationFrame(frame);
-      audio.removeEventListener('seeking', onSeeking);
-      audio.removeEventListener('seeked', onSeeking);
-      audio.removeEventListener('pause', hold);
-      audio.removeEventListener('play', resume);
+      unsubscribe();
+      stop();
     };
-  }, [deck, videoId, ttml, mixing]);
+  }, [ttml, videoId]);
 
   // am-lyrics renders and scrolls itself; it only needs the space. Full screen fades it out at the top and bottom.
   return (
@@ -235,6 +249,7 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
   const pick = useLyricsUi((s) => s.pick);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [settings, setSettings] = useState(false);
+  const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(null);
   const close = useCallback(() => setAnchor(null), []);
   const label = current ? sourceById(current)?.label : 'Lyrics';
 
@@ -258,7 +273,10 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
       <button
         className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary"
         aria-label="Lyric settings"
-        onClick={() => setSettings(true)}
+        onClick={(e) => {
+          setSettingsAnchor(e.currentTarget);
+          setSettings(true);
+        }}
       >
         <Settings2 size={16} />
       </button>
@@ -291,10 +309,10 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
             );
           })}
           <MenuSeparator />
-          <MenuItem onSelect={() => (close(), setSettings(true))}>Lyric Settings…</MenuItem>
+          <MenuItem onSelect={() => (setSettingsAnchor(anchor), close(), setSettings(true))}>Lyric Settings…</MenuItem>
         </Menu>
       )}
-      {settings && <LyricsSettings onClose={() => setSettings(false)} />}
+      {settings && settingsAnchor && <LyricsSettings anchor={settingsAnchor} onClose={() => setSettings(false)} />}
     </div>
   );
 }

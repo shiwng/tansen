@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { sizedArtwork } from '@/lib/artwork';
 
@@ -78,6 +78,7 @@ const frame = 'relative isolate w-full overflow-hidden bg-joe artwork-stroke';
 export function Artwork({ src, displayWidth, aspect = 1, radius, className, eager }: ArtworkProps) {
   const [loaded, setLoaded] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const resolved = useArtworkUrl(src);
   useEffect(() => {
     setLoaded(false);
@@ -85,6 +86,12 @@ export function Artwork({ src, displayWidth, aspect = 1, radius, className, eage
   }, [src]);
   const sized = resolved ? sizedArtwork(resolved, displayWidth, aspect) : null;
   const url = attempt >= 2 || sized === resolved ? resolved : sized;
+  // A cached image can finish before its load event is wired up, and the
+  // reset above would then leave it invisible. Recheck after every mount.
+  useEffect(() => {
+    const image = imageRef.current;
+    if (image?.complete && image.naturalWidth > 0) setLoaded(true);
+  }, [url, attempt]);
   return (
     <div
       className={className ? `${frame} ${className}` : frame}
@@ -93,6 +100,7 @@ export function Artwork({ src, displayWidth, aspect = 1, radius, className, eage
       {url && (
         <img
           key={`${url}#${attempt}`}
+          ref={imageRef}
           className="absolute inset-0 size-full object-cover opacity-0 transition-opacity duration-250 ease-in data-loaded:opacity-100"
           data-loaded={loaded || undefined}
           src={url}

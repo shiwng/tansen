@@ -11,7 +11,11 @@ use std::path::{Path, PathBuf};
 /// Extracts the primary picture to `art_dir`. Returns the cached file path,
 /// `Ok(None)` when the file carries no picture, and an error only on I/O
 /// trouble — a broken image must not fail the scan.
-pub fn extract(path: &Path, mtime_secs: i64, art_dir: &Path) -> Result<Option<PathBuf>, std::io::Error> {
+pub fn extract(
+    path: &Path,
+    mtime_secs: i64,
+    art_dir: &Path,
+) -> Result<Option<PathBuf>, std::io::Error> {
     std::fs::create_dir_all(art_dir)?;
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());

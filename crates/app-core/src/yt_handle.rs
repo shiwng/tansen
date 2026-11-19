@@ -46,7 +46,7 @@ pub struct CatalogRow {
     pub thumbnail_url: Option<String>,
 }
 
-/// S10 discovery typeahead rows: playable tracks plus browse cards.
+/// The discovery typeahead rows: playable tracks plus browse cards.
 #[derive(Debug, serde::Serialize)]
 pub struct DiscoverySuggest {
     pub tracks: Vec<sources::yt::DiscoveryTrack>,
@@ -73,8 +73,8 @@ impl YtHandle {
     pub fn stream_blocking(&self, video_id: &str) -> Result<sources::SourceStream, String> {
         let source = self.source.clone();
         let id = video_id.to_string();
-        let key = sources::TrackKey::new(sources::SourceKind::YouTube, id)
-            .map_err(|e| e.to_string())?;
+        let key =
+            sources::TrackKey::new(sources::SourceKind::YouTube, id).map_err(|e| e.to_string())?;
         let result = await_sync(async move { source.stream(&key, &StreamRequest::Best).await })
             .map_err(|e| e.to_string())?;
         result
@@ -107,7 +107,7 @@ impl YtHandle {
             .map_err(|e| e.to_string())
     }
 
-    // ---- S10: discovery (read-only, unauthenticated upstream) ----------------
+    // Discovery (read-only, unauthenticated upstream)
 
     /// Blocking typeahead read (sidecar round trip, per-call deadline in the
     /// client). Unauthenticated: no account sign-in, cookies or tokens.

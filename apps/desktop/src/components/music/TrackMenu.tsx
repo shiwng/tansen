@@ -1,16 +1,23 @@
-import { ChevronLeft, ChevronRight, ListPlus, ListStart, MoreHorizontal, Plus, Radio } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { MoreHorizontal, Plus, Radio } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
-import { Menu, MenuHeader, MenuItem, MenuSeparator, type MenuPlacement } from '@/components/Menu';
+import type { PlaylistRow } from '@/types';
+import { Menu, MenuItem, MenuSeparator, MenuSubmenu, type MenuPlacement } from '@/components/Menu';
 import type { Track } from '@/data/music/types';
 import { usePlayer } from '@/state/player';
+import { TrackInfoDialog } from './TrackInfoDialog';
+
+interface KeyRef {
+  key_source: string;
+  key_id: string;
+}
 
 /**
- * The ⋯ button at the end of a track row (report §14): Play Next and Add to
- * Queue for everyone, Add to Playlist via the picker view — upstream's
- * TrackMenu shape with the account-coupled items (favorite) removed until
- * that feature exists on desktop.
+ * The ⋯ menu on every track row, after Music's compact contextual menu:
+ * playlist and station actions first, then metadata and feedback, then the
+ * queue and download actions. Every row invokes its real command; unsupported
+ * rows (a station for a local file, a download for a stream) are not shown.
  */
 export function TrackMenu({
   track,
@@ -26,47 +33,19 @@ export function TrackMenu({
   onOpenChange?: (open: boolean) => void;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const [view, setView] = useState<'main' | 'playlists'>('main');
-  const [radioBusy, setRadioBusy] = useState(false);
-  const [radioError, setRadioError] = useState<string | null>(null);
-  const close = useCallback(() => {
-    setAnchor(null);
-    setView('main');
-  }, []);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const close = useCallback(() => setAnchor(null), []);
+
   useEffect(() => {
     onOpenChange?.(anchor !== null);
   }, [anchor, onOpenChange]);
 
-  const playNext = usePlayer((s) => s.playNext);
-  const addToQueue = usePlayer((s) => s.addToQueue);
-  const queue = usePlayer((s) => s.queue);
-  const isLocal = track.videoId.startsWith('local:');
-
-  const startRadio = async () => {
-    setRadioBusy(true);
-    setRadioError(null);
-    try {
-      const rows = await invoke<DiscoveryTrack[]>('discovery_radio', { videoId: track.videoId });
-      const queued = new Set(queue.map((entry) => entry.track.videoId));
-      const radio = rows
-        .filter((row) => row.key.id !== track.videoId && !queued.has(row.key.id) && row.playable)
-        .map(discoveryToTrack);
-      if (!radio.length) {
-        setRadioError('No related tracks were available.');
-        return;
-      }
-      await addToQueue(radio, { title: `Radio · ${track.title}`, type: 'radio' });
-      close();
-    } catch (error) {
-      setRadioError(`Radio unavailable: ${String(error)}`);
-    } finally {
-      setRadioBusy(false);
-    }
-  };
-
   return (
     <>
       <button
+        ref={trigger}
+        type="button"
         className={className}
         aria-label={`More options for ${track.title}`}
         aria-haspopup="menu"
@@ -81,77 +60,295 @@ export function TrackMenu({
         <MoreHorizontal size={18} strokeWidth={2} />
       </button>
       {anchor && (
-        <Menu anchor={anchor} placement={placement} onClose={close} label={track.title}>
-          {view === 'main' ? (
-            <MainMenu
-              track={track}
-              isLocal={isLocal}
-              onClose={close}
-              onPlaylists={() => setView('playlists')}
-              playNext={playNext}
-              addToQueue={addToQueue}
-              onRadio={() => void startRadio()}
-              radioBusy={radioBusy}
-              radioError={radioError}
-            />
-          ) : (
-            <PlaylistChoices trackId={track.videoId} onDone={close} onBack={() => setView('main')} />
-          )}
+        <Menu
+          anchor={anchor}
+          placement={placement}
+          onClose={close}
+          width={213}
+          label={`More options for ${track.title}`}
+        >
+          <MainMenu
+            track={track}
+            onClose={close}
+            onInfo={() => {
+              close();
+              setInfoOpen(true);
+            }}
+          />
         </Menu>
+      )}
+      {infoOpen && (
+        <TrackInfoDialog
+          track={track}
+          onClose={() => {
+            setInfoOpen(false);
+            trigger.current?.focus({ preventScroll: true });
+          }}
+        />
       )}
     </>
   );
 }
 
-function MainMenu({
-  track,
-  isLocal,
-  onClose,
-  onPlaylists,
-  playNext,
-  addToQueue,
-  onRadio,
-  radioBusy,
-  radioError,
-}: {
-  track: Track;
-  isLocal: boolean;
-  onClose: () => void;
-  onPlaylists: () => void;
-  playNext: (tracks: Track[]) => void;
-  addToQueue: (tracks: Track[]) => void;
-  onRadio: () => void;
-  radioBusy: boolean;
-  radioError: string | null;
-}) {
+function trackKey(track: Track): KeyRef {
+  if (track.videoId.startsWith('local:')) {
+    return { key_source: 'local', key_id: track.videoId.slice('local:'.length) };
+  }
+  return { key_source: track.sourceKind ?? 'youtube', key_id: track.videoId };
+}
+
+function sourceOf(track: Track): string {
+  return track.videoId.startsWith('local:') ? 'local' : (track.sourceKind ?? 'youtube');
+}
+
+function MainMenu({ track, onClose, onInfo }: { track: Track; onClose: () => void; onInfo: () => void }) {
+  const queryClient = useQueryClient();
+  const playNext = usePlayer((s) => s.playNext);
+  const addToQueue = usePlayer((s) => s.addToQueue);
+  const queue = usePlayer((s) => s.queue);
+  const key = trackKey(track);
+  const sourceKind = sourceOf(track);
+  const canAddToPlaylist = sourceKind === 'local' || sourceKind === 'youtube' || sourceKind === 'spotify';
+  const canStation = sourceKind === 'youtube';
+  const downloadable = sourceKind === 'local' || sourceKind === 'subsonic' || sourceKind === 'addon';
+
+  const likes = useQuery({
+    queryKey: ['likes', 'tracks'],
+    queryFn: () => invoke<KeyRef[]>('liked_tracks_get'),
+    staleTime: 60_000,
+  });
+  const dismissed = useQuery({
+    queryKey: ['recommendations', 'dismissed'],
+    queryFn: () => invoke<KeyRef[]>('recommendation_dismissed_get'),
+    staleTime: 60_000,
+  });
+  const isKey = (row: KeyRef) => row.key_source === key.key_source && row.key_id === key.key_id;
+  const liked = !!likes.data?.some(isKey);
+  const suggestLess = !!dismissed.data?.some(isKey);
+
+  const toggleLike = useMutation({
+    mutationFn: () => invoke('liked_tracks_set', { keySource: key.key_source, keyId: key.key_id, liked: !liked }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['likes', 'tracks'] });
+      void queryClient.invalidateQueries({ queryKey: ['home'] });
+      onClose();
+    },
+  });
+  const toggleDismiss = useMutation({
+    mutationFn: () =>
+      invoke('recommendation_dismiss', {
+        keySource: key.key_source,
+        keyId: key.key_id,
+        dismissed: !suggestLess,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['recommendations', 'dismissed'] });
+      void queryClient.invalidateQueries({ queryKey: ['home'] });
+      onClose();
+    },
+  });
+
+  const [radioBusy, setRadioBusy] = useState(false);
+  const [radioError, setRadioError] = useState<string | null>(null);
+  const startRadio = async () => {
+    setRadioBusy(true);
+    setRadioError(null);
+    try {
+      const rows = await invoke<DiscoveryTrack[]>('discovery_radio', { videoId: track.videoId });
+      const queued = new Set(queue.map((entry) => entry.track.videoId));
+      const radio = rows
+        .filter((row) => row.key.id !== track.videoId && !queued.has(row.key.id) && row.playable)
+        .map(discoveryToTrack);
+      if (!radio.length) {
+        setRadioError('No related tracks were available.');
+        return;
+      }
+      await addToQueue(radio, { title: `Radio · ${track.title}`, type: 'radio' });
+      onClose();
+    } catch (error) {
+      setRadioError(`Station unavailable: ${String(error).replace(/^Error:\s*/, '')}`);
+    } finally {
+      setRadioBusy(false);
+    }
+  };
+
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const startDownload = async () => {
+    setDownloadBusy(true);
+    setDownloadError(null);
+    try {
+      const outcome = await invoke<{ added: number; duplicates: number; rejected: string[] }>('downloads_add', {
+        tracks: [
+          {
+            kind: 'track',
+            source: sourceKind,
+            trackId: track.videoId,
+            title: track.title,
+            artist: track.artists[0]?.name ?? '',
+            album: track.album?.name ?? null,
+            durationSec: track.durationSec ?? 0,
+            artworkUrl: track.artworkUrl ?? null,
+            quality: 'high',
+          },
+        ],
+      });
+      if (outcome.rejected.length) {
+        setDownloadError(outcome.rejected.join('; '));
+      } else {
+        onClose();
+      }
+    } catch (error) {
+      setDownloadError(String(error).replace(/^Error:\s*/, ''));
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
+
   return (
     <>
-      <MenuHeader>{track.title}</MenuHeader>
-      {!isLocal && (
-        <>
-          <MenuItem icon={<Radio size={15} />} disabled={radioBusy} onSelect={onRadio}>
-            {radioBusy ? 'Loading radio…' : 'Start radio'}
-          </MenuItem>
-          {radioError && <p className="px-2 pb-1 type-caption text-secondary">{radioError}</p>}
-          <MenuSeparator />
-        </>
+      {canAddToPlaylist && (
+        <MenuSubmenu label="Add to Playlist" menuLabel="Add to Playlist">
+          <PlaylistChoices track={track} sourceKind={sourceKind} onDone={onClose} />
+        </MenuSubmenu>
       )}
-      <MenuItem icon={<ListStart size={15} />} onSelect={() => (onClose(), playNext([track]))}>
-        Play Next
+      {canStation && (
+        <MenuItem icon={<Radio size={15} />} disabled={radioBusy} onSelect={() => void startRadio()}>
+          {radioBusy ? 'Creating Station…' : 'Create Station'}
+        </MenuItem>
+      )}
+      {radioError && <p className="px-2 pb-1 type-caption text-secondary">{radioError}</p>}
+      {(canAddToPlaylist || canStation) && <MenuSeparator />}
+      <MenuItem onSelect={onInfo}>Get Info</MenuItem>
+      <MenuItem disabled={toggleLike.isPending} onSelect={() => toggleLike.mutate()}>
+        {liked ? 'Unlike' : 'Like'}
       </MenuItem>
-      <MenuItem icon={<ListPlus size={15} />} onSelect={() => (onClose(), addToQueue([track]))}>
-        Add to Queue
+      <MenuItem disabled={toggleDismiss.isPending} onSelect={() => toggleDismiss.mutate()}>
+        {suggestLess ? 'Undo Suggest Less' : 'Not Interested in Home'}
       </MenuItem>
-      {isLocal && (
-        <>
-          <MenuSeparator />
-          <MenuItem icon={<ChevronRight size={14} />} onSelect={onPlaylists}>
-            Add to Playlist
-          </MenuItem>
-        </>
+      <MenuSeparator />
+      <MenuItem onSelect={() => (onClose(), playNext([track]))}>Play Next</MenuItem>
+      <MenuItem onSelect={() => (onClose(), addToQueue([track]))}>Add to Queue</MenuItem>
+      {downloadable && (
+        <MenuItem disabled={downloadBusy} onSelect={() => void startDownload()}>
+          {downloadBusy ? 'Adding Download…' : 'Download'}
+        </MenuItem>
+      )}
+      {downloadError && <p className="px-2 pb-1 type-caption text-secondary">{downloadError}</p>}
+    </>
+  );
+}
+
+/** The playlist submenu: existing playlists, or a new one made on the spot. */
+function PlaylistChoices({
+  track,
+  sourceKind,
+  onDone,
+}: {
+  track: Track;
+  sourceKind: string;
+  onDone: () => void;
+}) {
+  const client = useQueryClient();
+  const playlists = useQuery({
+    queryKey: ['local', 'playlists'],
+    queryFn: () => invoke<PlaylistRow[]>('playlists_get'),
+  });
+  const add = useMutation({
+    mutationFn: (playlistId: number) => addToPlaylist(track, sourceKind, playlistId),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['local'] });
+      onDone();
+    },
+  });
+  const createAndAdd = useMutation({
+    mutationFn: async (name: string) => {
+      const id = await invoke<number>('playlist_create', { name });
+      await addToPlaylist(track, sourceKind, id);
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['local'] });
+      onDone();
+    },
+  });
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState('');
+  const error = add.error ?? createAndAdd.error;
+
+  return (
+    <>
+      {playlists.isPending && (
+        <MenuItem disabled onSelect={() => undefined}>
+          Loading…
+        </MenuItem>
+      )}
+      {playlists.data?.length === 0 && (
+        <MenuItem disabled onSelect={() => undefined}>
+          No playlists yet
+        </MenuItem>
+      )}
+      {playlists.data?.map((p) => (
+        <MenuItem key={p.id} disabled={add.isPending} onSelect={() => add.mutate(p.id)}>
+          {p.name}
+        </MenuItem>
+      ))}
+      {error && <p className="px-2 pb-1 type-caption text-secondary">{String(error).replace(/^Error:\s*/, '')}</p>}
+      <MenuSeparator />
+      {creating ? (
+        <form
+          className="flex items-center gap-1 px-1 py-0.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (name.trim()) createAndAdd.mutate(name.trim());
+          }}
+        >
+          <input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.currentTarget.value)}
+            placeholder="Playlist name"
+            aria-label="Playlist name"
+            className="min-w-0 flex-1 rounded-[5px] border-0 bg-quinary px-2 py-1 type-body text-primary outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!name.trim() || createAndAdd.isPending}
+            className="rounded-[5px] bg-key px-2 py-1 type-caption text-white disabled:opacity-50"
+          >
+            Add
+          </button>
+        </form>
+      ) : (
+        <MenuItem icon={<Plus size={15} />} disabled={createAndAdd.isPending} onSelect={() => setCreating(true)}>
+          New Playlist…
+        </MenuItem>
       )}
     </>
   );
+}
+
+/** Local rows use the numeric library id; catalogue rows use their stored key. */
+async function addToPlaylist(track: Track, sourceKind: string, playlistId: number) {
+  if (sourceKind === 'local') {
+    const id = Number(track.videoId.slice('local:'.length));
+    if (!Number.isFinite(id)) throw new Error(`Unsupported local track id: ${track.videoId}`);
+    await invoke('playlist_add_tracks', { id: playlistId, ids: [id] });
+    return;
+  }
+  await invoke('playlist_add_remote_tracks', {
+    id: playlistId,
+    tracks: [
+      {
+        key_source: sourceKind,
+        key_id: track.videoId,
+        title: track.title,
+        artist: track.artists.map((artist) => artist.name).join(', ') || 'Unknown Artist',
+        album: track.album?.name ?? null,
+        duration_sec: track.durationSec ?? 0,
+        artwork_url: track.artworkUrl?.startsWith('https://') ? track.artworkUrl : null,
+      },
+    ],
+  });
 }
 
 interface DiscoveryTrack {
@@ -183,65 +380,4 @@ function discoveryToTrack(row: DiscoveryTrack): Track {
     sourceKind: row.key.source,
     artworkUrl: row.thumbnail_url,
   };
-}
-
-/** The playlist picker: an existing playlist, or a new one made on the spot. */
-function PlaylistChoices({ trackId, onDone, onBack }: { trackId: string; onDone: () => void; onBack: () => void }) {
-  const client = useQueryClient();
-  const playlists = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<[number, string][]>('playlists_get') });
-  const trackNum = Number(trackId.replace('local:', ''));
-  const add = useMutation({
-    mutationFn: ({ playlistId }: { playlistId: number }) =>
-      invoke('playlist_add_tracks', { id: playlistId, ids: [trackNum] }),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['local'] });
-      onDone();
-    },
-  });
-  const createAndAdd = useMutation({
-    mutationFn: async (name: string) => {
-      const id = await invoke<number>('playlist_create', { name });
-      await invoke('playlist_add_tracks', { id, ids: [trackNum] });
-      return id;
-    },
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['local'] });
-      onDone();
-    },
-  });
-
-  return (
-    <>
-      <MenuItem icon={<ChevronLeft size={14} />} onSelect={onBack}>
-        Back
-      </MenuItem>
-      <MenuSeparator />
-      <MenuHeader>Add to Playlist</MenuHeader>
-      {playlists.isPending && (
-        <MenuItem disabled onSelect={() => {}}>
-          Loading…
-        </MenuItem>
-      )}
-      {playlists.data?.length === 0 && (
-        <MenuItem disabled onSelect={() => {}}>
-          No playlists yet
-        </MenuItem>
-      )}
-      {playlists.data?.map(([id, name]) => (
-        <MenuItem key={id} onSelect={() => add.mutate({ playlistId: id })}>
-          {name}
-        </MenuItem>
-      ))}
-      <MenuSeparator />
-      <MenuItem
-        icon={<Plus size={15} />}
-        onSelect={() => {
-          const name = window.prompt('Playlist name', 'New Playlist');
-          if (name && name.trim()) createAndAdd.mutate(name.trim());
-        }}
-      >
-        New Playlist…
-      </MenuItem>
-    </>
-  );
 }

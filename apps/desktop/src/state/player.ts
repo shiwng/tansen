@@ -3,7 +3,7 @@
  * contract (same flat fields and actions the shell components read) but
  * backed by the Tauri/Rust task engine instead of YouTube decks.
  *
- * M10: the UI rides the `playback_state` event (full PlaybackState per
+ * The UI rides the `playback_state` event (full PlaybackState per
  * engine publish) and forwards every action as a `Command` over
  * `engine_command`. Position is interpolated locally:
  * `pos = anchor.pos_ms + (now − receivedAt) × rate` — the engine publishes
@@ -20,7 +20,7 @@ import { mergeTrackRows, type QueueRow } from '@/lib/queueRows';
 import type { Track } from '@/data/music/types';
 import type { QueueEntry, QueueSource } from '@/playback/queue/timeline';
 
-/** A mirror queue entry: the timeline shape plus the engine EntryId (S6). */
+/** A mirror queue entry: the timeline shape plus the engine EntryId. */
 export interface PlayerQueueEntry extends QueueEntry {
   /** Local: library track id; remote: `remote_tracks` row id. */
   engineId: number;
@@ -34,9 +34,11 @@ export interface NowPlaying {
   artist: string;
   artworkUrl: string | null;
   durationSec: number;
+  /** `radio` marks a live broadcast: no duration, no seeking, LIVE badge. */
+  sourceKind?: string;
 }
 
-/** Persisted user preferences. `autoplay`/`crossfadeSec`/`automix` have no engine yet. */
+/** Persisted user preferences. Crossfade mirrors the Rust audio settings; autoplay mirrors its own Rust key. */
 interface Settings {
   shuffle: boolean;
   repeat: 'off' | 'all' | 'one';
@@ -161,7 +163,9 @@ interface PlayerState {
   streamInfo: StreamInfoView | null;
   /** Bumped whenever the position source is replaced (engine restart) — scrubber re-subscribes. */
   deck: number;
-  /** The automix blend indicator; always false until phase 6 lands. */
+  /** Bumped on every seek, so a paused seek (no frame loop, no engine publish needed) is observable. */
+  seekSeq: number;
+  /** The automix blend indicator; the engine owns the actual fade. */
   mixing: boolean;
   // Persisted settings, flat as upstream keeps them.
   shuffle: boolean;
@@ -212,13 +216,13 @@ function toEntry(track: Track, i: number, source: QueueSource | null, engineId: 
   return { entryId: `${track.videoId}#${i}`, track, tier: 'context', source, engineId };
 }
 
-/** A prepared entry: the track plus its resolved engine EntryId (S6). */
+/** A prepared entry: the track plus its resolved engine EntryId. */
 interface PreparedEntry {
   track: Track;
   engineId: number;
 }
 
-/** One autoplay row announced by the backend (S11). */
+/** One autoplay row announced by the backend. */
 interface AutoplayRow {
   engineId: number;
   videoId: string;
@@ -230,7 +234,7 @@ interface AutoplayRow {
 }
 
 /**
- * S6: resolves the engine EntryId for each track — the library id for local
+ * Resolves the engine EntryId for each track — the library id for local
  * tracks, or the `remote_tracks` row id returned by the upsert for remote
  * ones (metadata written through the single DB writer BEFORE any command).
  */
@@ -270,6 +274,7 @@ function remotePairsOf(prepared: PreparedEntry[]): Array<[number, [string, strin
 /** A Track for a queue row: local library files and catalogue rows alike. */
 export function trackFromRef(t: {
   id: number; title: string; artist: string; album: string; duration_sec: number; art_path: string | null; video_id?: string | null;
+  key_source?: string | null; artwork_url?: string | null;
 }): Track {
   return {
     videoId: t.video_id ?? `local:${t.id}`,
@@ -278,9 +283,13 @@ export function trackFromRef(t: {
     album: t.album ? { id: null, name: t.album } : null,
     durationSec: t.duration_sec > 0 ? t.duration_sec : null,
     explicit: false,
-    thumbnail: t.art_path ? convertFileSrc(t.art_path, 'art') : null,
+    thumbnail: t.art_path ? convertFileSrc(t.art_path, 'art') : (t.artwork_url ?? null),
     index: null,
     plays: null,
+    // Imported Spotify rows with no YouTube Music match: shown, never played.
+    unavailable: t.key_source === 'spotify' ? 'missing' : undefined,
+    sourceKind: t.key_source ?? undefined,
+    artworkUrl: t.artwork_url ?? null,
   };
 }
 
@@ -296,14 +305,20 @@ type CommandDto =
   | {
       Enqueue: {
         tracks: number[];
-        /** S6: remote row ids paired with their TrackKeys. */
+        /** Remote row ids paired with their TrackKeys. */
         remote?: Array<[number, [string, string]]>;
         placement: 'Next' | 'Append';
       };
     }
   | { Remove: { entry: number } }
   | { Move: { entry: number; to: number } }
-  | 'ClearQueue';
+  | 'ClearQueue'
+  | { SetRepeat: 'Off' | 'All' | 'One' };
+
+/** Maps the store's lowercase mode to the engine's RepeatMode enum. */
+function repeatMode(mode: 'off' | 'all' | 'one'): 'Off' | 'All' | 'One' {
+  return mode === 'all' ? 'All' : mode === 'one' ? 'One' : 'Off';
+}
 
 /** Sends one command; resolves false when the engine refused it (error shown). */
 async function send(cmd: CommandDto): Promise<boolean> {
@@ -331,13 +346,8 @@ export function getPlayhead(): { sec: number; paused: boolean } | null {
   return { sec: (playhead.posMs + drift) / 1000, paused: playhead.rate === 0 };
 }
 
-/** No automix on desktop yet — the seek bar's beat pulse stays off. */
+/** No beat analysis on desktop: the seek bar's beat pulse stays off. */
 export function getMixBeat(): { phase: number | null } | null {
-  return null;
-}
-
-/** No HTMLAudioElement on this backend; consumers must use getPlayhead(). */
-export function getAudio(): HTMLAudioElement | null {
   return null;
 }
 
@@ -349,6 +359,7 @@ function nowPlayingFrom(track: Track | undefined): NowPlaying | null {
     artist: track.artists[0]?.name ?? 'Unknown Artist',
     artworkUrl: track.thumbnail,
     durationSec: track.durationSec ?? 0,
+    sourceKind: track.sourceKind,
   };
 }
 
@@ -360,6 +371,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   status: 'idle',
   error: null,
   deck: 0,
+  seekSeq: 0,
   mixing: false,
   ...loadSettings(),
 
@@ -373,9 +385,21 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       return;
     }
     if (prepared.some((p) => p.engineId <= 0)) return;
+    // Shuffle reorders the selection around the track the user pressed: that
+    // track starts, everything else follows in random order.
+    const chosen = Math.min(Math.max(startIndex, 0), prepared.length - 1);
+    if (get().shuffle && prepared.length > 1) {
+      const head = prepared[chosen]!;
+      const tail = prepared.filter((_, i) => i !== chosen);
+      for (let i = tail.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [tail[i], tail[j]] = [tail[j]!, tail[i]!];
+      }
+      prepared = [head, ...tail];
+    }
     const ids = prepared.map((p) => p.engineId);
     const remote = remotePairsOf(prepared);
-    const start = Math.min(Math.max(startIndex, 0), ids.length - 1);
+    const start = get().shuffle ? 0 : Math.min(Math.max(startIndex, 0), ids.length - 1);
     const startKey = remote.find(([id]) => id === ids[start])?.[1] ?? null;
     // Sequential: the engine applies commands in send order, so the entry
     // must be enqueued before Play names it.
@@ -498,17 +522,28 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     playhead.posMs = Math.round(sec * 1000);
     playhead.receivedAt = performance.now();
     playhead.rate = get().status === 'playing' ? 1 : 0;
+    // Publish the seek: while paused nothing else will (the engine may only
+    // ack later), and position readers ride store publishes.
+    set({ seekSeq: get().seekSeq + 1 });
     send({ Seek: { ms: Math.round(sec * 1000) } });
   },
 
   toggleShuffle: () => updateSettings(set, get, { shuffle: !get().shuffle }),
-  // Repeat stays a stored preference: the task engine's Command set has no
-  // repeat mode yet (the old queue algebra retired with the old path).
+  // Repeat is engine-owned: store the preference for the UI and tell the
+  // engine, so auto-advance is correct even while Settings is closed.
   cycleRepeat: () => {
     const order = ['off', 'all', 'one'] as const;
-    updateSettings(set, get, { repeat: order[(order.indexOf(get().repeat) + 1) % order.length] });
+    const repeat = order[(order.indexOf(get().repeat) + 1) % order.length]!;
+    updateSettings(set, get, { repeat });
+    void send({ SetRepeat: repeatMode(repeat) });
   },
-  setAutoplay: (autoplay) => updateSettings(set, get, { autoplay }),
+  // The one autoplay setting: mirrors the Rust key (autoplay_set updates the
+  // stored value AND the task's flag), hydrated in initPlayerStore — the
+  // store is its only renderer-side owner.
+  setAutoplay: (autoplay) => {
+    updateSettings(set, get, { autoplay });
+    void invoke('autoplay_set', { on: autoplay }).catch(() => updateSettings(set, get, { autoplay: !autoplay }));
+  },
   setVolume: (n) => {
     const volume = Math.min(1, Math.max(0, n));
     updateSettings(set, get, { volume, muted: false });
@@ -519,7 +554,13 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     updateSettings(set, get, { muted });
     send({ SetVolume: muted ? 0 : get().volume });
   },
-  setCrossfade: (crossfadeSec) => updateSettings(set, get, { crossfadeSec }),
+  // Crossfade/auto-mix duration is owned by the Rust audio settings (the same
+  // value the pipeline and Settings read). Mirror it locally for components
+  // that ask the player store, and persist through the audio command.
+  setCrossfade: (crossfadeSec) => {
+    updateSettings(set, get, { crossfadeSec });
+    void invoke('audio_settings_set', { patch: { crossfadeMs: Math.round(crossfadeSec * 1000) } }).catch(() => {});
+  },
   setAutomix: (automix) => updateSettings(set, get, { automix }),
   setAutomixBars: (automixBars) => updateSettings(set, get, { automixBars }),
   setShowNerdStats: (showNerdStats) => updateSettings(set, get, { showNerdStats }),
@@ -551,13 +592,41 @@ function statusOf(raw: EngineStatus): { status: Status; message?: string } {
   return { status: 'error', message: `Playback failed (${kind})` };
 }
 
+const RADIO_RETRIES = 3;
+let radioAttempts = 0;
+let radioTimer: ReturnType<typeof setTimeout> | null = null;
+
 let started = false;
 /** Wire engine events to the store. Called once from main.tsx. */
 export async function initPlayerStore(): Promise<void> {
   if (started) return;
   started = true;
 
-  // M11 + S6: on a new `queue_rev`, refresh the mirror's metadata from the
+  // Hydrate the autoplay setting from its owner (the Rust key) so the
+  // store's mirror is right before Settings or hasNext read it.
+  void invoke<boolean>('autoplay_get')
+    .then((on) => {
+      if (usePlayer.getState().autoplay !== on) updateSettings(usePlayer.setState, usePlayer.getState, { autoplay: on });
+    })
+    .catch(() => {});
+
+  // Repeat is engine-owned; restore the stored cycle before any queue work.
+  void send({ SetRepeat: repeatMode(usePlayer.getState().repeat) });
+
+  // Crossfade/auto-mix duration lives in SQLite (audio settings). Mirror it
+  // into the player store so legacy components see the same value.
+  void invoke<{ crossfadeMs?: number }>('audio_settings_get')
+    .then((settings) => {
+      if (typeof settings?.crossfadeMs === 'number') {
+        const crossfadeSec = settings.crossfadeMs / 1000;
+        if (usePlayer.getState().crossfadeSec !== crossfadeSec) {
+          updateSettings(usePlayer.setState, usePlayer.getState, { crossfadeSec });
+        }
+      }
+    })
+    .catch(() => {});
+
+  // On a new `queue_rev`, refresh the mirror's metadata from the
   // DB for BOTH entry kinds — local library ids and remote row ids (order
   // and unknown ids stay as the mirror holds them).
   let lastQueueRev = -1;
@@ -635,7 +704,7 @@ export async function initPlayerStore(): Promise<void> {
       void refreshQueueRows();
     }
 
-    // F5: stream-info fetch on entry change — event-driven, no polling. The
+    // Stream-info fetch on entry change — event-driven, no polling. The
     // first publish for an entry is Resolving (nothing resolved yet); when
     // the answer is Playing and no info is known, one re-fetch covers the
     // resolve that just landed (and mid-play re-resolve upgrades).
@@ -673,11 +742,28 @@ export async function initPlayerStore(): Promise<void> {
       if (mapped.status === 'idle' && s.status === 'playing') {
         endedListeners.forEach((l) => l());
       }
+      if (mapped.status === 'playing') radioAttempts = 0;
+      if (mapped.status === 'error' && current?.sourceKind === 'radio') {
+        // A broadcast dropped mid-stream: retry the same station a bounded
+        // number of times, honestly labelled, instead of silently skipping.
+        if (radioAttempts < RADIO_RETRIES && !radioTimer) {
+          radioAttempts += 1;
+          const attempt = radioAttempts;
+          patch.error = `Stream lost — reconnecting (${attempt}/${RADIO_RETRIES})…`;
+          radioTimer = setTimeout(() => {
+            radioTimer = null;
+            const live = usePlayer.getState().queue[usePlayer.getState().index];
+            if (live?.track.sourceKind === 'radio') {
+              void usePlayer.getState().playTrack(live.track, null);
+            }
+          }, 1500 * attempt);
+        }
+      }
       return patch;
     });
   });
 
-  // S11: autoplay rows appended engine-side. The queue_rev refresh above
+  // Autoplay rows appended engine-side. The queue_rev refresh above
   // only resolves ids the mirror already knows, so the backend announces
   // each appended row; adopt them into the mirror here (remote artwork
   // routed through the allowlisted fetch, as everywhere else).
@@ -715,7 +801,7 @@ export async function initPlayerStore(): Promise<void> {
   // the saved position (Play+Pause+Seek — the Command set has no
   // load-paused; the blip is milliseconds). Remote rows are re-upserted to
   // recover their row ids and re-seeded with fresh TrackKeys only — no
-  // stored stream URLs ever restore; the engine resolves fresh (S6).
+  // stored stream URLs ever restore; the engine resolves fresh.
   try {
     const saved = parsePersisted(localStorage.getItem(PERSIST_KEY));
     if (saved && saved.tracks.length) {

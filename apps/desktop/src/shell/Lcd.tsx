@@ -116,6 +116,9 @@ export function Lcd() {
 
   const { videoId, title, artist } = nowPlaying;
   const album = track?.album ?? null;
+  // A live station has no timeline: no album link, no scrubber, and a LIVE
+  // badge where the elapsed line would otherwise promise a position.
+  const isRadio = (track?.sourceKind ?? nowPlaying.sourceKind) === 'radio';
   return (
     <div
       className="group/lcd relative grid h-full grid-cols-[34px_minmax(0,1fr)] items-center gap-x-2 pb-1.5"
@@ -151,13 +154,22 @@ export function Lcd() {
         {title ? (
           // The song's name opens its album; an explicit song carries the E after it.
           <div className="flex min-w-0 items-center">
-            <PageLink
-              className={`${titleClass} ${pageLink}`}
-              href={albumHref(album?.id ?? null)}
-              resolve={() => albumPageFor(videoId, album, [title, artist].filter(Boolean).join(' '))}
-            >
-              {title}
-            </PageLink>
+            {isRadio ? (
+              <span className={titleClass} title={title}>{title}</span>
+            ) : (
+              <PageLink
+                className={`${titleClass} ${pageLink}`}
+                href={albumHref(album?.id ?? null)}
+                resolve={() => albumPageFor(videoId, album, [title, artist].filter(Boolean).join(' '))}
+              >
+                {title}
+              </PageLink>
+            )}
+            {isRadio && (
+              <span className="ml-1.5 flex-none rounded-[3px] bg-key px-1 py-px type-[600_9px/11px] tracking-[0.04em] text-white" aria-label="Live broadcast">
+                LIVE
+              </span>
+            )}
             {track?.explicit && <ExplicitBadge size={11} />}
           </div>
         ) : (
@@ -168,16 +180,18 @@ export function Lcd() {
         ) : (
           <span className="truncate type-callout-medium text-secondary">
             {status === 'buffering'
-              ? 'Buffering…'
+              ? 'Buffering live audio…'
               : status === 'loading'
-                ? 'Resolving…'
+                ? 'Tuning in…'
                 : artist
-                  ? <Credits videoId={videoId} line={artist} artists={track?.artists ?? []} />
+                  ? isRadio
+                    ? <span className="truncate">{artist}</span>
+                    : <Credits videoId={videoId} line={artist} artists={track?.artists ?? []} />
                   : ''}
           </span>
         )}
       </div>
-      <Progress />
+      {!isRadio && <Progress />}
     </div>
   );
 }

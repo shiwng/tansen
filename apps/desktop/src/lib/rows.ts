@@ -68,6 +68,10 @@ export const q = {
     queryKey: ['local', 'artist', name],
     queryFn: () => invoke<TrackRow[]>('artist_tracks_get', { name }),
   }),
+  recentlyAdded: (limit: number) => ({
+    queryKey: ['local', 'recentlyAdded', limit],
+    queryFn: () => invoke<TrackRow[]>('recently_added_get', { limit }),
+  }),
   history: (limit: number) => ({
     queryKey: ['local', 'history', limit],
     queryFn: () => invoke<{ track: TrackRef; played_at: number }[]>('history_get', { limit }),

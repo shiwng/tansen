@@ -1,5 +1,5 @@
 /**
- * M11 + S6: the queue body lives in the engine; the store keeps an ordered
+ * The queue body lives in the engine; the store keeps an ordered
  * mirror. When the engine publishes a new `queue_rev`, the mirror's
  * metadata is refreshed from the database via `queue_tracks_get`, which
  * returns display rows for BOTH kinds — local library tracks and remote
@@ -33,7 +33,7 @@ export interface TrackLike {
   album: { id: string | number | null; name: string } | null;
   durationSec: number | null;
   thumbnail: string | null;
-  /** Remote rows: the original catalogue artwork URL (S6). */
+  /** Remote rows: the original catalogue artwork URL. */
   artworkUrl?: string | null;
 }
 
@@ -65,7 +65,9 @@ export function mergeTrackRows<T extends TrackLike>(
       artists: [{ name: row.artist || 'Unknown Artist', id: null }],
       album: row.album ? { id: null, name: row.album } : null,
       durationSec: row.duration_sec > 0 ? row.duration_sec : null,
-      thumbnail: thumbnailFor(row),
+      // Art the DB cannot resolve (a radio favicon outside the artwork
+      // allowlist) keeps whatever the mirror already shows.
+      thumbnail: thumbnailFor(row) ?? track.thumbnail,
       artworkUrl: row.artwork_url ?? track.artworkUrl ?? null,
     };
   });

@@ -35,6 +35,7 @@ import java.net.URLDecoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.security.MessageDigest
 import java.time.Duration
 import kotlin.system.exitProcess
 
@@ -57,8 +58,14 @@ fun main(args: Array<String>) {
     // launcher always sets one.
     val requiredToken = System.getenv("TANSEN_SIDECAR_TOKEN")
 
-    fun authorized(ex: HttpExchange): Boolean =
-        requiredToken == null || ex.requestHeaders.getFirst("X-Sidecar-Token") == requiredToken
+    fun authorized(ex: HttpExchange): Boolean {
+        val expected = requiredToken ?: return true
+        val provided = ex.requestHeaders.getFirst("X-Sidecar-Token") ?: return false
+        return MessageDigest.isEqual(
+            expected.toByteArray(Charsets.UTF_8),
+            provided.toByteArray(Charsets.UTF_8),
+        )
+    }
 
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 32)
     server.executor = java.util.concurrent.Executors.newFixedThreadPool(8)
@@ -88,7 +95,7 @@ fun main(args: Array<String>) {
     Thread.currentThread().join()
 }
 
-// ---- Handlers ---------------------------------------------------------------
+// Handlers
 
 private fun healthJson(): JsonObject = buildJsonObject {
     put("ok", JsonPrimitive(true))
@@ -142,7 +149,7 @@ private suspend fun trackJson(ex: HttpExchange): JsonObject {
  * recorded as a gap in the desktop feature matrix.
  */
 private suspend fun streamJson(videoId: String, prefer: String?, preferCodec: String?): JsonObject {
-    // S4: optional codec-preference hint (backward compatible — absent =
+    // Optional codec-preference hint (backward compatible — absent =
     // previous behavior). Only "aac"/"m4a" is honored; anything else falls
     // back to the existing prefer/prefer=aac logic.
     val effectivePrefer = if (preferCodec == "aac" || preferCodec == "m4a") "aac" else prefer
@@ -189,7 +196,7 @@ private suspend fun browseContinuationEndpoint(ex: HttpExchange): JsonObject {
 }
 
 /**
- * S10: typeahead rows for discovery. Deliberately unauthenticated upstream
+ * Typeahead rows for discovery. Deliberately unauthenticated upstream
  * ([YtMusicRepository.searchTypeahead] strips the session cookie), so typed
  * keystrokes never land in the account's server-side search history. No
  * account sign-in, cookies or tokens cross this endpoint.
@@ -220,7 +227,7 @@ private suspend fun lyricsJson(ex: HttpExchange): JsonObject {
 }
 
 /**
- * S11: related tracks for autoplay — `:shared`'s radio (the watch queue
+ * Related tracks for autoplay — `:shared`'s radio (the watch queue
  * behind the playing track) as plain rows. Read-only; no account state.
  */
 private suspend fun radioEndpoint(ex: HttpExchange): JsonObject {
@@ -249,7 +256,7 @@ private suspend fun exploreEndpoint(ex: HttpExchange): JsonObject {
     return homeShelvesJson(shelves)
 }
 
-// ---- Stream helper: mime sniff + itag extraction (adapter-level seam) -------
+// Stream helper: mime sniff + itag extraction (adapter-level seam)
 
 private const val STREAM_TTL_MS = 6 * 60 * 60_000L
 
@@ -289,7 +296,7 @@ fun sniffedFormat(url: String): Pair<String, String>? {
     }
 }
 
-// ---- HTTP plumbing ----------------------------------------------------------
+// HTTP plumbing
 
 private fun HttpExchange.queryParam(name: String): String? =
     requestURI.rawQuery?.split('&')

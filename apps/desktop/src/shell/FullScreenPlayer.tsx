@@ -18,6 +18,7 @@ import { ExplicitBadge } from '@/components/music/ExplicitBadge';
 import { TrackMenu } from '@/components/music/TrackMenu';
 import { albumHref } from '@/components/music/links';
 import { sizedArtwork } from '@/lib/artwork';
+import { useAppearance } from '@/state/appearance';
 import { usePlayer } from '@/state/player';
 import { useUi } from '@/state/ui';
 import { Credits, PageLink, pageLink } from './Lcd';
@@ -69,7 +70,7 @@ function Scrubber() {
 const transportButton =
   'grid place-items-center rounded-full transition-[background-color,scale] duration-100 ease-in enabled:hover:bg-quinary enabled:active:scale-90 disabled:opacity-40';
 /**
- * F5: the sanctioned stream-info read-only query's UI — one text line under
+ * The sanctioned stream-info read-only query's UI — one text line under
  * Up Next, shown only with the existing nerd-stats setting. Event-driven:
  * the store fetches on entry change; this never polls.
  */
@@ -155,10 +156,16 @@ export function FullScreenPlayer() {
   });
   const artwork = useArtworkUrl(nowPlaying?.artworkUrl ?? null);
   const { pathname } = useLocation();
-  const openedAt = useRef(pathname);
+  const pathRef = useRef(pathname);
   const playing = usePlayer((s) => s.status === 'playing' || s.status === 'buffering');
+  const meshBackdrop = useAppearance((s) => s.meshBackdrop);
+  const reduceBlur = useAppearance((s) => s.reduceBlur);
+  const fullScreenArt = useAppearance((s) => s.fullScreenArt);
   const fullScreen = useUi((s) => s.fullScreen);
   const setFullScreen = useUi((s) => s.setFullScreen);
+  // Keep the overlay mounted for the exit animation, then restore focus.
+  const [visible, setVisible] = useState(fullScreen);
+  const [exiting, setExiting] = useState(false);
   // Music-video playback is a catalogue feature, not implemented on desktop.
   const video = false;
   // The right-hand column: the lyrics, Up Next, or nothing. Lyrics toggle bottom left, Up Next bottom right.
@@ -195,19 +202,50 @@ export function FullScreenPlayer() {
     };
   }, []);
 
+  // Hold the overlay for the exit animation, then unmount it and restore focus.
   useEffect(() => {
+    if (fullScreen) {
+      setVisible(true);
+      setExiting(false);
+      return;
+    }
+    if (!visible) return;
+    setExiting(true);
+    const timer = setTimeout(() => {
+      setVisible(false);
+      setExiting(false);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [fullScreen, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
     const opener = document.activeElement as HTMLElement | null;
     close.current?.focus({ preventScroll: true });
     return () => {
       if (enteredBrowserFullScreen.current && document.fullscreenElement) void document.exitFullscreen();
       opener?.focus({ preventScroll: true });
     };
-  }, []);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!fullScreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      setFullScreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullScreen, setFullScreen]);
 
   // A title, artist or album link went somewhere: get out of the way so the page shows.
   useEffect(() => {
-    if (pathname !== openedAt.current) setFullScreen(false);
-  }, [pathname, setFullScreen]);
+    if (!fullScreen) {
+      pathRef.current = pathname;
+      return;
+    }
+    if (pathname !== pathRef.current) setFullScreen(false);
+  }, [pathname, fullScreen, setFullScreen]);
 
   // Nothing left to show once the queue ends.
   useEffect(() => {
@@ -226,11 +264,11 @@ export function FullScreenPlayer() {
     }
   };
 
-  // F5/F8: render only when the UI flag opens the overlay. Restoring a
+  // Render only when the UI flag opens the overlay. Restoring a
   // persisted queue sets nowPlaying at boot — without this gate the
   // full-screen player would mount at launch over the whole window, and
   // its close button (which only clears the flag) could never dismiss it.
-  if (!nowPlaying || !fullScreen) return null;
+  if (!nowPlaying || !visible) return null;
   const { videoId, title, artist } = nowPlaying;
   const album = track?.album ?? null;
   // With a right-hand column; on narrow windows that column fills the screen and the controls sit under it, without the artwork.
@@ -245,18 +283,26 @@ export function FullScreenPlayer() {
     <div
       // Over everything but menus and dialogs, which portal above it. The on-dark colours come from tokens.css (data-full-screen).
       // --art, the artwork's side: Apple's 461px at 1440px wide, and never taller than the screen leaves room for.
-      className="fixed inset-0 z-[calc(var(--z-contextual-menus)-2)] isolate animate-enter overflow-hidden text-primary [--art:min(32vw,calc(100dvh-330px),720px)] motion-reduce:[animation-name:fade-in] max-md:[--art:min(84vw,calc(100dvh-330px),420px)]"
+      className={`fixed inset-0 z-[calc(var(--z-contextual-menus)-2)] isolate overflow-hidden text-primary [--art:min(32vw,calc(100dvh-330px),720px)] max-md:[--art:min(84vw,calc(100dvh-330px),420px)] ${
+        exiting
+          ? 'pointer-events-none animate-exit motion-reduce:[animation-name:fade-out]'
+          : 'animate-enter motion-reduce:[animation-name:fade-in]'
+      }`}
       role="dialog"
       aria-modal="true"
       aria-label="Now Playing"
+      aria-keyshortcuts="Escape"
       data-full-screen
+      data-exiting={exiting || undefined}
       data-paused={!playing || undefined}
       onPointerMove={wake}
       onPointerDown={wake}
       onKeyDown={wake}
       style={theater && playing && idle ? { cursor: 'none' } : undefined}
     >
-      <MeshBackdrop artworkUrl={artwork} playing={playing} />
+      {/* The animated mesh is a setting (Appearance → Mesh gradient backdrop);
+          without it the static dark surface stays. */}
+      {meshBackdrop && <MeshBackdrop artworkUrl={artwork} playing={playing} />}
       <button ref={close} className={`${corner} top-4 left-5`} aria-label="Close" onClick={() => setFullScreen(false)}>
         <X size={20} />
       </button>
@@ -290,35 +336,38 @@ export function FullScreenPlayer() {
           aria-label="Player"
         >
           {/* Shrinks a touch while paused, as Apple's does. Beside a column, a music video plays here at 16:9. */}
-          <div
-            className={`relative w-(--art) rounded-[10px] transition-[scale] duration-450 ease-[cubic-bezier(0.34,1.3,0.64,1)] motion-reduce:transition-none${
-              video ? ' aspect-video overflow-hidden bg-black' : ' aspect-square'
-            }${playing ? '' : ' scale-92'}${column ? ' max-md:hidden' : ''}${theater ? ' hidden' : ''}`}
-          >
-            {artwork && (
-              <>
-                <img
-                  key={`glow-${artwork}`}
-                  // The radiosity glow: a small copy, blurred and saturated, behind the artwork.
-                  className={`${artworkLayer} -z-1 translate-y-2 scale-96 blur-[20px] saturate-200 data-loaded:opacity-40`}
-                  src={sizedArtwork(artwork, 60)}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  decoding="async"
-                  onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
-                />
-                <img
-                  key={artwork}
-                  className={`${artworkLayer} bg-[#ffffff12] shadow-[0_4px_10px_#0000001a] data-loaded:opacity-100`}
-                  src={sizedArtwork(artwork, 600)}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  decoding="async"
-                  onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
-                />
-              </>
-            )}
-          </div>
+          {fullScreenArt && (
+            <div
+              className={`relative w-(--art) rounded-[10px] transition-[scale] duration-450 ease-[cubic-bezier(0.34,1.3,0.64,1)] motion-reduce:transition-none${
+                video ? ' aspect-video overflow-hidden bg-black' : ' aspect-square'
+              }${playing ? '' : ' scale-92'}${column ? ' max-md:hidden' : ''}${theater ? ' hidden' : ''}`}
+            >
+              {artwork && (
+                <>
+                  <img
+                    key={`glow-${artwork}`}
+                    // The radiosity glow: a small copy, blurred and saturated, behind the artwork.
+                    // Reduce Dynamic Blur drops the blur, keeping the saturated copy.
+                    className={`${artworkLayer} -z-1 translate-y-2 scale-96 data-loaded:opacity-40${reduceBlur ? '' : ' blur-[20px] saturate-200'}`}
+                    src={sizedArtwork(artwork, 60)}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    decoding="async"
+                    onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
+                  />
+                  <img
+                    key={artwork}
+                    className={`${artworkLayer} bg-[#ffffff12] shadow-[0_4px_10px_#0000001a] data-loaded:opacity-100`}
+                    src={sizedArtwork(artwork, 600)}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    decoding="async"
+                    onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
+                  />
+                </>
+              )}
+            </div>
+          )}
 
           <div className={`flex items-center gap-3${theater ? '' : ' mt-[clamp(20px,3.2vh,32px)]'}${column ? ' max-md:mt-0' : ''}`}>
             {/* As the mini player's: the title opens the album, each credited name its artist. */}

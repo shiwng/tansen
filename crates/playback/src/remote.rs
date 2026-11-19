@@ -10,8 +10,8 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use tokio::sync::watch;
 use std::time::Duration;
+use tokio::sync::watch;
 
 const CHUNK: u64 = 512 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -22,7 +22,7 @@ pub enum RangeError {
     Http(String),
     #[error("server ignored range requests (status {0})")]
     NoRangeSupport(u16),
-    /// 403/410: the URL expired or was revoked (M16). Not retryable — the
+    /// 403/410: the URL expired or was revoked. Not retryable — the
     /// media must be re-resolved.
     #[error("url rejected by server ({0})")]
     Forbidden(u16),
@@ -41,7 +41,7 @@ pub struct HttpRangeReader {
     headers: Vec<(String, String)>,
 }
 
-/// F7: the media-fetch redirect policy shared by HttpRangeReader,
+/// The media-fetch redirect policy shared by HttpRangeReader,
 /// PrefetchReader and StreamCache. Follows a redirect only when the target
 /// is http(s), not a private/loopback/link-local host (unless the original
 /// URL's host was itself local), and never downgrades https→http — CDN
@@ -65,6 +65,17 @@ pub(crate) fn media_redirect_verdict(
     if netguard::url_host_is_local(target) && !original_local {
         return Err("redirect to a local/private host is not allowed");
     }
+    // Host names are not enough: a public name such as `localtest.me` can
+    // resolve to loopback. Resolve the hop and refuse a local answer before
+    // reqwest connects. (The downloader re-resolves and pins every hop; the
+    // media readers still share this check rather than a per-hop client.)
+    if !original_local {
+        if let Ok(addr) = netguard::resolve_validated(target) {
+            if netguard::ip_is_local(addr.ip()) {
+                return Err("redirect resolves to a local/private address");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -80,7 +91,7 @@ pub(crate) fn media_host_is_local(url: &str) -> bool {
 }
 
 impl HttpRangeReader {
-    /// F7: stream URLs carry credentials (subsonic token+salt, googlevideo
+    /// Stream URLs carry credentials (subsonic token+salt, googlevideo
     /// signed params). Logs get scheme://host/path only — never the query.
     fn redacted(url: &str) -> &str {
         url.split('?').next().unwrap_or(url)
@@ -100,7 +111,8 @@ impl HttpRangeReader {
         // pin the client to the validated address for its lifetime — the
         // connection cannot land anywhere else, whatever the resolver
         // answers later.
-        let parsed = reqwest::Url::parse(&url).map_err(|e| RangeError::Http(format!("media url: {e}")))?;
+        let parsed =
+            reqwest::Url::parse(&url).map_err(|e| RangeError::Http(format!("media url: {e}")))?;
         let mut builder = reqwest::blocking::Client::builder()
             .timeout(TIMEOUT)
             .user_agent("Tansen/0.3");
@@ -112,7 +124,12 @@ impl HttpRangeReader {
             url,
             client: builder
                 .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                    match media_redirect_verdict(attempt.previous().len(), attempt.url(), original_local, &original_scheme) {
+                    match media_redirect_verdict(
+                        attempt.previous().len(),
+                        attempt.url(),
+                        original_local,
+                        &original_scheme,
+                    ) {
                         Ok(()) => attempt.follow(),
                         Err(e) => attempt.error(e),
                     }
@@ -134,24 +151,42 @@ impl HttpRangeReader {
         // saturating: a decoder seek near u64::MAX must wrap into a
         // malformed Range request, not panic the decode thread.
         let end = start.saturating_add(CHUNK - 1);
-        let mut request = self.client.get(&self.url).header("Range", format!("bytes={start}-{end}"));
+        let mut request = self
+            .client
+            .get(&self.url)
+            .header("Range", format!("bytes={start}-{end}"));
         for (name, value) in &self.headers {
             request = request.header(name, value);
         }
         let response = match request.send() {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(url = %Self::redacted(&self.url), error = %e, "range fetch failed");
+                // reqwest's Display appends the full URL (Subsonic token+salt,
+                // googlevideo signed params); log the cause without it.
+                let error = e.without_url();
+                tracing::warn!(url = %Self::redacted(&self.url), error = %error, "range fetch failed");
                 return;
             }
         };
         #[cfg(debug_assertions)]
-        tracing::debug!(transport = "http-range", start, end, status = response.status().as_u16(), "range response");
+        tracing::debug!(
+            transport = "http-range",
+            start,
+            end,
+            status = response.status().as_u16(),
+            "range response"
+        );
         match response.status().as_u16() {
             206 => {
-                if let Some(range) = response.headers().get("Content-Range").and_then(|v| v.to_str().ok()) {
+                if let Some(range) = response
+                    .headers()
+                    .get("Content-Range")
+                    .and_then(|v| v.to_str().ok())
+                {
                     // "bytes start-end/total"
-                    if let Some(total) = range.rsplit('/').next().and_then(|t| t.parse::<u64>().ok()) {
+                    if let Some(total) =
+                        range.rsplit('/').next().and_then(|t| t.parse::<u64>().ok())
+                    {
                         self.len = Some(total);
                     }
                 }
@@ -178,12 +213,174 @@ impl HttpRangeReader {
             }
             Ok(_) => {
                 #[cfg(debug_assertions)]
-                tracing::debug!(transport = "http-range", start, requested_end = end, bytes = bytes.len(), "range body");
+                tracing::debug!(
+                    transport = "http-range",
+                    start,
+                    requested_end = end,
+                    bytes = bytes.len(),
+                    "range body"
+                );
                 self.buf_start = start;
                 self.buf = bytes;
             }
-            Err(e) => tracing::warn!(url = %Self::redacted(&self.url), error = %e, "range body read failed"),
+            Err(e) => {
+                tracing::warn!(url = %Self::redacted(&self.url), error = %e, "range body read failed")
+            }
         }
+    }
+}
+
+/// A live broadcast stream: one unbounded HTTP body, no ranges and no
+/// seeking. Read+Seek because rodio's decoder demands it, but every seek
+/// except back to the start is refused — a broadcast has no timeline to
+/// jump around in. `hint` is the decoder extension guessed from the
+/// Content-Type (or the first bytes), `None` meaning "let the decoder
+/// sniff".
+pub struct LiveReader {
+    response: reqwest::blocking::Response,
+    head: Vec<u8>,
+    head_pos: usize,
+    pos: u64,
+}
+
+impl LiveReader {
+    fn redacted(url: &str) -> &str {
+        url.split('?').next().unwrap_or(url)
+    }
+
+    pub fn open(url: &str) -> Result<(Self, Option<&'static str>), String> {
+        let original_local = media_host_is_local(url);
+        let original_scheme = reqwest::Url::parse(url)
+            .map(|u| u.scheme().to_string())
+            .unwrap_or_default();
+        let parsed = reqwest::Url::parse(url).map_err(|e| format!("stream url: {e}"))?;
+        // No overall timeout: a live stream stays open for hours. Only the
+        // connect phase gets a deadline.
+        let mut builder = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(12))
+            .user_agent("Tansen/0.3");
+        if let Some(domain) = netguard::dns_host(&parsed) {
+            let addr = netguard::resolve_validated(&parsed).map_err(|e| format!("resolve: {e}"))?;
+            builder = builder.resolve(&domain, addr);
+        }
+        let client = builder
+            .redirect(reqwest::redirect::Policy::custom(
+                move |attempt| match media_redirect_verdict(
+                    attempt.previous().len(),
+                    attempt.url(),
+                    original_local,
+                    &original_scheme,
+                ) {
+                    Ok(()) => attempt.follow(),
+                    Err(e) => attempt.error(e),
+                },
+            ))
+            .build()
+            .map_err(|e| format!("stream client: {e}"))?;
+        let mut response = client
+            .get(url)
+            .header("Icy-MetaData", "0")
+            .send()
+            .map_err(|e| format!("stream open failed: {}", e.without_url()))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "station refused the stream (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if mime.contains("mpegurl") || mime.contains("dash") {
+            return Err("this station streams HLS/DASH, which Tansen cannot decode".into());
+        }
+        let mut head = vec![0u8; 64];
+        let n = std::io::Read::read(&mut response, &mut head).unwrap_or(0);
+        head.truncate(n);
+        let hint = mime_hint(&mime).or_else(|| sniff_live_hint(&head));
+        tracing::debug!(url = %Self::redacted(url), mime = %mime, hint = ?hint, "live stream open");
+        Ok((
+            Self {
+                response,
+                head,
+                head_pos: 0,
+                pos: 0,
+            },
+            hint,
+        ))
+    }
+}
+
+fn mime_hint(mime: &str) -> Option<&'static str> {
+    if mime.contains("mpeg") && !mime.contains("mpegurl") {
+        return Some("mp3");
+    }
+    if mime.contains("aac") || mime.contains("aacp") {
+        return Some("aac");
+    }
+    if mime.contains("ogg") || mime.contains("opus") {
+        return Some("ogg");
+    }
+    if mime.contains("flac") {
+        return Some("flac");
+    }
+    if mime.contains("mp4") || mime.contains("m4a") {
+        return Some("m4a");
+    }
+    if mime.contains("wav") {
+        return Some("wav");
+    }
+    None
+}
+
+fn sniff_live_hint(head: &[u8]) -> Option<&'static str> {
+    if head.len() >= 8 && &head[4..8] == b"ftyp" {
+        return Some("m4a");
+    }
+    if head.starts_with(b"OggS") {
+        return Some("ogg");
+    }
+    if head.starts_with(b"fLaC") {
+        return Some("flac");
+    }
+    if head.starts_with(b"ID3") {
+        return Some("mp3");
+    }
+    // ADTS AAC: 12-bit sync, layer 00 in the second byte's low bits.
+    if head.len() >= 2 && head[0] == 0xFF && (head[1] & 0xF6) == 0xF0 {
+        return Some("aac");
+    }
+    None
+}
+
+impl Read for LiveReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.head_pos < self.head.len() {
+            let n = (self.head.len() - self.head_pos).min(out.len());
+            out[..n].copy_from_slice(&self.head[self.head_pos..self.head_pos + n]);
+            self.head_pos += n;
+            self.pos += n as u64;
+            return Ok(n);
+        }
+        let n = std::io::Read::read(&mut self.response, out)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for LiveReader {
+    fn seek(&mut self, target: SeekFrom) -> std::io::Result<u64> {
+        // The decoder may re-read from the top; nothing else is meaningful.
+        if matches!(target, SeekFrom::Start(0)) && self.pos == 0 {
+            return Ok(0);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a live stream cannot seek",
+        ))
     }
 }
 
@@ -199,7 +396,10 @@ impl Read for HttpRangeReader {
             }
         }
         // Ensure the buffer covers the current position.
-        if self.buf.is_empty() || self.pos < self.buf_start || self.pos >= self.buf_start + self.buf.len() as u64 {
+        if self.buf.is_empty()
+            || self.pos < self.buf_start
+            || self.pos >= self.buf_start + self.buf.len() as u64
+        {
             self.fetch_chunk();
             if self.buf.is_empty() {
                 return Ok(0); // fetch failed; treat as EOF so the track errors cleanly
@@ -244,7 +444,7 @@ impl Seek for HttpRangeReader {
     }
 }
 
-/// M15: `Read + Seek` over HTTP Range with a bounded read-ahead buffer
+/// `Read + Seek` over HTTP Range with a bounded read-ahead buffer
 /// filled by a dedicated fetch task. The audio callback only ever pops from
 /// the in-memory buffer — it performs no network I/O itself. When the buffer
 /// runs dry (a network stall outpaced the read-ahead), reads wait on the
@@ -270,7 +470,7 @@ pub enum StreamStatus {
     /// The buffer refilled past the low watermark.
     Refilled,
     /// The URL is dead — the server answered 403/410 (expired or revoked).
-    /// The engine must re-resolve and rebuild the stream (M16).
+    /// The engine must re-resolve and rebuild the stream.
     UrlDead,
 }
 
@@ -291,7 +491,7 @@ struct PrefetchShared {
     /// Wakes readers: data appended, seek acknowledged, shutdown.
     read_signal: Condvar,
     status: watch::Sender<StreamStatus>,
-    /// M19: set by the owner (and on Drop) — parked readers and the fetch
+    /// Set by the owner (and on Drop) — parked readers and the fetch
     /// task check it and unwind/return promptly.
     shutdown: Arc<AtomicBool>,
 }
@@ -307,7 +507,7 @@ struct FetchState {
     /// Pending seek target from a reader; the fetch thread consumes it.
     seek_req: Option<u64>,
     starved: bool,
-    /// The URL was answered 403/410: terminal for this resolution (M16).
+    /// The URL was answered 403/410: terminal for this resolution.
     url_dead: bool,
 }
 
@@ -327,7 +527,8 @@ impl PrefetchReader {
             .map(|u| u.scheme().to_string())
             .unwrap_or_default();
         // DNS-rebinding guard: same resolve-validate-pin as HttpRangeReader.
-        let parsed = reqwest::Url::parse(&url).map_err(|e| RangeError::Http(format!("media url: {e}")))?;
+        let parsed =
+            reqwest::Url::parse(&url).map_err(|e| RangeError::Http(format!("media url: {e}")))?;
         let mut builder = reqwest::blocking::Client::builder()
             .timeout(TIMEOUT)
             .user_agent("Tansen/0.3");
@@ -340,7 +541,12 @@ impl PrefetchReader {
             headers,
             client: builder
                 .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                    match media_redirect_verdict(attempt.previous().len(), attempt.url(), original_local, &original_scheme) {
+                    match media_redirect_verdict(
+                        attempt.previous().len(),
+                        attempt.url(),
+                        original_local,
+                        &original_scheme,
+                    ) {
                         Ok(()) => attempt.follow(),
                         Err(e) => attempt.error(e),
                     }
@@ -368,17 +574,25 @@ impl PrefetchReader {
         if probe.is_empty() {
             return Err(RangeError::Http("probe fetch failed".into()));
         }
-        let len = shared.state.lock().map_err(|_| RangeError::Http("lock poisoned".into()))?.len;
+        let len = shared
+            .state
+            .lock()
+            .map_err(|_| RangeError::Http("lock poisoned".into()))?
+            .len;
 
         let thread_shared = shared.clone();
         std::thread::Builder::new()
             .name("prefetch-fetch".into())
             .spawn(move || fetch_loop(thread_shared))
             .map_err(|e| RangeError::Http(format!("fetch task: {e}")))?;
-        Ok(Self { shared, pos: 0, len })
+        Ok(Self {
+            shared,
+            pos: 0,
+            len,
+        })
     }
 
-    /// F9: the probed total stream length, when the server declared it.
+    /// The probed total stream length, when the server declared it.
     /// Used by the decode path to mark the source seekable for Symphonia.
     pub fn byte_len(&self) -> Option<u64> {
         self.len
@@ -437,10 +651,9 @@ impl Read for PrefetchReader {
                 st.starved = true;
                 let _ = shared.status.send(StreamStatus::Starved);
             }
-            st = shared
-                .read_signal
-                .wait(st)
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "prefetch lock poisoned"))?;
+            st = shared.read_signal.wait(st).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "prefetch lock poisoned")
+            })?;
         }
     }
 }
@@ -476,7 +689,9 @@ impl Seek for PrefetchReader {
             let (st2, _) = shared
                 .read_signal
                 .wait_timeout(st, Duration::from_millis(200))
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "prefetch lock poisoned"))?;
+                .map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "prefetch lock poisoned")
+                })?;
             st = st2;
             if st.seek_req.is_none() && st.buf_start == target && st.fetch_offset == target {
                 break; // the fetch thread acknowledged the reset
@@ -498,11 +713,7 @@ impl Drop for PrefetchReader {
 /// One ranged fetch, appended to the buffer. Returns the bytes. A response
 /// shorter than requested marks EOF. In-flight results are discarded if a
 /// seek changed the target while the request was running.
-fn fetch_range_into(
-    shared: &PrefetchShared,
-    start: u64,
-    end: u64,
-) -> Result<Vec<u8>, RangeError> {
+fn fetch_range_into(shared: &PrefetchShared, start: u64, end: u64) -> Result<Vec<u8>, RangeError> {
     let mut request = shared
         .client
         .get(&shared.url)
@@ -512,20 +723,28 @@ fn fetch_range_into(
     }
     let response = request
         .send()
-        .map_err(|e| RangeError::Http(e.to_string()))?;
+        // Signed media URLs stay out of transport errors.
+        .map_err(|e| RangeError::Http(e.without_url().to_string()))?;
     let status = response.status().as_u16();
     #[cfg(debug_assertions)]
     tracing::debug!(transport = "prefetch", start, end, status, "range response");
     match status {
         206 => {}
         200 => return Err(RangeError::NoRangeSupport(200)),
-        // M16: expired/revoked URL — terminal, the engine re-resolves.
+        // Expired/revoked URL — terminal, the engine re-resolves.
         403 | 410 => return Err(RangeError::Forbidden(status)),
         status => return Err(RangeError::Http(format!("range refused ({status})"))),
     }
-    if let Some(range) = response.headers().get("Content-Range").and_then(|v| v.to_str().ok()) {
+    if let Some(range) = response
+        .headers()
+        .get("Content-Range")
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(total) = range.rsplit('/').next().and_then(|t| t.parse::<u64>().ok()) {
-            let mut st = shared.state.lock().map_err(|_| RangeError::Http("lock poisoned".into()))?;
+            let mut st = shared
+                .state
+                .lock()
+                .map_err(|_| RangeError::Http("lock poisoned".into()))?;
             st.len = Some(total);
         }
     }
@@ -540,8 +759,17 @@ fn fetch_range_into(
         return Err(RangeError::Http("oversized range body".into()));
     }
     #[cfg(debug_assertions)]
-    tracing::debug!(transport = "prefetch", start, requested_end = end, bytes = bytes.len(), "range body");
-    let mut st = shared.state.lock().map_err(|_| RangeError::Http("lock poisoned".into()))?;
+    tracing::debug!(
+        transport = "prefetch",
+        start,
+        requested_end = end,
+        bytes = bytes.len(),
+        "range body"
+    );
+    let mut st = shared
+        .state
+        .lock()
+        .map_err(|_| RangeError::Http("lock poisoned".into()))?;
     if st.fetch_offset == start && st.seek_req.is_none() {
         for b in &bytes {
             st.buf.push_back(*b);
@@ -595,17 +823,18 @@ fn fetch_loop(shared: Arc<PrefetchShared>) {
                 shared.read_signal.notify_all();
             }
             Err(RangeError::Forbidden(_status)) => {
-                // M16: the URL is dead. Terminal for this resolution — the
+                // The URL is dead. Terminal for this resolution — the
                 // engine re-resolves on the status watch. Park until the
                 // reader is dropped (shutdown) or seeked away.
                 st.url_dead = true;
                 st.eof = true;
                 let _ = shared.status.send(StreamStatus::UrlDead);
                 shared.read_signal.notify_all();
-                while st.seek_req.is_none()
-                    && !shared.shutdown.load(Ordering::SeqCst)
-                {
-                    st = shared.fetch_signal.wait(st).unwrap_or_else(|p| p.into_inner());
+                while st.seek_req.is_none() && !shared.shutdown.load(Ordering::SeqCst) {
+                    st = shared
+                        .fetch_signal
+                        .wait(st)
+                        .unwrap_or_else(|p| p.into_inner());
                 }
             }
             Err(e) => {
@@ -624,7 +853,6 @@ fn fetch_loop(shared: Arc<PrefetchShared>) {
 mod tests {
 
     use super::*;
-    use std::io::Read as _;
     use std::io::Write as _;
     use std::net::TcpListener;
 
@@ -646,7 +874,11 @@ mod tests {
                     Some((a, b)) if a < data.len() as u64 => {
                         let b = (b.min(data.len() as u64 - 1)) as usize;
                         let a = a as usize;
-                        ("206 Partial Content", &data[a..=b], format!("Content-Range: bytes {}-{}/{}\r\n", a, b, data.len()))
+                        (
+                            "206 Partial Content",
+                            &data[a..=b],
+                            format!("Content-Range: bytes {}-{}/{}\r\n", a, b, data.len()),
+                        )
                     }
                     _ => ("200 OK", data, String::new()),
                 };
@@ -668,15 +900,14 @@ mod tests {
         Some((a.parse().ok()?, b.parse().ok()?))
     }
 
-    use std::io::Write as _;
-
     #[test]
     fn read_seek_and_length_across_chunks() {
         // 1.5 MiB of a recognizable pattern: more than one 512 KiB chunk.
         let data: Vec<u8> = (0..1_572_864u32).map(|i| (i % 251) as u8).collect();
         let boxed: &'static [u8] = Box::leak(data.into_boxed_slice());
         let port = range_server(boxed);
-        let mut reader = HttpRangeReader::new(format!("http://127.0.0.1:{port}/audio.mp4"), vec![]).unwrap();
+        let mut reader =
+            HttpRangeReader::new(format!("http://127.0.0.1:{port}/audio.mp4"), vec![]).unwrap();
 
         assert_eq!(reader.len, Some(boxed.len() as u64));
 
@@ -710,13 +941,15 @@ mod tests {
     #[test]
     fn decodes_audio_from_a_ranged_http_stream() {
         let wav = std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/testmusic/Test Signal/test.wav"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/testmusic/Test Signal/test.wav"),
         )
         .expect("fixture");
         let wav: &'static [u8] = Box::leak(wav.into_boxed_slice());
         let port = range_server(wav);
 
-        let reader = HttpRangeReader::new(format!("http://127.0.0.1:{port}/test.wav"), vec![]).unwrap();
+        let reader =
+            HttpRangeReader::new(format!("http://127.0.0.1:{port}/test.wav"), vec![]).unwrap();
         let rms = crate::probe::decode_rms(reader, Duration::from_secs(2)).expect("decodes");
         assert!(rms > 0.005, "decoded remote audio is silence (RMS {rms})");
     }
@@ -753,7 +986,10 @@ mod prefetch_tests {
                     .unwrap_or_default();
                 ranges.lock().unwrap().push(range);
 
-                if stall_after.as_ref().is_some_and(|s| s.load(Ordering::SeqCst)) {
+                if stall_after
+                    .as_ref()
+                    .is_some_and(|s| s.load(Ordering::SeqCst))
+                {
                     // Accept the request, never answer: the fetch task must
                     // own the wait.
                     std::thread::sleep(Duration::from_secs(30));
@@ -786,7 +1022,7 @@ mod prefetch_tests {
         let data: &'static [u8] = Box::leak(vec![42u8; 300_000].into_boxed_slice());
         let ranges = Arc::new(Mutex::new(Vec::new()));
         let (port, _shutdown) = range_server_capturing(data, ranges.clone(), None);
-        let (tx, mut rx) = tokio::sync::watch::channel(StreamStatus::Refilled);
+        let (tx, rx) = tokio::sync::watch::channel(StreamStatus::Refilled);
         let mut reader = PrefetchReader::new(
             format!("http://127.0.0.1:{port}/a.flac"),
             vec![],
@@ -857,7 +1093,9 @@ mod prefetch_tests {
                     .and_then(|s| s.parse::<usize>().ok())
                     .unwrap_or(0);
                 if forbidden2.load(Ordering::SeqCst) && start > 0 {
-                    let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
                     continue;
                 }
                 let end = (start + FETCH_CHUNK as usize).min(data.len());
@@ -899,7 +1137,7 @@ mod prefetch_tests {
         let stall = Arc::new(AtomicBool::new(false));
         let (port, _shutdown) = range_server_capturing(data, ranges.clone(), Some(stall.clone()));
         let (tx, mut rx) = tokio::sync::watch::channel(StreamStatus::Refilled);
-        let mut reader = PrefetchReader::new(
+        let reader = PrefetchReader::new(
             format!("http://127.0.0.1:{port}/a.flac"),
             vec![],
             tx,
@@ -950,7 +1188,6 @@ mod prefetch_tests {
             std::thread::sleep(Duration::from_millis(250));
         }
         assert!(refill_seen, "refill reported after the stall cleared");
-
     }
 }
 
@@ -961,12 +1198,16 @@ mod redaction_tests {
     #[test]
     fn redacted_strips_the_query_string() {
         // Subsonic tokens and googlevideo signatures ride in the query.
-        let url = "https://rr5.example.googlevideo.com/videoplayback?expire=1&signature=ABC&sparams=id";
+        let url =
+            "https://rr5.example.googlevideo.com/videoplayback?expire=1&signature=ABC&sparams=id";
         assert_eq!(
             HttpRangeReader::redacted(url),
             "https://rr5.example.googlevideo.com/videoplayback"
         );
-        assert_eq!(HttpRangeReader::redacted("https://x/y.flac"), "https://x/y.flac");
+        assert_eq!(
+            HttpRangeReader::redacted("https://x/y.flac"),
+            "https://x/y.flac"
+        );
     }
 }
 
@@ -975,25 +1216,62 @@ mod redirect_policy_tests {
     use super::*;
 
     #[test]
+    fn redirect_verdict_refuses_downgrade_private_and_long_chains() {
+        let url = |s: &str| reqwest::Url::parse(s).unwrap();
+        assert!(media_redirect_verdict(0, &url("https://1.1.1.1/x"), false, "https").is_ok());
+        assert!(
+            media_redirect_verdict(0, &url("http://1.1.1.1/x"), false, "https").is_err(),
+            "https may not downgrade"
+        );
+        assert!(
+            media_redirect_verdict(0, &url("https://127.0.0.1/x"), false, "https").is_err(),
+            "loopback is refused for a public source"
+        );
+        assert!(
+            media_redirect_verdict(0, &url("https://127.0.0.1/x"), true, "http").is_ok(),
+            "a local source may stay local"
+        );
+        assert!(
+            media_redirect_verdict(5, &url("https://1.1.1.1/x"), false, "https").is_err(),
+            "more than five hops is refused"
+        );
+        assert!(
+            media_redirect_verdict(0, &url("file:///etc/passwd"), false, "https").is_err(),
+            "non-http scheme is refused"
+        );
+    }
+
+    #[test]
     fn media_host_locality() {
         assert!(media_host_is_local("http://127.0.0.1:9000/x"));
         assert!(media_host_is_local("http://10.0.0.5/x"));
         assert!(media_host_is_local("http://169.254.1.1/x"));
         assert!(media_host_is_local("http://localhost:8080/x"));
-        assert!(!media_host_is_local("https://rr3.example.googlevideo.com/videoplayback"));
+        assert!(!media_host_is_local(
+            "https://rr3.example.googlevideo.com/videoplayback"
+        ));
         assert!(!media_host_is_local("not a url"));
     }
 
-    /// Regression (audit run-1: media-redirect-verdict
+    /// Regression (media-redirect-verdict
     /// .private-host-classification-gaps): the classifier used to re-parse
     /// `host_str()`, whose bracketed IPv6 serialization never parses as
     /// IpAddr — every IPv6 URL host, loopback `::1` included, classified
     /// non-local and its redirect was followed.
     #[test]
     fn ipv6_mapped_and_unspecified_hosts_classify_local() {
-        assert!(media_host_is_local("http://[::1]:9000/x"), "::1 must classify local");
-        assert!(media_host_is_local("http://[fd00::1]/x"), "ULA must classify local");
-        assert!(media_host_is_local("http://[fe80::1]/x"), "v6 link-local must classify local");
+        assert!(
+            media_host_is_local("http://[::1]:9000/x"),
+            "::1 must classify local"
+        );
+        assert!(
+            media_host_is_local("http://[fd00::1]/x"),
+            "ULA must classify local"
+        );
+        assert!(
+            media_host_is_local("http://[fe80::1]/x"),
+            "v6 link-local must classify local"
+        );
         assert!(
             media_host_is_local("http://[::ffff:127.0.0.1]:9000/x"),
             "IPv4-mapped loopback must classify local"
@@ -1002,11 +1280,20 @@ mod redirect_policy_tests {
             media_host_is_local("http://[::ffff:10.0.0.5]:9000/x"),
             "IPv4-mapped private must classify local"
         );
-        assert!(media_host_is_local("http://0.0.0.0:9000/x"), "unspecified must classify local");
+        assert!(
+            media_host_is_local("http://0.0.0.0:9000/x"),
+            "unspecified must classify local"
+        );
         // Non-canonical IPv4 spellings were already safe: the url crate
         // canonicalizes them before host_str() (kept as pinned behavior).
-        assert!(media_host_is_local("http://2130706433/x"), "decimal IPv4 canonicalizes to 127.0.0.1");
-        assert!(!media_host_is_local("http://[2001:4860:4860::8888]/x"), "public v6 stays non-local");
+        assert!(
+            media_host_is_local("http://2130706433/x"),
+            "decimal IPv4 canonicalizes to 127.0.0.1"
+        );
+        assert!(
+            !media_host_is_local("http://[2001:4860:4860::8888]/x"),
+            "public v6 stays non-local"
+        );
     }
 
     /// The rebinding guard accepts loopback literals without DNS.
@@ -1017,7 +1304,7 @@ mod redirect_policy_tests {
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
     }
 
-    /// Regression (audit run-1: media-range-fetch
+    /// Regression (media-range-fetch
     /// .response-size-not-client-bounded): any 206 body used to be read in
     /// full via response.bytes() with no check against the requested
     /// window; a hostile server could push throughput x 20 s into the
@@ -1049,7 +1336,8 @@ mod redirect_policy_tests {
             let _ = stream.write_all(&vec![0u8; 4 * 1024 * 1024]);
         });
 
-        let mut reader = HttpRangeReader::new(format!("http://127.0.0.1:{port}/x"), vec![]).unwrap();
+        let mut reader =
+            HttpRangeReader::new(format!("http://127.0.0.1:{port}/x"), vec![]).unwrap();
         let mut out = [0u8; 64];
         let n = std::io::Read::read(&mut reader, &mut out).unwrap();
         assert_eq!(n, 0, "oversized 206 body must be refused, not buffered");

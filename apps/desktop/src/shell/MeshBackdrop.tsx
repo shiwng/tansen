@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 import { GRID, meshPalette, type Rgb } from '@/lib/meshPalette';
 
 /*
@@ -12,17 +13,6 @@ const FRAME_MS = 1000 / 30;
 const FADE_MS = 1200;
 /** Before the artwork is read, and when it can't be: a neutral dark grey. */
 const FALLBACK: Rgb[] = Array.from({ length: GRID * GRID }, () => [52, 52, 56]);
-
-const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
-function useReducedMotion(): boolean {
-  return useSyncExternalStore(
-    (onChange) => {
-      reducedMotion?.addEventListener('change', onChange);
-      return () => reducedMotion?.removeEventListener('change', onChange);
-    },
-    () => reducedMotion?.matches ?? false,
-  );
-}
 
 /**
  * Each cell's blob: where it sits and how it drifts. The grid is turned a

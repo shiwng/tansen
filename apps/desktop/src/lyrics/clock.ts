@@ -237,3 +237,12 @@ const GLIDE_FROM_MS = 300;
 const GLIDE_MS = 260;
 const GLIDE_MAX_MS = 2000;
 const LOST_MS = 3000;
+
+/**
+ * A reading that moved further than the wall clock allows is a jump: a seek, a
+ * loop wrap, or the hand-over to the next track. 350 ms of slack absorbs frame
+ * jitter and the engine's publish cadence without hiding a real seek.
+ */
+export function isJump(prevSec: number, sec: number, elapsedMs: number): boolean {
+  return Math.abs(sec - prevSec - elapsedMs / 1000) > 0.35;
+}

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 /// kinds carry their own base order (`SourceKind::rank`). Credentials are
 /// NEVER stored here: only the username (non-secret) and the LAN/http
 /// opt-in flag live in the config; the password lives in the macOS
-/// Keychain (S9).
+/// Keychain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
     pub config_id: String,
@@ -22,10 +22,10 @@ pub struct SourceConfig {
     pub base_url: String,
     pub enabled: bool,
     pub rank: u32,
-    /// Subsonic (S9): the account username (not secret).
+    /// Subsonic: the account username (not secret).
     #[serde(default)]
     pub username: Option<String>,
-    /// Subsonic (S9): allow http to a loopback/private host.
+    /// Subsonic: allow http to a loopback/private host.
     #[serde(default)]
     pub allow_http: bool,
 }
@@ -51,12 +51,18 @@ pub fn add_config(db: &Db, mut config: SourceConfig) -> persistence::Result<()> 
     if configs.iter().any(|c| c.config_id == config.config_id) {
         return Ok(()); // idempotent re-add
     }
-    config.rank = configs.iter().filter(|c| c.kind == config.kind).map(|c| c.rank).max().unwrap_or(0) + 1;
+    config.rank = configs
+        .iter()
+        .filter(|c| c.kind == config.kind)
+        .map(|c| c.rank)
+        .max()
+        .unwrap_or(0)
+        + 1;
     configs.push(config);
     save_configs(db, &configs)
 }
 
-/// Adds or fully replaces one config (S9: re-saving a Subsonic source with
+/// Adds or fully replaces one config (re-saving a Subsonic source with
 /// changed username/allow_http flags).
 pub fn upsert_config(db: &Db, config: SourceConfig) -> persistence::Result<()> {
     let mut configs = load_configs(db)?;
@@ -82,7 +88,7 @@ pub fn set_enabled(db: &Db, config_id: &str, enabled: bool) -> persistence::Resu
     save_configs(db, &configs)
 }
 
-/// Maximum ids accepted in one `set_order` call (S2).
+/// Maximum ids accepted in one `set_order` call.
 pub const MAX_ORDER_IDS: usize = 64;
 
 /// Rejects unknown ids, duplicates, and wrong-length orders.
@@ -111,7 +117,7 @@ pub fn validate_order(ids: &[String], known: &[SourceConfig]) -> Result<(), Stri
     Ok(())
 }
 
-/// Sets the full order of the known configs (S2). `ids` must name every
+/// Sets the full order of the known configs. `ids` must name every
 /// known source exactly once; the order is stored as `rank`.
 pub fn set_order(db: &Db, ids: &[String]) -> Result<(), String> {
     let mut configs = load_configs(db).map_err(|e| e.to_string())?;
@@ -124,7 +130,7 @@ pub fn set_order(db: &Db, ids: &[String]) -> Result<(), String> {
     save_configs(db, &configs).map_err(|e| e.to_string())
 }
 
-/// Whether a config is present and enabled (S2: disabled sources must not
+/// Whether a config is present and enabled (disabled sources must not
 /// resolve — propagated as `SourceError::Disabled` by the resolver).
 pub fn is_enabled(db: &Db, config_id: &str) -> bool {
     load_configs(db)
@@ -157,7 +163,7 @@ pub fn build_active(db: &Db) -> persistence::Result<Vec<std::sync::Arc<dyn Music
                             tracing::warn!(error = %e, "addon source skipped (invalid base url)");
                             continue;
                         }
-                    }
+                    },
                 );
             }
             SourceKind::Subsonic => {
@@ -174,7 +180,8 @@ pub fn build_active(db: &Db) -> persistence::Result<Vec<std::sync::Arc<dyn Music
                     Err(e) => tracing::warn!(error = %e, config = cid, "Subsonic source skipped"),
                 }
             }
-            SourceKind::YouTube | SourceKind::Local => {}
+            // Radio is a direct-URL source with no stored config row.
+            SourceKind::YouTube | SourceKind::Local | SourceKind::Radio => {}
         }
     }
 
@@ -195,7 +202,9 @@ pub fn build_active(db: &Db) -> persistence::Result<Vec<std::sync::Arc<dyn Music
             .filter(|p| PathBuf::from(p).is_file());
         match crate::yt::YtMusicSource::launch(jar, java) {
             Ok(yt) => active.push(std::sync::Arc::new(yt)),
-            Err(e) => tracing::warn!(error = %e, "YouTube source unavailable; catalogue stays local-only"),
+            Err(e) => {
+                tracing::warn!(error = %e, "YouTube source unavailable; catalogue stays local-only")
+            }
         }
     }
     Ok(active)
@@ -241,8 +250,8 @@ mod tests {
         // Kind rank orders addons before YouTube regardless of insertion.
         let active = build_active(&db).unwrap();
         assert_eq!(active.len(), 2); // YouTube has no builder yet
-        // set_order must name every known source exactly once (seeded yt +
-        // local + a + b).
+                                     // set_order must name every known source exactly once (seeded yt +
+                                     // local + a + b).
         let all: Vec<String> = load_configs(&db)
             .unwrap()
             .iter()

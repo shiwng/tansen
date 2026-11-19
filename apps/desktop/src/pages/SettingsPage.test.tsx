@@ -17,7 +17,7 @@ const sourceRows = [
   {
     config_id: 'yt-1',
     kind: 'youtube',
-    name: 'YouTube Music',
+    name: 'Legacy YouTube entry',
     base_url: 'https://music.youtube.com',
     enabled: true,
     rank: 0,
@@ -26,9 +26,18 @@ const sourceRows = [
   {
     config_id: 'local-1',
     kind: 'local',
-    name: 'Local Files',
+    name: 'Legacy local entry',
     base_url: '/Music',
     enabled: false,
+    rank: 0,
+    health: { state: 'ok', detail: null as string | null },
+  },
+  {
+    config_id: 'sub-1',
+    kind: 'subsonic',
+    name: 'Navidrome',
+    base_url: 'https://s',
+    enabled: true,
     rank: 0,
     health: { state: 'ok', detail: null as string | null },
   },
@@ -41,9 +50,48 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === 'sources_get_with_health') return wireRows;
     if (cmd === 'settings_get') return [] as [string, string][];
+    if (cmd === 'local_files_get') return true;
+    if (cmd === 'quality_get') return 'high';
+    if (cmd === 'audio_settings_get') return audioSettings;
+    if (cmd === 'downloads_get') {
+      return {
+        destination: '/Users/test/Downloads/Tansen',
+        connected: true,
+        rows: [],
+        storage: { bytes: 1234, files: 2 },
+        providers: [
+          { kind: 'subsonic', supported: true, reason: 'Downloads the original file.' },
+          { kind: 'addon', supported: true, reason: 'Direct progressive streams.' },
+          { kind: 'local', supported: true, reason: 'Copies library files into the downloads folder.' },
+        ],
+      };
+    }
     return []; // every other query renders its empty branch
   }),
 }));
+
+const audioSettings = {
+  outputBits: 32,
+  gapless: true,
+  crossfadeMs: 0,
+  loudness: false,
+  skipSilence: false,
+  skipThresholdDb: -50,
+  skipMinMs: 2000,
+  eqEnabled: false,
+  eqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  eqPreset: 'flat',
+  deviceName: 'Test Output',
+  channels: 2,
+  sampleRate: 48000,
+  formats: ['f32'],
+  supports16Bit: true,
+  supports32Bit: true,
+  atmosSupported: false,
+  atmosReason: 'Tansen decodes to stereo PCM; Dolby Atmos rendering is not part of this pipeline.',
+  negotiatedBits: 32,
+  negotiatedFormat: 'f32',
+};
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -78,7 +126,7 @@ describe('SettingsPage sources rendering (flattened wire shape)', () => {
   it('renders a row whose health is absent as unknown instead of crashing', async () => {
     // Regression: a source row without `health` (cache written by a caller of
     // `sources_get`, which has no health) threw on `health.state`.
-    wireRows = [{ config_id: 'yt-1', kind: 'youtube', name: 'YouTube Music', base_url: 'https://x', enabled: true, rank: 0 }];
+    wireRows = [{ config_id: 'addon-1', kind: 'addon', name: 'Addon', base_url: 'https://x', enabled: true, rank: 0 }];
     const host = mount();
     for (let i = 0; i < 20 && !host.textContent?.includes('Status unavailable'); i++) {
       await act(async () => {
@@ -103,21 +151,66 @@ describe('SettingsPage sources rendering (flattened wire shape)', () => {
     wireRows = sourceRows;
   });
 
-  it('renders every source row from the flattened row without crashing', async () => {
+  it('shows real servers and hides the legacy youtube/local roster rows', async () => {
     const host = mount();
-    // Queries resolve asynchronously; let them settle. ("YouTube Music"
-    // also appears in static copy — wait on the local row instead.)
-    for (let i = 0; i < 20 && !host.textContent?.includes('Local Files'); i++) {
+    for (let i = 0; i < 20 && !host.textContent?.includes('Navidrome'); i++) {
       await act(async () => {
         await new Promise((r) => setTimeout(r, 10));
       });
     }
-    expect(host.textContent).toContain('YouTube Music');
-    expect(host.textContent).toContain('Local Files');
-    // row.enabled is read top-level: the enabled row offers Disable,
-    // the disabled row shows "(off)" and offers Enable.
+    expect(host.textContent).toContain('Navidrome');
+    expect(host.textContent).not.toContain('Legacy YouTube entry');
+    expect(host.textContent).not.toContain('Legacy local entry');
+    // row.enabled is read top-level: the enabled Subsonic row offers Disable.
     expect(host.textContent).toContain('Disable');
-    expect(host.textContent).toContain('(off)');
-    expect(host.textContent).toContain('Enable');
+  });
+});
+
+describe('SettingsPage audio, appearance and language sections', () => {
+  it('renders real audio controls and every shipped language', async () => {
+    const host = mount();
+    for (let i = 0; i < 20 && !host.textContent?.includes('1.2 KB'); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+    const text = host.textContent ?? '';
+    // Audio: streaming ladder, honest Atmos state, real output precision.
+    expect(text).toContain('Streaming quality');
+    expect(text).toContain('Low (64 kbps cap)');
+    expect(text).toContain('Lossless');
+    expect(text).toContain('Output precision');
+    expect(text).toContain('32-bit float');
+    expect(text).toContain('Dolby Atmos');
+    expect(text).toContain('Not available');
+    // Playback: the DSP-backed controls are real rows, not pending markers.
+    for (const label of [
+      'Loudness normalization',
+      'Skip silence',
+      'Equalizer',
+      'Gapless playback',
+      'Crossfade / Auto Mix',
+      'Preset',
+      'Reset to Flat',
+    ]) {
+      expect(text).toContain(label);
+    }
+    // Downloads: destination, real filesystem storage, provider honesty.
+    expect(text).toContain('Choose downloads folder…');
+    expect(text).toContain('1.2 KB');
+    expect(text).toContain('2 items');
+    expect(text).toContain('Local files');
+    expect(text).not.toContain('No downloads yet');
+    expect(text).toContain('Spotify');
+    // Appearance rows.
+    for (const label of ['Theme', 'Liquid Glass', 'Reduce Dynamic Blur', 'Reduce Animation', 'Full Screen Cover Art', 'Mesh Gradient Backdrop']) {
+      expect(text).toContain(label);
+    }
+    // Language: all eleven, with native names.
+    for (const label of ['English', 'हिन्दी', 'Español', 'Français', 'Deutsch', 'Português', '日本語', '한국어', '简体中文', 'العربية', 'Русский']) {
+      expect(text).toContain(label);
+    }
+    // About: the app name and version only.
+    expect(text).toContain('Tansen');
   });
 });

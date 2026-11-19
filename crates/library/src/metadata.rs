@@ -49,7 +49,11 @@ pub fn read(path: &Path, folder_id: i64) -> Result<Track, MetaError> {
 
     let title = {
         let t = get(&lofty::tag::ItemKey::TrackTitle);
-        if t.is_empty() { stem } else { t }
+        if t.is_empty() {
+            stem
+        } else {
+            t
+        }
     };
 
     let codec = format_codec(path, Some(file.file_type()));
@@ -92,7 +96,7 @@ fn format_codec(path: &Path, ft: Option<lofty::file::FileType>) -> String {
         Some(lofty::file::FileType::Mpeg) => "MP3".into(),
         Some(lofty::file::FileType::Flac) => "FLAC".into(),
         Some(lofty::file::FileType::Mp4) => {
-            // F2 fix: ALAC lives in MP4 containers next to AAC, and the two
+            // ALAC lives in MP4 containers next to AAC, and the two
             // classify oppositely on the lossless table. The generic probe
             // carries no codec, so read the file's own audio codec (one
             // extra open per MP4-family file, scan-time only).
@@ -109,11 +113,14 @@ fn format_codec(path: &Path, ft: Option<lofty::file::FileType>) -> String {
     }
 }
 
-
-/// F2: the audio codec of an MP4-family file, from lofty's Mp4File probe.
+/// The audio codec of an MP4-family file, from lofty's Mp4File probe.
 fn mp4_codec(path: &Path) -> Option<String> {
     use lofty::mp4::Mp4Codec;
-    let file = lofty::mp4::Mp4File::read_from(&mut std::fs::File::open(path).ok()?, lofty::config::ParseOptions::new()).ok()?;
+    let file = lofty::mp4::Mp4File::read_from(
+        &mut std::fs::File::open(path).ok()?,
+        lofty::config::ParseOptions::new(),
+    )
+    .ok()?;
     let codec = match file.properties().codec() {
         Mp4Codec::ALAC => "ALAC",
         Mp4Codec::AAC => "AAC",

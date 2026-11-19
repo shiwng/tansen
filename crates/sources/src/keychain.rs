@@ -1,5 +1,5 @@
-//! S9: macOS Keychain storage for Subsonic credentials via the Security
-//! framework (`objc2-security`, the one new dependency approved for S9).
+//! macOS Keychain storage for Subsonic credentials via the Security
+//! framework (`objc2-security`).
 //! Passwords NEVER touch SQLite, logs, events or frontend state — only
 //! usernames and server URLs live in the settings DB.
 
@@ -7,13 +7,15 @@ use crate::SourceError;
 
 /// Keychain service name for Subsonic credentials.
 pub const KEYCHAIN_SERVICE: &str = "app.tansen.desktop.subsonic";
+/// Keychain service name for Google sign-in tokens (separate domain so
+/// source_remove's credential cleanup can never touch Google items).
+pub const KEYCHAIN_SERVICE_GOOGLE: &str = "app.tansen.desktop.google";
 
 #[cfg(target_os = "macos")]
 pub mod imp {
     use super::*;
     use objc2_core_foundation::{
-        CFBoolean, CFData, CFMutableDictionary, CFRetained, CFString, CFType,
-        kCFBooleanTrue,
+        kCFBooleanTrue, CFBoolean, CFData, CFMutableDictionary, CFRetained, CFString, CFType,
     };
     use objc2_security::{
         errSecItemNotFound, errSecSuccess, kSecAttrAccount, kSecAttrService, kSecClass,
@@ -22,8 +24,7 @@ pub mod imp {
     };
 
     /// The Security constants are extern statics; resolve them once here.
-    fn sec_keys(
-    ) -> (
+    fn sec_keys() -> (
         &'static CFString,
         &'static CFString,
         &'static CFString,
@@ -45,19 +46,20 @@ pub mod imp {
         }
     }
 
-    fn service_string() -> CFRetained<CFString> {
-        CFString::from_str(KEYCHAIN_SERVICE)
+    fn service_string(service: &str) -> CFRetained<CFString> {
+        CFString::from_str(service)
     }
 
-    /// Upserts a generic-password item for `account` (the Subsonic username).
-    pub fn store_password(account: &str, password: &str) -> Result<(), SourceError> {
-        let (sec_class, sec_service, sec_account, sec_value, _sec_return, class, _boolean) = sec_keys();
+    /// Upserts a generic-password item for `account` under `service`.
+    pub fn store_password(service: &str, account: &str, password: &str) -> Result<(), SourceError> {
+        let (sec_class, sec_service, sec_account, sec_value, _sec_return, class, _boolean) =
+            sec_keys();
         let dict = CFMutableDictionary::<CFString, CFType>::empty();
-        let service = service_string();
+        let service_cf = service_string(service);
         let account_str = CFString::from_str(account);
         let data = CFData::from_bytes(password.as_bytes());
         dict.set(sec_class, &class);
-        dict.set(sec_service, &service);
+        dict.set(sec_service, &service_cf);
         dict.set(sec_account, &account_str);
         dict.set(sec_value, &data);
         let status = unsafe { SecItemAdd(dict.as_opaque(), std::ptr::null_mut()) };
@@ -66,23 +68,28 @@ pub mod imp {
         } else if status == -25299 {
             // errSecDuplicateItem: objc2-security binds no SecItemUpdate, so
             // replace by delete-then-add.
-            let _ = delete_password(account);
+            let _ = delete_password(service, account);
             let status = unsafe { SecItemAdd(dict.as_opaque(), std::ptr::null_mut()) };
             if status == errSecSuccess {
                 Ok(())
             } else {
-                Err(SourceError::Permanent(format!("keychain add failed: {status}")))
+                Err(SourceError::Permanent(format!(
+                    "keychain add failed: {status}"
+                )))
             }
         } else {
-            Err(SourceError::Permanent(format!("keychain add failed: {status}")))
+            Err(SourceError::Permanent(format!(
+                "keychain add failed: {status}"
+            )))
         }
     }
 
     /// Reads the stored password; `Ok(None)` when no item exists.
-    pub fn get_password(account: &str) -> Result<Option<String>, SourceError> {
-        let (sec_class, sec_service, sec_account, _sec_value, sec_return, class, ret_data) = sec_keys();
+    pub fn get_password(service: &str, account: &str) -> Result<Option<String>, SourceError> {
+        let (sec_class, sec_service, sec_account, _sec_value, sec_return, class, ret_data) =
+            sec_keys();
         let query = CFMutableDictionary::<CFString, CFType>::empty();
-        let service = service_string();
+        let service = service_string(service);
         let account_str = CFString::from_str(account);
         query.set(sec_class, &class);
         query.set(sec_service, &service);
@@ -94,7 +101,9 @@ pub mod imp {
             return Ok(None);
         }
         if status != errSecSuccess || result.is_null() {
-            return Err(SourceError::Permanent(format!("keychain read failed: {status}")));
+            return Err(SourceError::Permanent(format!(
+                "keychain read failed: {status}"
+            )));
         }
         let ptr = std::ptr::NonNull::new(result as *mut CFData)
             .ok_or_else(|| SourceError::Permanent("keychain result null".into()))?;
@@ -103,10 +112,11 @@ pub mod imp {
     }
 
     /// Deletes the stored item (best-effort for source removal).
-    pub fn delete_password(account: &str) -> Result<(), SourceError> {
-        let (sec_class, sec_service, sec_account, _sec_value, _sec_return, class, _boolean) = sec_keys();
+    pub fn delete_password(service: &str, account: &str) -> Result<(), SourceError> {
+        let (sec_class, sec_service, sec_account, _sec_value, _sec_return, class, _boolean) =
+            sec_keys();
         let query = CFMutableDictionary::<CFString, CFType>::empty();
-        let service = service_string();
+        let service = service_string(service);
         let account_str = CFString::from_str(account);
         query.set(sec_class, &class);
         query.set(sec_service, &service);
@@ -115,7 +125,9 @@ pub mod imp {
         if status == errSecSuccess || status == errSecItemNotFound {
             Ok(())
         } else {
-            Err(SourceError::Permanent(format!("keychain delete failed: {status}")))
+            Err(SourceError::Permanent(format!(
+                "keychain delete failed: {status}"
+            )))
         }
     }
 }
@@ -124,20 +136,50 @@ pub mod imp {
 pub mod imp {
     use super::*;
 
-    pub fn store_password(_account: &str, _password: &str) -> Result<(), SourceError> {
-        Err(SourceError::Permanent("keychain unavailable on this platform".into()))
+    pub fn store_password(
+        _service: &str,
+        _account: &str,
+        _password: &str,
+    ) -> Result<(), SourceError> {
+        Err(SourceError::Permanent(
+            "keychain unavailable on this platform".into(),
+        ))
     }
 
-    pub fn get_password(_account: &str) -> Result<Option<String>, SourceError> {
+    pub fn get_password(_service: &str, _account: &str) -> Result<Option<String>, SourceError> {
         Ok(None)
     }
 
-    pub fn delete_password(_account: &str) -> Result<(), SourceError> {
-        Err(SourceError::Permanent("keychain unavailable on this platform".into()))
+    pub fn delete_password(_service: &str, _account: &str) -> Result<(), SourceError> {
+        Err(SourceError::Permanent(
+            "keychain unavailable on this platform".into(),
+        ))
     }
 }
 
 pub use imp::{delete_password, get_password, store_password};
+
+/// Subsonic credentials under the Subsonic service (existing surface).
+pub fn store_subsonic_password(account: &str, password: &str) -> Result<(), SourceError> {
+    store_password(KEYCHAIN_SERVICE, account, password)
+}
+pub fn get_subsonic_password(account: &str) -> Result<Option<String>, SourceError> {
+    get_password(KEYCHAIN_SERVICE, account)
+}
+pub fn delete_subsonic_password(account: &str) -> Result<(), SourceError> {
+    delete_password(KEYCHAIN_SERVICE, account)
+}
+
+/// Google sign-in tokens under the Google service.
+pub fn store_google_token(account: &str, json: &str) -> Result<(), SourceError> {
+    store_password(KEYCHAIN_SERVICE_GOOGLE, account, json)
+}
+pub fn get_google_token(account: &str) -> Result<Option<String>, SourceError> {
+    get_password(KEYCHAIN_SERVICE_GOOGLE, account)
+}
+pub fn delete_google_token(account: &str) -> Result<(), SourceError> {
+    delete_password(KEYCHAIN_SERVICE_GOOGLE, account)
+}
 
 /// The Keychain account key for one Subsonic credential: username AND
 /// server (host + non-default port, so same-host-different-port servers
@@ -147,7 +189,10 @@ pub use imp::{delete_password, get_password, store_password};
 /// secret belongs to must be part of the item identity.
 pub fn credential_account(username: &str, base_url: &str) -> String {
     let parsed = url::Url::parse(base_url).ok();
-    let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or_default();
+    let host = parsed
+        .as_ref()
+        .and_then(|u| u.host_str())
+        .unwrap_or_default();
     if host.is_empty() {
         return username.to_string();
     }
@@ -162,11 +207,13 @@ pub fn credential_account(username: &str, base_url: &str) -> String {
 /// username-only key so credentials stored by older builds keep working
 /// until re-saved (which migrates them to the bound key).
 pub fn get_password_server_bound(account: &str) -> Result<Option<String>, SourceError> {
-    if let Some(found) = get_password(account)? {
+    if let Some(found) = get_password(KEYCHAIN_SERVICE, account)? {
         return Ok(Some(found));
     }
     match account.split_once('@') {
-        Some((legacy_username, _host)) if !legacy_username.is_empty() => get_password(legacy_username),
+        Some((legacy_username, _host)) if !legacy_username.is_empty() => {
+            get_password(KEYCHAIN_SERVICE, legacy_username)
+        }
         _ => Ok(None),
     }
 }
@@ -201,7 +248,7 @@ mod tests {
         );
     }
 
-    /// F0: runtime verification of the S9 SecItem round trip against the
+    /// Runtime verification of the SecItem round trip against the
     /// real login keychain. #[ignore]d by default (tests must not touch the
     /// user keychain implicitly) — run explicitly:
     ///   cargo test -p sources --lib keychain -- --ignored
@@ -214,25 +261,40 @@ mod tests {
         struct Cleanup(String);
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                let _ = imp::delete_password(&self.0);
+                let _ = imp::delete_password(KEYCHAIN_SERVICE, &self.0);
             }
         }
         let account = "tansen-f0-verification";
         let _guard = Cleanup(account.to_string());
         // Deterministic starting state.
-        let _ = imp::delete_password(account);
-        assert_eq!(imp::get_password(account).unwrap(), None, "starts absent");
-
-        imp::store_password(account, "s3cret-🎁-value").unwrap();
+        let _ = imp::delete_password(KEYCHAIN_SERVICE, account);
         assert_eq!(
-            imp::get_password(account).unwrap().as_deref(),
+            imp::get_password(KEYCHAIN_SERVICE, account).unwrap(),
+            None,
+            "starts absent"
+        );
+
+        imp::store_password(KEYCHAIN_SERVICE, account, "s3cret-🎁-value").unwrap();
+        assert_eq!(
+            imp::get_password(KEYCHAIN_SERVICE, account)
+                .unwrap()
+                .as_deref(),
             Some("s3cret-🎁-value"),
             "stored secret reads back byte-exact (UTF-8)"
         );
         // Upsert path (duplicate → delete-then-add).
-        imp::store_password(account, "s3cret-2").unwrap();
-        assert_eq!(imp::get_password(account).unwrap().as_deref(), Some("s3cret-2"));
-        imp::delete_password(account).unwrap();
-        assert_eq!(imp::get_password(account).unwrap(), None, "delete removes");
+        imp::store_password(KEYCHAIN_SERVICE, account, "s3cret-2").unwrap();
+        assert_eq!(
+            imp::get_password(KEYCHAIN_SERVICE, account)
+                .unwrap()
+                .as_deref(),
+            Some("s3cret-2")
+        );
+        imp::delete_password(KEYCHAIN_SERVICE, account).unwrap();
+        assert_eq!(
+            imp::get_password(KEYCHAIN_SERVICE, account).unwrap(),
+            None,
+            "delete removes"
+        );
     }
 }

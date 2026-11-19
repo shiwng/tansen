@@ -8,9 +8,18 @@
     <meta name="color-scheme" content="light dark" />
     <title>Tansen</title>
     <script>
-      // Theme before first paint: tokens key off data-theme.
-      // shell/chrome.ts keeps it synced with the OS afterwards.
-      document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      // Theme before first paint: tokens key off data-theme. An explicit
+      // Settings override (bitchord:appearance, sanitized below) wins over
+      // the OS; shell/chrome.ts keeps it synced afterwards.
+      (function () {
+        var mode = 'system';
+        try {
+          var stored = JSON.parse(localStorage.getItem('bitchord:appearance') || '{}');
+          if (stored.theme === 'light' || stored.theme === 'dark') mode = stored.theme;
+        } catch (e) {}
+        document.documentElement.dataset.theme =
+          mode === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : mode;
+      })();
     </script>
   </head>
   <body>

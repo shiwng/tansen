@@ -6,7 +6,7 @@ import { Artwork } from '@/components/music/Artwork';
 import { trackFromRef } from '@/state/player';
 import { reorderMove } from '@/lib/reorder';
 import { artUrl } from '@/lib/rows';
-import type { TrackRef } from '@/types';
+import type { PlaylistRow,  TrackRef } from '@/types';
 
 /**
  * The playlist reorder page, as the original's ReorderPlaylistPage: one
@@ -22,7 +22,7 @@ export function ReorderPlaylistPage() {
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
 
-  const meta = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<[number, string][]>('playlists_get') });
+  const meta = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<PlaylistRow[]>('playlists_get') });
   const tracks = useQuery({
     queryKey: ['local', 'playlist-tracks', playlistId],
     queryFn: () => invoke<TrackRef[]>('playlist_tracks_get', { id: playlistId }),
@@ -41,7 +41,7 @@ export function ReorderPlaylistPage() {
     return <p className="mx-(--body-gutter) pt-11 type-body text-secondary">{String(meta.error ?? tracks.error)}</p>;
   }
 
-  const title = meta.data.find(([pid]) => pid === playlistId)?.[1] ?? 'Playlist';
+  const title = meta.data.find((p) => p.id === playlistId)?.name ?? 'Playlist';
   const rows = order ?? tracks.data;
 
   return (

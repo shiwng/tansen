@@ -39,24 +39,30 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.migrate()?;
         Ok(db)
     }
 
-    /// Opens an additional read-only connection to the same WAL database
-    /// (M11). Queries through it never contend with the writer for the
+    /// Opens an additional read-only connection to the same WAL database.
+    /// Queries through it never contend with the writer for the
     /// write lock. Open it after `open` — migrations run on the writer.
     /// Writes through this handle fail at the SQLite level (READ_ONLY flag),
     /// which is the guard, not the type system.
     pub fn open_read_only(path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -156,16 +162,16 @@ const MIGRATIONS: &[&str] = &[
     );
     "#,
     // 3 — seed built-in source config (YouTube + Local, both enabled) so a
-    // fresh or pre-S2 database has a defined source roster. Forward-only.
+    // fresh or pre-v2 database has a defined source roster. Forward-only.
     r#"
     INSERT OR IGNORE INTO settings(key, value) VALUES(
         'sources_config',
         '[{"config_id":"yt","kind":"youtube","name":"YouTube Music","base_url":"","enabled":true,"rank":0},{"config_id":"local","kind":"local","name":"Local Files","base_url":"","enabled":true,"rank":0}]'
     );
     "#,
-    // 4 — remote tracks (S6): metadata for source-keyed queue entries. The
+    // 4 — remote tracks: metadata for source-keyed queue entries. The
     // table is additive; local `tracks` semantics are untouched. Text
-    // columns are bounded by the upsert (S6).
+    // columns are bounded by the upsert.
     r#"
     CREATE TABLE remote_tracks (
         id            INTEGER PRIMARY KEY,
@@ -178,5 +184,121 @@ const MIGRATIONS: &[&str] = &[
         artwork_url   TEXT,
         UNIQUE(key_source, key_id)
     );
+    "#,
+    // 5 — remote membership of stored playlists (Spotify import). Additive
+    // like migration 4: local `playlist_tracks` semantics are untouched.
+    // key_source is 'youtube' for matched (playable) rows and 'spotify' for
+    // rows kept as imported metadata only (shown unavailable, never played).
+    // Both membership tables share one position sequence per playlist —
+    // appends seed after the max of both.
+    r#"
+    CREATE TABLE playlist_remote_tracks (
+        playlist_id  INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+        position     INTEGER NOT NULL,
+        key_source   TEXT NOT NULL,
+        key_id       TEXT NOT NULL,
+        title        TEXT NOT NULL DEFAULT '',
+        artist       TEXT NOT NULL DEFAULT '',
+        album        TEXT,
+        duration_sec REAL NOT NULL DEFAULT 0,
+        artwork_url  TEXT,
+        PRIMARY KEY (playlist_id, position)
+    );
+    "#,
+    // 6 — playlist favourites (the All Playlists filter).
+    r#"
+    ALTER TABLE playlists ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // 7 — loudness normalization cache. A measured gain per local file path;
+    // the pipeline never guesses when a measurement is absent.
+    r#"
+    CREATE TABLE track_loudness (
+        path           TEXT PRIMARY KEY,
+        gain_db        REAL NOT NULL,
+        integrated_lufs REAL NOT NULL,
+        peak           REAL NOT NULL,
+        measured_at    INTEGER NOT NULL
+    );
+    "#,
+    // 8 — downloads: a persistent queue plus completed-file metadata. The
+    // source_url column is never used for credential-bearing URLs; the
+    // worker re-resolves from (source, track_id) at run time.
+    r#"
+    CREATE TABLE downloads (
+        id            INTEGER PRIMARY KEY,
+        kind          TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        track_id      TEXT NOT NULL,
+        title         TEXT NOT NULL DEFAULT '',
+        artist        TEXT NOT NULL DEFAULT '',
+        album         TEXT,
+        duration_sec  REAL NOT NULL DEFAULT 0,
+        artwork_url   TEXT,
+        status        TEXT NOT NULL DEFAULT 'queued',
+        progress      INTEGER NOT NULL DEFAULT 0,
+        total         INTEGER NOT NULL DEFAULT 0,
+        path          TEXT,
+        error         TEXT,
+        quality       TEXT NOT NULL DEFAULT 'high',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        UNIQUE(source, track_id, quality)
+    );
+    CREATE INDEX idx_downloads_status ON downloads(status);
+    "#,
+    // 9 — listening events and preference signals for home recommendations.
+    // The event log covers local and remote tracks (play_history keeps its
+    // local-only FK history page). Likes, saved albums and followed artists
+    // are explicit feedback; dismissals only hide one recommendation.
+    r#"
+    CREATE TABLE listening_events (
+        id           INTEGER PRIMARY KEY,
+        key_source   TEXT NOT NULL,
+        key_id       TEXT NOT NULL,
+        title        TEXT NOT NULL DEFAULT '',
+        artist       TEXT NOT NULL DEFAULT '',
+        album        TEXT,
+        artwork_url  TEXT,
+        duration_ms  INTEGER NOT NULL DEFAULT 0,
+        played_ms    INTEGER NOT NULL DEFAULT 0,
+        completed    INTEGER NOT NULL DEFAULT 0,
+        started_at   INTEGER NOT NULL
+    );
+    CREATE INDEX idx_listening_started ON listening_events(started_at);
+    CREATE INDEX idx_listening_key ON listening_events(key_source, key_id);
+
+    CREATE TABLE liked_tracks (
+        key_source TEXT NOT NULL,
+        key_id     TEXT NOT NULL,
+        liked_at   INTEGER NOT NULL,
+        PRIMARY KEY (key_source, key_id)
+    );
+
+    CREATE TABLE liked_albums (
+        key_source TEXT NOT NULL,
+        key_id     TEXT NOT NULL,
+        liked_at   INTEGER NOT NULL,
+        PRIMARY KEY (key_source, key_id)
+    );
+
+    CREATE TABLE followed_artists (
+        key_source TEXT NOT NULL,
+        key_id     TEXT NOT NULL,
+        name       TEXT NOT NULL DEFAULT '',
+        liked_at   INTEGER NOT NULL,
+        PRIMARY KEY (key_source, key_id)
+    );
+
+    CREATE TABLE dismissed_recommendations (
+        key_source   TEXT NOT NULL,
+        key_id       TEXT NOT NULL,
+        dismissed_at INTEGER NOT NULL,
+        PRIMARY KEY (key_source, key_id)
+    );
+    "#,
+    // 6 — resolver local-copy matching looks candidates up by duration; the
+    // index keeps that a range seek instead of a tracks-table scan.
+    r#"
+    CREATE INDEX idx_tracks_duration ON tracks(duration_sec);
     "#,
 ];

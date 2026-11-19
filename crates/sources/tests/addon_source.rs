@@ -15,7 +15,7 @@ fn mock_server(routes: &'static [(&'static str, u16, &'static str)]) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
+        for stream in listener.incoming().flatten() {
             handle(stream, routes);
         }
     });
@@ -52,14 +52,30 @@ const SEARCH_OK: &str = r#"{"tracks":[
 ]}"#;
 const STREAM_OK: &str = r#"{"url":"https://cdn.example.test/t1.flac","format":"FLAC","quality":"LOSSLESS","bitrate":900}"#;
 
-/// M13: the default `resolve` on the catalogue trait maps a `stream`
+/// The default `resolve` on the catalogue trait maps a `stream`
 /// answer into a `ResolvedMedia`; the addon protocol carries no MIME or
 /// expiry, so those stay unknown while url/headers flow through.
 #[tokio::test]
 async fn resolve_maps_stream_to_resolved_media() {
     let port = mock_server(&[("/stream/t1", 200, STREAM_OK)]);
-    let source = AddonSource::new("mock", "Mock Addon", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let media = source.resolve(&TrackKey { source: SourceKind::Addon, id: "t1".into() }, &StreamRequest::Best).await.unwrap().expect("resolved");
+    let source = AddonSource::new(
+        "mock",
+        "Mock Addon",
+        &format!("http://127.0.0.1:{port}"),
+        true,
+    )
+    .unwrap();
+    let media = source
+        .resolve(
+            &TrackKey {
+                source: SourceKind::Addon,
+                id: "t1".into(),
+            },
+            &StreamRequest::Best,
+        )
+        .await
+        .unwrap()
+        .expect("resolved");
     assert_eq!(media.url, "https://cdn.example.test/t1.flac");
     assert!(media.headers.is_empty());
     assert_eq!(media.expiry, None);
@@ -74,12 +90,20 @@ async fn health_search_and_stream_round_trip() {
         ("/search", 200, SEARCH_OK),
         ("/stream/t1", 200, STREAM_OK),
     ]);
-    let source = AddonSource::new("mock", "Mock Addon", &format!("http://127.0.0.1:{port}"), true).unwrap();
+    let source = AddonSource::new(
+        "mock",
+        "Mock Addon",
+        &format!("http://127.0.0.1:{port}"),
+        true,
+    )
+    .unwrap();
 
     // Health: reachable and well-formed.
     assert_eq!(
         source.health().await.unwrap(),
-        SourceHealth::Ok { detail: Some("Mock Addon".into()) }
+        SourceHealth::Ok {
+            detail: Some("Mock Addon".into())
+        }
     );
 
     // Search: rows carry this source's id and their advertised tier.
@@ -94,7 +118,13 @@ async fn health_search_and_stream_round_trip() {
 
     // Stream: the tiered request reaches the URL, the answer maps to a stream.
     let stream = source
-        .stream(&TrackKey { source: SourceKind::Addon, id: "t1".into() }, &StreamRequest::Lossless)
+        .stream(
+            &TrackKey {
+                source: SourceKind::Addon,
+                id: "t1".into(),
+            },
+            &StreamRequest::Lossless,
+        )
         .await
         .unwrap()
         .expect("stream exists");
@@ -106,8 +136,13 @@ async fn health_search_and_stream_round_trip() {
 
 #[tokio::test]
 async fn manifest_without_resources_is_rejected_not_unreachable() {
-    let port = mock_server(&[("/manifest.json", 200, r#"{"id":"x","resources":["search"]}"#)]);
-    let source = AddonSource::new("x", "Half Addon", &format!("http://127.0.0.1:{port}"), true).unwrap();
+    let port = mock_server(&[(
+        "/manifest.json",
+        200,
+        r#"{"id":"x","resources":["search"]}"#,
+    )]);
+    let source =
+        AddonSource::new("x", "Half Addon", &format!("http://127.0.0.1:{port}"), true).unwrap();
     match source.health().await.unwrap() {
         SourceHealth::Rejected { reason } => assert!(reason.contains("does not declare")),
         other => panic!("expected Rejected, got {other:?}"),
@@ -134,18 +169,28 @@ async fn repeated_searches_serve_from_the_cache() {
     let port = listener.local_addr().unwrap().port();
     let hits2 = hits.clone();
     thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
+        for stream in listener.incoming().flatten() {
             hits2.fetch_add(1, Ordering::SeqCst);
             handle(stream, &[("/search", 200, SEARCH_OK)]);
         }
     });
-    let source = AddonSource::new("cached", "Cached", &format!("http://127.0.0.1:{port}"), true).unwrap();
+    let source = AddonSource::new(
+        "cached",
+        "Cached",
+        &format!("http://127.0.0.1:{port}"),
+        true,
+    )
+    .unwrap();
     let _ = source.search("a", 25).await.unwrap();
     let _ = source.search("a", 25).await.unwrap();
-    assert_eq!(hits.load(Ordering::SeqCst), 1, "second search served from cache");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "second search served from cache"
+    );
 }
 
-// ---- F3 contract tests (dynamic mock: per-request handler) ----------------
+// contract tests (dynamic mock: per-request handler)
 
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc as StdArc;
@@ -164,7 +209,10 @@ where
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
             let (status, headers, body) = handler(&req);
-            let mut resp = format!("HTTP/1.1 {status} S\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+            let mut resp = format!(
+                "HTTP/1.1 {status} S\r\nContent-Length: {}\r\nConnection: close\r\n",
+                body.len()
+            );
             for (k, v) in headers {
                 resp.push_str(&format!("{k}: {v}\r\n"));
             }
@@ -174,16 +222,6 @@ where
         }
     });
     port
-}
-
-fn manifest_route(body: &'static str) -> impl Fn(&str) -> (u16, Vec<(String, String)>, String) {
-    move |req| {
-        if req.contains("/manifest.json") {
-            (200, vec![], body.to_string())
-        } else {
-            (404, vec![], "{}".into())
-        }
-    }
 }
 
 const STREAM_FULL: &str = r#"{"url":"https://cdn.example.test/t1.flac","codec":"FLAC","container":"mp4","manifest":"none","quality":"LOSSLESS","bitrate":900,"sampleRate":44100,"bitDepth":16,
@@ -198,15 +236,33 @@ async fn stream_contract_fields_quality_params_and_header_allowlist() {
         if req.contains("/manifest.json") {
             (200, vec![], MANIFEST_OK.into())
         } else if req.contains("/stream/t1?quality=") {
-            assert!(req.contains("quality=HIGH") || req.contains("quality=LOSSLESS") || req.contains("quality=LOW"), "contract quality values: {req}");
+            assert!(
+                req.contains("quality=HIGH")
+                    || req.contains("quality=LOSSLESS")
+                    || req.contains("quality=LOW"),
+                "contract quality values: {req}"
+            );
             (200, vec![], STREAM_FULL.into())
         } else {
             (404, vec![], "{}".into())
         }
     });
-    let source = AddonSource::new("mock", "Mock Addon", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
-    let s = source.stream(&k, &StreamRequest::Best).await.unwrap().unwrap();
+    let source = AddonSource::new(
+        "mock",
+        "Mock Addon",
+        &format!("http://127.0.0.1:{port}"),
+        true,
+    )
+    .unwrap();
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
+    let s = source
+        .stream(&k, &StreamRequest::Best)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(s.format.codec, "FLAC");
     assert_eq!(s.format.is_lossless, Some(true), "lossless by codec");
     assert_eq!(s.format.sample_rate, Some(44100));
@@ -216,8 +272,16 @@ async fn stream_contract_fields_quality_params_and_header_allowlist() {
     assert!(s.headers.iter().any(|(k, _)| k == "Authorization"));
     assert!(!s.headers.iter().any(|(k, _)| k == "X-Drop-Me"));
     // Tier mapping: Lossless => LOSSLESS, Capped => LOW (cache-busted by key).
-    let _ = source.stream(&k, &StreamRequest::Lossless).await.unwrap().unwrap();
-    let _ = source.stream(&k, &StreamRequest::Capped { max_kbps: 64 }).await.unwrap().unwrap();
+    let _ = source
+        .stream(&k, &StreamRequest::Lossless)
+        .await
+        .unwrap()
+        .unwrap();
+    let _ = source
+        .stream(&k, &StreamRequest::Capped { max_kbps: 64 })
+        .await
+        .unwrap()
+        .unwrap();
     assert!(seen.load(AtomicOrdering::SeqCst) >= 3);
 }
 
@@ -232,7 +296,10 @@ async fn encrypted_stream_refused() {
         }
     });
     let source = AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     let err = source.stream(&k, &StreamRequest::Best).await.unwrap_err();
     assert!(matches!(err, sources::SourceError::Encrypted), "{err:?}");
 }
@@ -248,10 +315,17 @@ async fn hls_and_dash_manifests_refused_as_unsupported() {
                 (200, vec![], body.clone())
             }
         });
-        let source = AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
-        let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+        let source =
+            AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
+        let k = TrackKey {
+            source: SourceKind::Addon,
+            id: "t1".into(),
+        };
         let err = source.stream(&k, &StreamRequest::Best).await.unwrap_err();
-        assert!(matches!(err, sources::SourceError::Unsupported), "{m}: {err:?}");
+        assert!(
+            matches!(err, sources::SourceError::Unsupported),
+            "{m}: {err:?}"
+        );
     }
 }
 
@@ -265,9 +339,15 @@ async fn in_band_error_surfaces_permanent() {
         }
     });
     let source = AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     let err = source.stream(&k, &StreamRequest::Best).await.unwrap_err();
-    assert!(matches!(err, sources::SourceError::Permanent(ref m) if m.contains("no such track")), "{err:?}");
+    assert!(
+        matches!(err, sources::SourceError::Permanent(ref m) if m.contains("no such track")),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
@@ -282,13 +362,27 @@ async fn redirect_to_other_host_rejected_and_never_fetched() {
         if req.contains("/manifest.json") {
             (200, vec![], MANIFEST_OK.into())
         } else {
-            (302, vec![("Location".into(), format!("http://localhost:{target_port}/evil"))], String::new())
+            (
+                302,
+                vec![(
+                    "Location".into(),
+                    format!("http://localhost:{target_port}/evil"),
+                )],
+                String::new(),
+            )
         }
     });
     let source = AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     assert!(source.stream(&k, &StreamRequest::Best).await.is_err());
-    assert_eq!(hits.load(AtomicOrdering::SeqCst), 0, "redirect target never fetched");
+    assert_eq!(
+        hits.load(AtomicOrdering::SeqCst),
+        0,
+        "redirect target never fetched"
+    );
 }
 
 #[tokio::test]
@@ -302,9 +396,15 @@ async fn oversize_response_rejected() {
         }
     });
     let source = AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     let err = source.stream(&k, &StreamRequest::Best).await.unwrap_err();
-    assert!(matches!(err, sources::SourceError::Permanent(ref m) if m.contains("too large")), "{err:?}");
+    assert!(
+        matches!(err, sources::SourceError::Permanent(ref m) if m.contains("too large")),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
@@ -319,10 +419,16 @@ async fn timeout_is_clean_not_hanging() {
         }
     });
     let source = AddonSource::new("mock", "M", &format!("http://127.0.0.1:{port}"), true).unwrap();
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     let t = std::time::Instant::now();
     assert!(source.stream(&k, &StreamRequest::Best).await.is_err());
-    assert!(t.elapsed() < std::time::Duration::from_secs(14), "bounded by the client timeout");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(14),
+        "bounded by the client timeout"
+    );
 }
 
 #[tokio::test]
@@ -333,7 +439,10 @@ async fn bad_json_manifest_and_stream_are_protocol_errors() {
         source.health().await,
         Err(sources::SourceError::Protocol(_)) | Ok(sources::SourceHealth::Rejected { .. })
     ));
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     assert!(source.stream(&k, &StreamRequest::Best).await.is_err());
 }
 
@@ -342,19 +451,34 @@ async fn id_and_query_caps_enforced_before_any_request() {
     // Down address: the caps must fire before any connection attempt.
     let source = AddonSource::new("down", "D", "http://127.0.0.1:1", true).unwrap();
     let long_id = "a".repeat(129);
-    let k = TrackKey { source: SourceKind::Addon, id: long_id };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: long_id,
+    };
     let err = source.stream(&k, &StreamRequest::Best).await.unwrap_err();
-    assert!(matches!(err, sources::SourceError::Permanent(ref m) if m.contains("out of bounds")), "{err:?}");
+    assert!(
+        matches!(err, sources::SourceError::Permanent(ref m) if m.contains("out of bounds")),
+        "{err:?}"
+    );
     let long_query = "q".repeat(201);
     let err = source.search(&long_query, 5).await.unwrap_err();
-    assert!(matches!(err, sources::SourceError::Permanent(ref m) if m.contains("query too long")), "{err:?}");
+    assert!(
+        matches!(err, sources::SourceError::Permanent(ref m) if m.contains("query too long")),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
 async fn addon_failure_falls_back_to_next_source() {
     // Pinned addon on a 500-server; a healthy fallback answers.
     let fail_port = mock_dynamic(|_| (500, vec![], "{}".into()));
-    let pinned = AddonSource::new("pinned", "P", &format!("http://127.0.0.1:{fail_port}"), true).unwrap();
+    let pinned = AddonSource::new(
+        "pinned",
+        "P",
+        &format!("http://127.0.0.1:{fail_port}"),
+        true,
+    )
+    .unwrap();
     let fallback = AddonSource::new("fb", "F", &format!("http://127.0.0.1:1"), true).unwrap();
     // The fallback must answer, so serve it from a working mock.
     let ok_port = mock_dynamic(move |req| {
@@ -366,14 +490,14 @@ async fn addon_failure_falls_back_to_next_source() {
             (200, vec![], SEARCH_OK.into())
         }
     });
-    let ok_addon = AddonSource::new("fbok", "F", &format!("http://127.0.0.1:{ok_port}"), true).unwrap();
+    let ok_addon =
+        AddonSource::new("fbok", "F", &format!("http://127.0.0.1:{ok_port}"), true).unwrap();
     let _ = fallback; // the failing pinned is the one the resolver pins
 
     let pinned_dyn: StdArc<dyn sources::MusicSource> = StdArc::new(pinned);
     let pinned_for_lookup = pinned_dyn.clone();
-    let lookup: sources::resolver::SourceLookup = StdArc::new(move |kind| {
-        (kind == SourceKind::Addon).then(|| pinned_for_lookup.clone())
-    });
+    let lookup: sources::resolver::SourceLookup =
+        StdArc::new(move |kind| (kind == SourceKind::Addon).then(|| pinned_for_lookup.clone()));
     let fb: StdArc<dyn sources::MusicSource> = StdArc::new(ok_addon);
     let fb2 = fb.clone();
     let provider: sources::resolver::FallbackProvider = StdArc::new(move || vec![fb2.clone()]);
@@ -386,11 +510,18 @@ async fn addon_failure_falls_back_to_next_source() {
         })
     });
     let resolver = sources::resolver::Resolver::with_fallbacks(lookup, provider, meta);
-    let k = TrackKey { source: SourceKind::Addon, id: "t1".into() };
+    let k = TrackKey {
+        source: SourceKind::Addon,
+        id: "t1".into(),
+    };
     // resolve_blocking builds its own runtime — plain thread, as the engine does.
     let media = std::thread::spawn(move || resolver.resolve_blocking(&k, &StreamRequest::Best))
         .join()
         .unwrap()
         .expect("fallback hit");
-    assert_eq!(media.source, SourceKind::Addon, "the healthy fallback answered");
+    assert_eq!(
+        media.source,
+        SourceKind::Addon,
+        "the healthy fallback answered"
+    );
 }

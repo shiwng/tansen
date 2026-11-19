@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 //
-// F8 regression: the full-screen player rendered purely from `nowPlaying`,
+// Regression: the full-screen player rendered purely from `nowPlaying`,
 // so restoring a persisted queue at boot mounted the fixed inset-0 overlay
 // at launch with a close button that only cleared a flag nobody read — the
 // whole app appeared frozen behind it. The gate now also requires the
@@ -13,7 +13,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { FullScreenPlayer } from './FullScreenPlayer';
 import { usePlayer } from '@/state/player';
 import { useUi } from '@/state/ui';
+import { useAppearance } from '@/state/appearance';
 import { useLyricsSettings } from '@/lyrics/settings';
+import { LYRICS_SOURCES } from '@/lyrics/sources';
 
 const nowPlaying = {
   videoId: 'v1',
@@ -39,7 +41,7 @@ function reset(fullScreen: boolean, withTrack: boolean) {
   });
   useUi.setState({ fullScreen });
   // Disable every lyrics provider so the panel never fetches in happy-dom.
-  useLyricsSettings.setState({ disabled: ['lrclib', 'musixmatch', 'paxsenix', 'kugou', 'genius'] });
+  useLyricsSettings.setState({ disabled: LYRICS_SOURCES.map((source) => source.id) });
 }
 
 function mount() {
@@ -87,5 +89,33 @@ describe('FullScreenPlayer mount gate', () => {
     reset(true, false);
     const host = mount();
     expect(host.childElementCount).toBe(0);
+  });
+
+  it('opens even when full-screen cover art is disabled', () => {
+    useAppearance.setState({ fullScreenArt: false });
+    useUi.setState({ fullScreen: false });
+    useUi.getState().setFullScreen(true);
+    expect(useUi.getState().fullScreen).toBe(true);
+    useAppearance.setState({ fullScreenArt: true });
+  });
+
+  it('closes on Escape', () => {
+    reset(true, true);
+    mount();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(useUi.getState().fullScreen).toBe(false);
+  });
+
+  it('holds the overlay for the exit animation before unmounting', async () => {
+    reset(true, true);
+    const host = mount();
+    act(() => useUi.getState().setFullScreen(false));
+    expect(host.querySelector('[role="dialog"]')).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+    expect(host.querySelector('[role="dialog"]')).toBeNull();
   });
 });

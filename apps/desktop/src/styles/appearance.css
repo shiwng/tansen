@@ -1,0 +1,48 @@
+/*
+ * Appearance settings (Settings → Appearance), attribute-driven. The
+ * attributes are owned by src/state/appearance.ts; `data-theme` itself stays
+ * chrome.ts's. Imported unlayered from global.css so these overrides beat
+ * the layered tokens regardless of order. The solid fallbacks mirror the
+ * proven prefers-contrast materials (tokens.css).
+ */
+
+/* Liquid Glass off: solid surfaces, no backdrop blur. */
+:root[data-glass='off'] {
+  --glassMaterialBackdropFilter: none;
+  --pillMaterialBackdropFilter: none;
+  --glassMaterialBackground: #f2f2f2;
+  --pillMaterialBackground: #f7f7f7;
+}
+
+:root[data-glass='off'][data-theme='dark'] {
+  --glassMaterialBackground: #0e0e0e;
+  --pillMaterialBackground: #1c1c1e;
+}
+
+/* Reduce Dynamic Blur: the decorative backdrop blurs zero out. The tiers
+   keep each surface's measured look; components reference them by var. */
+:root {
+  --dynamicBlurMenu: saturate(2.2) blur(32px);
+  --dynamicBlurSoft: blur(10px);
+  --dynamicBlurHero: saturate(180%) blur(60px);
+}
+
+/* Menus keep the material's own frost (the same glass the native menus use);
+   only the large decorative blurs are dropped. */
+:root[data-reduce-blur='on'] {
+  --dynamicBlurMenu: var(--glassMaterialBackdropFilter);
+  --dynamicBlurSoft: none;
+  --dynamicBlurHero: none;
+}
+
+/* Reduce Animation: the same kill switch as the OS prefers-reduced-motion
+   block in global.css, forced by the setting (the OS setting keeps working
+   independently). */
+:root[data-reduce-motion='on'] *,
+:root[data-reduce-motion='on'] *::before,
+:root[data-reduce-motion='on'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

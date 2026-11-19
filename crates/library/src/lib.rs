@@ -50,37 +50,61 @@ mod tests {
             persistence::repo::add_folder(&db, &folder_root.to_string_lossy(), 0).unwrap();
 
         let summary = scanner
-            .scan(&db, &[(folder_id, folder_root.to_string_lossy().into())], |_| {})
+            .scan(
+                &db,
+                &[(folder_id, folder_root.to_string_lossy().into())],
+                |_| {},
+            )
             .unwrap();
         assert_eq!(summary.added, 1, "first scan indexes the file");
         assert_eq!(persistence::repo::count(&db, "tracks").unwrap(), 1);
 
         let track = persistence::repo::list_tracks(&db).unwrap().remove(0);
         assert_eq!(track.title, "test"); // filename fallback (untagged WAV)
-        assert!(track.duration_sec > 1.5, "WAV duration parsed, got {}", track.duration_sec);
+        assert!(
+            track.duration_sec > 1.5,
+            "WAV duration parsed, got {}",
+            track.duration_sec
+        );
         assert_eq!(track.sample_rate, Some(44100));
         assert_eq!(track.channels, Some(2));
 
         // Second scan: no duplicates, no phantom missing, and the unchanged
-        // file is skipped without a re-parse (M12).
+        // file is skipped without a re-parse.
         let summary = scanner
-            .scan(&db, &[(folder_id, folder_root.to_string_lossy().into())], |_| {})
+            .scan(
+                &db,
+                &[(folder_id, folder_root.to_string_lossy().into())],
+                |_| {},
+            )
             .unwrap();
         assert_eq!(summary.added, 0);
         assert_eq!(summary.marked_missing, 0);
-        assert_eq!(summary.unchanged, 1, "unchanged file skipped by stat compare");
+        assert_eq!(
+            summary.unchanged, 1,
+            "unchanged file skipped by stat compare"
+        );
         assert_eq!(persistence::repo::count(&db, "tracks").unwrap(), 1);
 
         // A changed file is re-parsed: bump the mtime (content untouched),
         // the skip no longer applies.
         let new_mtime = file_mtime(&fixture) + 5;
         {
-            let f = std::fs::OpenOptions::new().write(true).open(&fixture).unwrap();
-            f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(new_mtime as u64))
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fixture)
                 .unwrap();
+            f.set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(new_mtime as u64),
+            )
+            .unwrap();
         }
         let summary = scanner
-            .scan(&db, &[(folder_id, folder_root.to_string_lossy().into())], |_| {})
+            .scan(
+                &db,
+                &[(folder_id, folder_root.to_string_lossy().into())],
+                |_| {},
+            )
             .unwrap();
         assert_eq!(summary.unchanged, 0, "touched file is re-parsed");
         assert_eq!(summary.added, 0, "same path updates, not inserts");

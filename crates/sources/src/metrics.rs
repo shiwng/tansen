@@ -1,6 +1,6 @@
-//! S13: source-layer measurement counters (debug builds only, cfg-gated
+//! Source-layer measurement counters (debug builds only, cfg-gated
 //! no-op twin — never registered as IPC, release compiles the calls to
-//! nothing). Mirrors the shell's `metrics.rs` M2 pattern: std statics, no
+//! nothing). Mirrors the shell's `metrics.rs` pattern: std statics, no
 //! new deps, dumped per 10 s window under the `metrics` log target.
 
 #[cfg(debug_assertions)]
@@ -58,7 +58,7 @@ pub mod source {
         }
     }
 
-    /// One S7 fallback-ladder outcome.
+    /// One fallback-ladder outcome.
     pub fn ladder_outcome(hit: bool) {
         if let Ok(mut map) = ladder().lock() {
             let key = if hit { "fallback_hit" } else { "fallback_miss" };
@@ -81,7 +81,12 @@ pub mod source {
     fn fmt_lat(samples: &[f64]) -> String {
         let mut s = samples.to_vec();
         s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        format!("n={} p50={:.0}ms p95={:.0}ms", s.len(), pct(&s, 0.50), pct(&s, 0.95))
+        format!(
+            "n={} p50={:.0}ms p95={:.0}ms",
+            s.len(),
+            pct(&s, 0.50),
+            pct(&s, 0.95)
+        )
     }
 
     /// Logs one line for everything that fired since the previous call.
@@ -143,35 +148,8 @@ pub mod source {
             resolve_warm_hit();
             ladder_outcome(true);
             // No panic; the values land in the next log_window (checked by
-            // the bench run parsing the metrics target, not here).
+            // the metrics test parsing the target, not here).
             log_window();
-        }
-    }
-}
-
-/// S13 bench helper (debug only): a permanently-failing pinned source for
-/// driving fallback-ladder outcome counters.
-#[cfg(debug_assertions)]
-pub mod bench {
-    use crate::{CatalogTrack, MusicSource, SourceError, SourceHealth, SourceKind, SourceStream, StreamRequest, TrackKey};
-
-    pub struct BenchFailSource;
-    #[async_trait::async_trait]
-    impl MusicSource for BenchFailSource {
-        fn config_id(&self) -> &str { "bench-fail" }
-        fn kind(&self) -> SourceKind { SourceKind::YouTube }
-        fn display_name(&self) -> &str { "BenchFail" }
-        async fn health(&self) -> Result<SourceHealth, SourceError> {
-            Ok(SourceHealth::Ok { detail: None })
-        }
-        async fn search(&self, _q: &str, _l: usize) -> Result<Vec<CatalogTrack>, SourceError> {
-            Err(SourceError::Permanent("bench pinned failure".into()))
-        }
-        async fn stream(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<SourceStream>, SourceError> {
-            Err(SourceError::Unsupported)
-        }
-        async fn resolve(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<crate::ResolvedMedia>, SourceError> {
-            Err(SourceError::Permanent("bench pinned failure".into()))
         }
     }
 }

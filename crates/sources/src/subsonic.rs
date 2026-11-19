@@ -1,4 +1,4 @@
-//! S9: Subsonic / OpenSubsonic source over the shared `MusicSource` trait.
+//! Subsonic / OpenSubsonic source over the shared `MusicSource` trait.
 //!
 //! - health: `rest/ping` (auth-exercising)
 //! - search: `rest/search3` (songs only)
@@ -30,8 +30,6 @@ use url::Url;
 const TIMEOUT: Duration = Duration::from_secs(20);
 /// Cap on JSON API responses (search/ping).
 const JSON_MAX_BYTES: u64 = 4 * 1024 * 1024;
-/// Cap on the stream probe (headers + a slice of the body).
-const PROBE_MAX_BYTES: u64 = 64 * 1024;
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "tansen";
 /// Max redirect hops for the accept-policy.
@@ -43,12 +41,14 @@ pub trait SecretProvider: Send + Sync {
     fn get(&self, account: &str) -> Option<String>;
 }
 
-/// The real provider: macOS Keychain (S9 decision A). Reads the
+/// The real provider: macOS Keychain. Reads the
 /// server-bound key with the legacy username-only fallback.
 pub struct KeychainSecretProvider;
 impl SecretProvider for KeychainSecretProvider {
     fn get(&self, account: &str) -> Option<String> {
-        crate::keychain::get_password_server_bound(account).ok().flatten()
+        crate::keychain::get_password_server_bound(account)
+            .ok()
+            .flatten()
     }
 }
 
@@ -67,11 +67,13 @@ fn is_loopback_or_private(host: &str) -> bool {
     netguard::host_is_local(host)
 }
 
-/// Validates the base URL against the S9 URL policy.
+/// Validates the base URL against the URL policy.
 pub fn validate_base_url(base: &str, allow_http: bool) -> Result<Url, SourceError> {
     let url = Url::parse(base).map_err(|e| SourceError::Permanent(format!("bad base url: {e}")))?;
     if url.username() != "" || url.password().is_some() {
-        return Err(SourceError::Permanent("credentials must not be embedded in the URL".into()));
+        return Err(SourceError::Permanent(
+            "credentials must not be embedded in the URL".into(),
+        ));
     }
     let Some(host) = url.host_str() else {
         return Err(SourceError::Permanent("base url has no host".into()));
@@ -84,14 +86,23 @@ pub fn validate_base_url(base: &str, allow_http: bool) -> Result<Url, SourceErro
                 "http requires the LAN/localhost opt-in and a private host".into(),
             ));
         }
-        other => return Err(SourceError::Permanent(format!("scheme not allowed: {other}"))),
+        other => {
+            return Err(SourceError::Permanent(format!(
+                "scheme not allowed: {other}"
+            )))
+        }
     }
     Ok(url)
 }
 
 /// Maps a stream Content-Type to a codec label + lossless hint.
 fn content_type_to_format(ct: &str) -> Option<StreamFormat> {
-    let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let ct = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     let codec = match ct.as_str() {
         "audio/flac" | "audio/x-flac" => "flac",
         "audio/mpeg" | "audio/mp3" => "mp3",
@@ -231,10 +242,13 @@ impl SubsonicSource {
         // credential belongs to (username, server), never to the username
         // alone.
         let password = self.secrets.get(&self.secret_account).unwrap_or_default();
-        let salt = format!("{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0));
+        let salt = format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
         let token = hex_lower(&Md5::digest(format!("{password}{salt}")));
         vec![
             ("u".to_string(), self.username.clone()),
@@ -252,9 +266,21 @@ impl SubsonicSource {
             .map_err(|e| SourceError::Permanent(format!("bad endpoint: {e}")))
     }
 
+    /// Transport errors must never carry the request URL: Subsonic auth lives
+    /// in the query (`u`/`t`/`s`), and reqwest's Display appends the full URL.
+    /// `without_url` keeps the underlying cause while dropping the secret.
+    fn transport_error(error: reqwest::Error) -> SourceError {
+        SourceError::Network(error.without_url().to_string())
+    }
+
     /// GET returning a sized-capped body; rejects oversized responses. The
     /// client is DNS-pinned at construction (see `new_with_secrets`).
-    async fn get_capped(&self, path: &str, params: &[(String, String)], cap: u64) -> Result<Vec<u8>, SourceError> {
+    async fn get_capped(
+        &self,
+        path: &str,
+        params: &[(String, String)],
+        cap: u64,
+    ) -> Result<Vec<u8>, SourceError> {
         let url = self.endpoint(path)?;
         let client = self.http_client().await?;
         let mut resp = client
@@ -262,18 +288,14 @@ impl SubsonicSource {
             .query(params)
             .send()
             .await
-            .map_err(|e| SourceError::Network(e.to_string()))?;
+            .map_err(Self::transport_error)?;
         if let Some(len) = resp.content_length() {
             if len > cap {
                 return Err(SourceError::Permanent("response too large".into()));
             }
         }
         let mut body = Vec::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| SourceError::Network(e.to_string()))?
-        {
+        while let Some(chunk) = resp.chunk().await.map_err(Self::transport_error)? {
             body.extend_from_slice(&chunk);
             if body.len() as u64 > cap {
                 return Err(SourceError::Permanent("response too large".into()));
@@ -313,6 +335,37 @@ impl SubsonicSource {
         }
         Ok(url)
     }
+
+    /// A URL that downloads a file rather than opening the playback stream.
+    /// `quality` is `low`/`medium` (server-side transcode) or anything else
+    /// (the original file via `rest/download`). Credentials are generated
+    /// fresh here and never persisted.
+    pub fn download_url(&self, track_id: &str, quality: &str) -> Result<Url, SourceError> {
+        let transcode = match quality {
+            "low" => Some("64"),
+            "medium" => Some("128"),
+            _ => None,
+        };
+        let path = if transcode.is_some() {
+            "rest/stream"
+        } else {
+            "rest/download"
+        };
+        let mut url = self.endpoint(path)?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("id", track_id);
+            if let Some(kbps) = transcode {
+                pairs.append_pair("format", "mp3");
+                pairs.append_pair("maxBitRate", kbps);
+            }
+            pairs.append_pair("estimateContentLength", "true");
+            for (k, v) in self.auth_params() {
+                pairs.append_pair(&k, &v);
+            }
+        }
+        Ok(url)
+    }
 }
 
 #[async_trait]
@@ -330,16 +383,27 @@ impl MusicSource for SubsonicSource {
     }
 
     async fn health(&self) -> Result<SourceHealth, SourceError> {
-        let body = match self.get_capped("rest/ping", &self.auth_params(), JSON_MAX_BYTES).await {
+        let body = match self
+            .get_capped("rest/ping", &self.auth_params(), JSON_MAX_BYTES)
+            .await
+        {
             Ok(b) => b,
             Err(SourceError::Network(_)) => {
-                return Ok(SourceHealth::Unreachable { reason: "server unreachable".into() });
+                return Ok(SourceHealth::Unreachable {
+                    reason: "server unreachable".into(),
+                });
             }
-            Err(e) => return Ok(SourceHealth::Rejected { reason: e.to_string() }),
+            Err(e) => {
+                return Ok(SourceHealth::Rejected {
+                    reason: e.to_string(),
+                })
+            }
         };
         match Self::response_json(&body) {
             Ok(_) => Ok(SourceHealth::Ok { detail: None }),
-            Err(e) => Ok(SourceHealth::Rejected { reason: e.to_string() }),
+            Err(e) => Ok(SourceHealth::Rejected {
+                reason: e.to_string(),
+            }),
         }
     }
 
@@ -349,26 +413,53 @@ impl MusicSource for SubsonicSource {
         params.push(("songCount".to_string(), limit.to_string()));
         params.push(("artistCount".to_string(), "0".to_string()));
         params.push(("albumCount".to_string(), "0".to_string()));
-        let body = self.get_capped("rest/search3", &params, JSON_MAX_BYTES).await?;
+        let body = self
+            .get_capped("rest/search3", &params, JSON_MAX_BYTES)
+            .await?;
         let resp = Self::response_json(&body)?;
-        let songs = resp.pointer("/searchResult3/song").and_then(|s| s.as_array());
-        let Some(songs) = songs else { return Ok(vec![]) };
+        let songs = resp
+            .pointer("/searchResult3/song")
+            .and_then(|s| s.as_array());
+        let Some(songs) = songs else {
+            return Ok(vec![]);
+        };
         let mut out = Vec::with_capacity(songs.len());
         for song in songs {
-            if song.get("isVideo").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if song
+                .get("isVideo")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 continue;
             }
-            let Some(id) = song.get("id").and_then(|i| i.as_str()) else { continue };
-            let artwork_url = song.get("coverArt").and_then(|c| c.as_str()).map(|a| {
-                format!("{}rest/getCoverArt?id={}", self.base, a)
-            });
+            let Some(id) = song.get("id").and_then(|i| i.as_str()) else {
+                continue;
+            };
+            let artwork_url = song
+                .get("coverArt")
+                .and_then(|c| c.as_str())
+                .map(|a| format!("{}rest/getCoverArt?id={}", self.base, a));
             out.push(CatalogTrack {
                 track_id: id.to_string(),
                 config_id: self.config_id.clone(),
-                title: song.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                artist: song.get("artist").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                album: song.get("album").and_then(|t| t.as_str()).map(str::to_string),
-                duration_sec: song.get("duration").and_then(|d| d.as_u64()).map(|d| d as u32),
+                title: song
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                artist: song
+                    .get("artist")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                album: song
+                    .get("album")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string),
+                duration_sec: song
+                    .get("duration")
+                    .and_then(|d| d.as_u64())
+                    .map(|d| d as u32),
                 artwork_url,
                 format: None,
                 embedded_stream_url: None,
@@ -390,8 +481,13 @@ impl MusicSource for SubsonicSource {
             .header(reqwest::header::RANGE, "bytes=0-0")
             .send()
             .await
-            .map_err(|e| SourceError::Network(e.to_string()))?;
-        if probe.headers().get("x-subsonic-drm").and_then(|v| v.to_str().ok()) == Some("true") {
+            .map_err(Self::transport_error)?;
+        if probe
+            .headers()
+            .get("x-subsonic-drm")
+            .and_then(|v| v.to_str().ok())
+            == Some("true")
+        {
             return Err(SourceError::Permanent("drm-flagged stream rejected".into()));
         }
         let ct = probe
@@ -405,7 +501,10 @@ impl MusicSource for SubsonicSource {
         }
         let format = content_type_to_format(&ct).or_else(|| {
             // Unknown type: keep the stream but without a lossless claim.
-            Some(StreamFormat { codec: String::new(), ..Default::default() })
+            Some(StreamFormat {
+                codec: String::new(),
+                ..Default::default()
+            })
         });
         Ok(Some(SourceStream {
             url: url.to_string(),
@@ -436,24 +535,63 @@ mod tests {
     fn url_policy() {
         assert!(validate_base_url("https://music.example", false).is_ok());
         assert!(validate_base_url("https://music.example", true).is_ok());
-        assert!(validate_base_url("http://music.example", false).is_err(), "http without opt-in");
-        assert!(validate_base_url("http://music.example", true).is_err(), "http to a public DNS name");
+        assert!(
+            validate_base_url("http://music.example", false).is_err(),
+            "http without opt-in"
+        );
+        assert!(
+            validate_base_url("http://music.example", true).is_err(),
+            "http to a public DNS name"
+        );
         assert!(validate_base_url("http://127.0.0.1:4533", true).is_ok());
         assert!(validate_base_url("http://localhost:4533", true).is_ok());
         assert!(validate_base_url("http://10.0.0.5:4533", true).is_ok());
         assert!(validate_base_url("http://192.168.1.5:4533", true).is_ok());
-        assert!(validate_base_url("ftp://music.example", true).is_err(), "scheme allowlist");
-        assert!(validate_base_url("https://user:pw@music.example", true).is_err(), "no embedded creds");
+        assert!(
+            validate_base_url("ftp://music.example", true).is_err(),
+            "scheme allowlist"
+        );
+        assert!(
+            validate_base_url("https://user:pw@music.example", true).is_err(),
+            "no embedded creds"
+        );
         assert!(validate_base_url("not a url", true).is_err());
     }
 
     #[test]
     fn content_type_maps_to_lossless_hints() {
         assert_eq!(content_type_to_format("audio/flac").unwrap().codec, "flac");
-        assert_eq!(content_type_to_format("audio/flac").unwrap().is_lossless, Some(true));
-        assert_eq!(content_type_to_format("audio/mpeg").unwrap().is_lossless, Some(false));
-        assert_eq!(content_type_to_format("audio/mp4; codecs=mp4a.40.2").unwrap().codec, "m4a");
+        assert_eq!(
+            content_type_to_format("audio/flac").unwrap().is_lossless,
+            Some(true)
+        );
+        assert_eq!(
+            content_type_to_format("audio/mpeg").unwrap().is_lossless,
+            Some(false)
+        );
+        assert_eq!(
+            content_type_to_format("audio/mp4; codecs=mp4a.40.2")
+                .unwrap()
+                .codec,
+            "m4a"
+        );
         assert!(content_type_to_format("application/octet-stream").is_none());
-        assert_eq!(content_type_to_format("audio/wav").unwrap().is_lossless, Some(true));
+        assert_eq!(
+            content_type_to_format("audio/wav").unwrap().is_lossless,
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_errors_drop_the_credential_query() {
+        let error = reqwest::Client::new()
+            .get("http://127.0.0.1:1/rest/ping?u=alice&t=deadbeef&s=cafe")
+            .send()
+            .await
+            .expect_err("connection to port 1 must fail");
+        let message = SubsonicSource::transport_error(error).to_string();
+        assert!(!message.contains("deadbeef"), "token leaked: {message}");
+        assert!(!message.contains("u=alice"), "username leaked: {message}");
+        assert!(message.contains("error sending request"), "{message}");
     }
 }

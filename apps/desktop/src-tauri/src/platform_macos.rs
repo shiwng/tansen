@@ -1,7 +1,7 @@
 //! macOS Now Playing + remote commands via the MediaPlayer framework
-//! (objc2 bindings) — M17. Replaces the souvlaki integration: same
+//! (objc2 bindings). Replaces the souvlaki integration: same
 //! features (metadata, elapsed/rate, transport commands), but wired to the
-//! M6 engine watch directly.
+//! engine watch directly.
 //!
 //! Contract: the watch task updates Now Playing **only when the engine
 //! publishes a new rev** — `elapsed` is the anchor position and `rate` the
@@ -13,16 +13,15 @@ use app_core::playback_engine::Engine;
 use app_core::playback_types::Command;
 use app_core::playback_types::Status;
 use app_core::AppState;
-use objc2::rc::autoreleasepool;
 use core::ptr::NonNull;
+use objc2::rc::autoreleasepool;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2_foundation::{NSNotification, NSMutableDictionary, NSNumber, NSString};
-use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSMutableDictionary, NSNotification, NSNumber, NSString};
 use objc2_media_player::{
-    MPChangePlaybackPositionCommandEvent, MPRemoteCommandEvent, MPMediaItemPropertyAlbumTitle, MPMediaItemPropertyArtist,
+    MPChangePlaybackPositionCommandEvent, MPMediaItemPropertyAlbumTitle, MPMediaItemPropertyArtist,
     MPMediaItemPropertyPlaybackDuration, MPMediaItemPropertyTitle, MPNowPlayingInfoCenter,
     MPNowPlayingInfoPropertyElapsedPlaybackTime, MPNowPlayingInfoPropertyPlaybackRate,
-    MPRemoteCommandCenter, MPRemoteCommandHandlerStatus,
+    MPRemoteCommandCenter, MPRemoteCommandEvent, MPRemoteCommandHandlerStatus,
 };
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -46,13 +45,10 @@ pub fn start(engine: Engine, state: Arc<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// M18: system sleep pauses playback; wake rebuilds the output stream at the
+/// System sleep pauses playback; wake rebuilds the output stream at the
 /// anchor position — via NSWorkspace notifications on the shared center.
 unsafe fn observe_sleep_wake(engine: Engine) {
-    use objc2_app_kit::{
-        NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
-    };
-    use objc2_foundation::NSNotificationQueue;
+    use objc2_app_kit::{NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification};
 
     let center = objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter();
 
@@ -79,7 +75,7 @@ unsafe fn observe_sleep_wake(engine: Engine) {
     );
 }
 
-/// M18: polls the default output device + sleep state every 2 s and routes
+/// Polls the default output device + sleep state every 2 s and routes
 /// transitions into the engine as Commands — `Pause` when the active device
 /// was removed or the system sleeps, `RebuildOutput` on a device switch,
 /// removal of a non-active device, and wake.
@@ -109,8 +105,6 @@ fn spawn_output_monitor(engine: Engine) {
         .expect("output monitor thread");
 }
 
-
-
 struct TrackMeta {
     title: String,
     artist: String,
@@ -139,7 +133,10 @@ fn lookup_track(state: &AppState, id: u64) -> TrackMeta {
 
 /// Engine watch → Now Playing. Fires only on publishes (rev bumps); the
 /// metadata comes from the library DB for the current entry.
-async fn watch_loop(state: Arc<AppState>, mut rx: watch::Receiver<app_core::playback_types::PlaybackState>) {
+async fn watch_loop(
+    state: Arc<AppState>,
+    mut rx: watch::Receiver<app_core::playback_types::PlaybackState>,
+) {
     loop {
         let Ok(()) = rx.changed().await else { break };
         let st = rx.borrow_and_update().clone();
@@ -154,9 +151,18 @@ async fn watch_loop(state: Arc<AppState>, mut rx: watch::Receiver<app_core::play
             let title = NSString::from_str(&meta.title);
             let artist = NSString::from_str(&meta.artist);
             let album = NSString::from_str(&meta.album);
-            dict.setObject_forKey(&*title, &ProtocolObject::from_ref(&*MPMediaItemPropertyTitle));
-            dict.setObject_forKey(&*artist, &ProtocolObject::from_ref(&*MPMediaItemPropertyArtist));
-            dict.setObject_forKey(&*album, &ProtocolObject::from_ref(&*MPMediaItemPropertyAlbumTitle));
+            dict.setObject_forKey(
+                &*title,
+                &ProtocolObject::from_ref(&*MPMediaItemPropertyTitle),
+            );
+            dict.setObject_forKey(
+                &*artist,
+                &ProtocolObject::from_ref(&*MPMediaItemPropertyArtist),
+            );
+            dict.setObject_forKey(
+                &*album,
+                &ProtocolObject::from_ref(&*MPMediaItemPropertyAlbumTitle),
+            );
             if meta.duration_sec > 0.0 {
                 let duration = NSNumber::numberWithDouble(meta.duration_sec);
                 dict.setObject_forKey(
@@ -201,25 +207,25 @@ unsafe fn attach_remote_commands(
 
     let engine_toggle = engine.clone();
     let rx_toggle = rx.clone();
-    on!(
-        cc.togglePlayPauseCommand(),
-        {
-            let st = rx_toggle.borrow().clone();
-            match st.status {
-                Status::Playing => {
-                    let _ = engine_toggle.try_send(Command::Pause);
-                }
-                Status::Paused => {
-                    let _ = engine_toggle.try_send(Command::Resume);
-                }
-                _ => {
-                    if let Some(entry) = st.entry {
-                        let _ = engine_toggle.try_send(Command::Play { entry, remote: None });
-                    }
+    on!(cc.togglePlayPauseCommand(), {
+        let st = rx_toggle.borrow().clone();
+        match st.status {
+            Status::Playing => {
+                let _ = engine_toggle.try_send(Command::Pause);
+            }
+            Status::Paused => {
+                let _ = engine_toggle.try_send(Command::Resume);
+            }
+            _ => {
+                if let Some(entry) = st.entry {
+                    let _ = engine_toggle.try_send(Command::Play {
+                        entry,
+                        remote: None,
+                    });
                 }
             }
         }
-    );
+    });
 
     let engine_play = engine.clone();
     let rx_play = rx.clone();
@@ -228,7 +234,10 @@ unsafe fn attach_remote_commands(
         if st.status == Status::Paused {
             let _ = engine_play.try_send(Command::Resume);
         } else if let Some(entry) = st.entry {
-            let _ = engine_play.try_send(Command::Play { entry, remote: None });
+            let _ = engine_play.try_send(Command::Play {
+                entry,
+                remote: None,
+            });
         }
     });
 
@@ -251,14 +260,18 @@ unsafe fn attach_remote_commands(
     let rx_back = rx.clone();
     on!(cc.skipBackwardCommand(), {
         let pos = rx_back.borrow().anchor.pos_ms as f64 / 1000.0;
-        let _ = engine_back.try_send(Command::Seek { ms: ((pos - SEEK_STEP_SEC).max(0.0) * 1000.0) as u64 });
+        let _ = engine_back.try_send(Command::Seek {
+            ms: ((pos - SEEK_STEP_SEC).max(0.0) * 1000.0) as u64,
+        });
     });
 
     let engine_fwd = engine.clone();
     let rx_fwd = rx.clone();
     on!(cc.skipForwardCommand(), {
         let pos = rx_fwd.borrow().anchor.pos_ms as f64 / 1000.0;
-        let _ = engine_fwd.try_send(Command::Seek { ms: ((pos + SEEK_STEP_SEC) * 1000.0) as u64 });
+        let _ = engine_fwd.try_send(Command::Seek {
+            ms: ((pos + SEEK_STEP_SEC) * 1000.0) as u64,
+        });
     });
 
     // Scrubbing: the event carries the absolute target position.
@@ -272,7 +285,9 @@ unsafe fn attach_remote_commands(
                 NonNull::new_unchecked(event.as_ptr() as *mut MPChangePlaybackPositionCommandEvent)
             };
             let target = unsafe { event.as_ref().positionTime() };
-            let _ = engine_pos.try_send(Command::Seek { ms: (target.max(0.0) * 1000.0) as u64 });
+            let _ = engine_pos.try_send(Command::Seek {
+                ms: (target.max(0.0) * 1000.0) as u64,
+            });
             HANDLER_SUCCESS
         },
     );

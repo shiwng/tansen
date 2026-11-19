@@ -95,16 +95,42 @@ PY
 # JitPack's transfer of innertubex-desktop-v0.7.0 truncates repeatedly
 # (observed three times at ~1 MB of 1.9 MB), so Gradle's own download is not
 # reliable. Pre-seed ~/.m2 with resumed, retried curl fetches; Gradle then
-# resolves from mavenLocal(). Build-time only — nothing downloads at runtime.
+# resolves from mavenLocal(). The tag is mutable, so every download is checked
+# against a digest recorded in this script. Build-time only — nothing
+# downloads at runtime.
 M2="$HOME/.m2/repository/com/github/MetrolistGroup/innertubex/innertubex-desktop/v0.7.0"
 mkdir -p "$M2"
-for f in innertubex-desktop-v0.7.0.jar innertubex-desktop-v0.7.0.pom; do
-  if [ ! -f "$M2/$f" ] || [ ! -f "$M2/$f.sha1" ]; then
-    curl -sSL --retry 10 --retry-all-errors -C - -o "$M2/$f" \
-      "https://jitpack.io/com/github/MetrolistGroup/innertubex/innertubex-desktop/v0.7.0/$f"
-    shasum -a 1 "$M2/$f" | cut -d' ' -f1 > "$M2/$f.sha1"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
   fi
-done
+}
+
+fetch_verified() {
+  local file="$1" expected="$2"
+  local dest="$M2/$file"
+  local url="https://jitpack.io/com/github/MetrolistGroup/innertubex/innertubex-desktop/v0.7.0/$file"
+  if [ ! -f "$dest" ] || [ "$(sha256_of "$dest")" != "$expected" ]; then
+    rm -f "$dest"
+    curl -sSL --retry 10 --retry-all-errors -C - -o "$dest" "$url"
+    local actual
+    actual="$(sha256_of "$dest")"
+    if [ "$actual" != "$expected" ]; then
+      echo "checksum mismatch for $file: expected $expected, got $actual" >&2
+      rm -f "$dest"
+      exit 1
+    fi
+  fi
+  shasum -a 1 "$dest" | cut -d' ' -f1 > "$dest.sha1"
+}
+
+fetch_verified "innertubex-desktop-v0.7.0.jar" \
+  "1b8195634a8a3ada50629f2584a35f82bdbc7041e5974f957b8c3132c435cc8f"
+fetch_verified "innertubex-desktop-v0.7.0.pom" \
+  "c716dc9c1014335c3f048263a497b762123959d35ed57f88b5b47b6c23fcd6f1"
 
 # --- build ---------------------------------------------------------------------
 if [ -z "${JAVA_HOME:-}" ] && [ -x "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java" ]; then
@@ -126,7 +152,7 @@ echo "sidecar jar -> $OUT/sidecar-all.jar"
 # F7: bundle a trimmed jlink Java runtime next to the jar so the app runs
 # on a clean macOS without system Java (8-module set verified by the
 # sidecar smoke test: /health, /search, /track, /stream, /lyrics).
-JLINK="${JAVA_HOME:-$("$JAVA" -XshowSettings:properties -version 2>&1 | awk '/java.home/ {print $3}')}/bin/jlink"
+JLINK="$JAVA_HOME/bin/jlink"
 if [ -x "$JLINK" ]; then
   rm -rf "$OUT/jre"
   "$JLINK" \
@@ -138,15 +164,13 @@ if [ -x "$JLINK" ]; then
   chmod -R u+w "$OUT/jre"
   echo "jre -> $OUT/jre ($(du -sh "$OUT/jre" | cut -f1))"
 else
-  echo "jlink not found; skipping bundled JRE (JAVA_HOME unset)" >&2
+  echo "jlink not found in JAVA_HOME; skipping bundled JRE" >&2
 fi
 if command -v shasum >/dev/null 2>&1; then
   shasum -a 256 "$OUT/sidecar-all.jar"
 fi
 
-# NOTE (audit run-1 follow-up, open): the JitPack inputs merged into the
-# jar (innertubex-desktop-v0.7.0, NewPipeExtractor v0.26.3) are still
-# resolved by mutable tag coordinates and their .sha1 is computed FROM the
-# downloaded bytes — pinning nothing. Pinning them needs the artifact
-# digests captured at a trusted build and a verification step here; until
-# then this remains an open supply-chain gap (see security-audit run-2).
+# Supply chain: innertubex-desktop-v0.7.0 jar/pom are SHA-256-pinned above,
+# and NewPipeExtractor is pinned to a commit hash in the overlay's
+# build.gradle.kts. The .sha1 files written for Gradle are only mavenLocal
+# naming metadata, never the integrity check.

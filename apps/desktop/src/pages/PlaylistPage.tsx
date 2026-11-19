@@ -3,12 +3,14 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useParams } from 'react-router';
 import { invoke } from '@tauri-apps/api/core';
+import { Heart } from 'lucide-react';
 import { DetailHeader } from '@/components/music/DetailHeader';
 import { TrackList } from '@/components/music/TrackList';
 import { shuffleList } from '@/components/music/play';
 import { trackFromRef, usePlayer } from '@/state/player';
-import type { TrackRef } from '@/types';
+import type { PlaylistRow, TrackRef } from '@/types';
 import { artUrl, sourceFor } from '@/lib/rows';
+import { addDownloads, describeOutcome, requestsFromRefs } from '@/lib/downloads';
 import { useArtworkColor } from '@/lib/artworkColor';
 import { usePageTint } from '@/lib/usePageTint';
 import { RemoteBrowsePage } from './RemoteBrowsePage';
@@ -29,8 +31,9 @@ function LocalPlaylistPage({ playlistId }: { playlistId: number }) {
   const playTracks = usePlayer((s) => s.playTracks);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
+  const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
 
-  const meta = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<[number, string][]>('playlists_get') });
+  const meta = useQuery({ queryKey: ['local', 'playlists'], queryFn: () => invoke<PlaylistRow[]>('playlists_get') });
   const tracks = useQuery({
     queryKey: ['local', 'playlist-tracks', playlistId],
     queryFn: () => invoke<TrackRef[]>('playlist_tracks_get', { id: playlistId }),
@@ -47,19 +50,36 @@ function LocalPlaylistPage({ playlistId }: { playlistId: number }) {
       window.history.back();
     },
   });
+  const setFavourite = useMutation({
+    mutationFn: (favourite: boolean) => invoke('playlist_set_favourite', { id: playlistId, favourite }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['local', 'playlists'] }),
+  });
+
+  // Hooks first: the early returns below would otherwise change the hook
+  // count when the queries land, which is a hard React error (the new-playlist
+  // import path renders pending once, then loaded).
+  const tint = useArtworkColor(artUrl(tracks.data?.find((t) => t.art_path)?.art_path));
+  usePageTint(tint);
 
   if (meta.isPending || tracks.isPending) return null;
   if (meta.isError || tracks.isError) {
     return <p className="mx-(--body-gutter) pt-11 type-body text-secondary">{String(meta.error ?? tracks.error)}</p>;
   }
 
-  const title = meta.data.find(([pid]) => pid === playlistId)?.[1] ?? 'Playlist';
+  const row = meta.data.find((p) => p.id === playlistId);
+  const title = row?.name ?? 'Playlist';
   const rows = tracks.data.map(trackFromRef);
-  // Tint from the first track's artwork, like an upstream playlist page.
-  const tint = useArtworkColor(artUrl(tracks.data.find((t) => t.art_path)?.art_path));
-  usePageTint(tint);
   const source = sourceFor('playlist', title, String(playlistId));
   const minutes = Math.round(tracks.data.reduce((sum, t) => sum + t.duration_sec, 0) / 60);
+
+  async function downloadPlaylist() {
+    try {
+      const outcome = await addDownloads(requestsFromRefs(tracks.data ?? [], 'playlist'));
+      setDownloadStatus(describeOutcome(outcome));
+    } catch (error) {
+      setDownloadStatus(String(error).replace(/^Error:\s*/, ''));
+    }
+  }
 
   return (
     <div>
@@ -79,11 +99,35 @@ function LocalPlaylistPage({ playlistId }: { playlistId: number }) {
         canPlay={rows.length > 0}
         extra={
           <>
+            {/* The "Only Favourites" filter reads this flag; marking lives here
+                where the playlist is in hand. */}
+            {row && (
+              <button
+                className="flex items-center gap-1.5 rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary hover:bg-quaternary"
+                onClick={() => setFavourite.mutate(!row.favourite)}
+                aria-pressed={row.favourite}
+              >
+                <Heart size={13} className={row.favourite ? 'fill-current text-key' : undefined} />
+                {row.favourite ? 'Favourited' : 'Favourite'}
+              </button>
+            )}
+            {/* Reorder only drives local library ids; imported (remote-member)
+                playlists have no reorder path yet, so the button says so by
+                being absent. */}
+            {!tracks.data.some((t) => t.id === 0) && (
+              <button
+                className="rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary hover:bg-quaternary"
+                onClick={() => navigate(`/playlist/${playlistId}/reorder`)}
+              >
+                Reorder
+              </button>
+            )}
             <button
               className="rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary hover:bg-quaternary"
-              onClick={() => navigate(`/playlist/${playlistId}/reorder`)}
+              onClick={() => void downloadPlaylist()}
+              disabled={tracks.data.length === 0}
             >
-              Reorder
+              Download
             </button>
             <button
               className="rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary hover:bg-quaternary"
@@ -105,6 +149,9 @@ function LocalPlaylistPage({ playlistId }: { playlistId: number }) {
           </>
         }
       />
+      {downloadStatus && (
+        <p className="mx-(--body-gutter) mb-4 type-callout text-secondary">{downloadStatus}</p>
+      )}
       {renaming && (
         <form
           className="mx-(--body-gutter) mb-6 flex max-w-md items-center gap-2"

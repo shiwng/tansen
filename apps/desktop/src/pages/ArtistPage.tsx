@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router';
 import { DetailHeader } from '@/components/music/DetailHeader';
 import { TrackList } from '@/components/music/TrackList';
+import { ArtistFollowButton } from '@/components/music/FavoriteButton';
 import { shuffleList } from '@/components/music/play';
 import { usePlayer } from '@/state/player';
 import { q, rowsToTracks, sourceFor } from '@/lib/rows';
@@ -44,6 +45,7 @@ function LocalArtistPage({ artistName: name }: { artistName: string }) {
         onPlay={() => playTracks(rows, 0, source)}
         onShuffle={() => shuffleList(rows, { source })}
         canPlay={rows.length > 0}
+        extra={<ArtistFollowButton artistKey={name} name={name} sourceKind="local" />}
       />
       {rows.length > 0 && (
         <div className="mx-(--body-gutter) mb-10">

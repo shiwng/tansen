@@ -1,27 +1,18 @@
 //! Desktop shell: wires app-core into Tauri (commands, events, art protocol,
 //! OS media keys) and owns nothing of substance itself.
 
-
-/// S13 bench helper: the first search row's key, or a placeholder when the
-/// search came back empty.
-#[cfg(debug_assertions)]
-fn row_key_of(rows: &[sources::search::SearchRow]) -> sources::TrackKey {
-    rows.first()
-        .map(|r| r.key.clone())
-        .unwrap_or(sources::TrackKey {
-            source: sources::SourceKind::YouTube,
-            id: "zzzNoSuchTrack00000".into(),
-        })
-}
-
+mod audio_settings;
 mod autoplay;
+mod bounded_body;
 mod commands;
+mod downloads;
+mod google_auth;
+mod google_auth_commands;
+mod home;
+mod metrics;
 #[cfg(target_os = "macos")]
 mod platform_macos;
-// F9 self-test driver: debug-only (it calls the cfg-gated sink peak meter).
-#[cfg(debug_assertions)]
-mod e2e;
-mod metrics;
+mod radio;
 mod rodio_factory;
 
 use app_core::AppState;
@@ -36,29 +27,26 @@ pub type StateHandle<'a> = tauri::State<'a, Arc<AppState>>;
 static DATA_DIR: OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn data_dir() -> PathBuf {
-    // Debug harnesses (E2E, stress, bench) must never touch the real
-    // library — they polluted it once (31 /private/tmp rows). Scratch dir
-    // instead, debug only.
-    #[cfg(debug_assertions)]
-    if std::env::var_os("TANSEN_E2E").is_some()
-        || std::env::var_os("TANSEN_STRESS").is_some()
-        || std::env::var_os("TANSEN_BENCH_PLAY").is_some()
-    {
-        return std::env::temp_dir().join("tansen-harness-data");
-    }
     DATA_DIR
         .get_or_init(app_core::state::data_dir_default)
         .clone()
+}
+
+/// The JRE launcher's file name on this platform.
+fn java_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "java.exe"
+    } else {
+        "java"
+    }
 }
 
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
-    tracing::info!(target: "bench", stage = "process-start", "bench: process start");
 
-    // M2 instrumentation: per-command IPC counters, logged every 10 s.
-    // Debug builds only — release keeps the no-op counter.
+    // Debug builds log IPC, source and audio counters every 10 s.
     #[cfg(debug_assertions)]
     std::thread::spawn(|| {
         tracing::info!(target: "metrics", "command counters active (10 s windows)");
@@ -84,47 +72,6 @@ fn main() {
             tracing::info!(dir = %dir.display(), "app data dir");
             let state = Arc::new(AppState::open(&dir).expect("app state init"));
 
-            // M4 stress driver (env-gated, debug only): while playback runs,
-            // hammer the backend the way heavy UI use would — repeated
-            // library queries every 2 s, a rescan every 30 s, a catalogue
-            // search every 30 s when the sidecar is available.
-            #[cfg(debug_assertions)]
-            if std::env::var("TANSEN_STRESS").as_deref() == Ok("1") {
-                let stress_state = state.clone();
-                let stress_lib = std::env::var("TANSEN_STRESS_LIB").ok();
-                std::thread::spawn(move || {
-                    if let Some(lib) = &stress_lib {
-                        let _ = stress_state.add_folder(lib);
-                        tracing::info!(target: "stress", lib = %lib, "stress library registered");
-                    }
-                    let mut round: u64 = 0;
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        round += 1;
-                        let _ = stress_state.tracks();
-                        let _ = persistence::views::albums(&stress_state.db);
-                        let _ = persistence::views::history(&stress_state.db, 50);
-                        if round % 15 == 1 {
-                            if stress_lib.is_some() {
-                                let scan_state = stress_state.clone();
-                                std::thread::spawn(move || {
-                                    let _ = scan_state.scan(|_| {});
-                                });
-                                tracing::info!(target: "stress", round, "scan started");
-                            }
-                        }
-                        if round % 15 == 8 {
-                            match stress_state.yt() {
-                                Ok(yt) => {
-                                    let _ = yt.search(&format!("stress {round}"), 5);
-                                }
-                                Err(_) => {} // catalogue off: nothing to search
-                            }
-                        }
-                    }
-                });
-            }
-
             // Packaged builds ship the sidecar jar as a bundle resource
             // (Tauri keeps the config-relative directory: Resources/resources/).
             let bundled = app
@@ -135,8 +82,13 @@ fn main() {
             if let Some(jar) = bundled.filter(|j| j.is_file()) {
                 tracing::info!(jar = %jar.display(), "bundled sidecar jar");
                 state.set_sidecar_hint(jar.clone());
-                let stored_jar = persistence::repo::get_setting(&state.db, "sidecar_jar").ok().flatten();
-                if stored_jar.as_deref().map_or(true, |p| stale_bundled_path(p, &jar)) {
+                let stored_jar = persistence::repo::get_setting(&state.db, "sidecar_jar")
+                    .ok()
+                    .flatten();
+                if stored_jar
+                    .as_deref()
+                    .map_or(true, |p| stale_bundled_path(p, &jar))
+                {
                     let _ = persistence::repo::set_setting(
                         &state.db,
                         "sidecar_jar",
@@ -144,12 +96,13 @@ fn main() {
                     );
                 }
             }
-            // F7: the bundled jlink JRE makes YouTube work on a clean Mac.
-            let bundled_java = app
-                .path()
-                .resource_dir()
-                .ok()
-                .map(|d| d.join("resources").join("jre").join("bin").join("java"));
+            // The bundled jlink JRE makes YouTube work on a clean machine.
+            let bundled_java = app.path().resource_dir().ok().map(|d| {
+                d.join("resources")
+                    .join("jre")
+                    .join("bin")
+                    .join(java_binary_name())
+            });
             if let Some(java) = bundled_java.filter(|j| j.is_file()) {
                 tracing::info!(java = %java.display(), "bundled sidecar JRE");
                 state.set_java_hint(java.clone());
@@ -157,8 +110,13 @@ fn main() {
                 // setting directly) finds the bundled runtime too. A real
                 // user-chosen java_path is never overwritten; another build's
                 // bundled JRE is stale and is.
-                let stored_java = persistence::repo::get_setting(&state.db, "java_path").ok().flatten();
-                if stored_java.as_deref().map_or(true, |p| stale_bundled_path(p, &java)) {
+                let stored_java = persistence::repo::get_setting(&state.db, "java_path")
+                    .ok()
+                    .flatten();
+                if stored_java
+                    .as_deref()
+                    .map_or(true, |p| stale_bundled_path(p, &java))
+                {
                     let _ = persistence::repo::set_setting(
                         &state.db,
                         "java_path",
@@ -171,45 +129,30 @@ fn main() {
             // the manual scan path uses, so library views refresh.
             spawn_scan_event_forwarder(app.handle().clone(), state.scan_events.clone());
 
-            // M10: the task-based playback engine is THE playback path. The
-            // factory resolves entry ids against the live library (and the
-            // bench sentinel through its env hook) and shares the stream disk
-            // cache for http(s) sources.
+            // The task-based playback engine is THE playback path. The
+            // factory resolves entry ids against the live library and shares
+            // the stream disk cache for http(s) sources.
             let resolve_state = state.clone();
             let resolve = Box::new(move |id: u64| -> Option<sources::ResolvedMedia> {
-                if id == u64::MAX {
-                    return std::env::var("TANSEN_BENCH_PLAY")
-                        .ok()
-                        .map(|url| sources::ResolvedMedia {
-                            url,
-                            headers: vec![],
-                            expiry: None,
-                            length: None,
-                            mime: None,
-                            format: None,
-                            container: None,
-                            source: sources::SourceKind::Local,
-                            below_request: false,
-                        });
+                let track = persistence::repo::get_track(&resolve_state.db_ro, id as i64)
+                    .ok()
+                    .flatten()?;
+                if track.missing {
+                    return None;
                 }
-                resolve_state
-                    .tracks()
-                    .ok()?
-                    .into_iter()
-                    .find(|t| t.id as u64 == id && !t.missing)
-                    .map(|t| sources::ResolvedMedia {
-                        url: t.path,
-                        headers: vec![],
-                        expiry: None,
-                        length: None,
-                        mime: None,
-                        format: None,
-                        container: None,
-                        source: sources::SourceKind::Local,
-                        below_request: false,
-                    })
+                Some(sources::ResolvedMedia {
+                    url: track.path,
+                    headers: vec![],
+                    expiry: None,
+                    length: None,
+                    mime: None,
+                    format: None,
+                    container: None,
+                    source: sources::SourceKind::Local,
+                    below_request: false,
+                })
             });
-            // S3: the source resolver — wired into the factory so keyed
+            // The source resolver — wired into the factory so keyed
             // (source) entries resolve through it. The lookup is catalogue-
             // gated: disabled/unavailable source kinds return None → the
             // resolver answers SourceError::Disabled.
@@ -219,13 +162,18 @@ fn main() {
                     + Send
                     + Sync,
             > = std::sync::Arc::new(move |kind| {
+                // Radio carries its own URL in the key: no config, no sidecar.
+                if kind == sources::SourceKind::Radio {
+                    return Some(std::sync::Arc::new(radio::RadioSource)
+                        as std::sync::Arc<dyn sources::MusicSource>);
+                }
                 if kind != sources::SourceKind::YouTube {
                     return None;
                 }
                 let yt = resolver_state.yt().ok()?;
                 Some(yt.source.clone())
             });
-            // S7: fallback ladder — other ENABLED sources in rank order
+            // Fallback ladder — other ENABLED sources in rank order
             // (addons by user rank, then the memoized sidecar handle). Built
             // lazily per fallback trigger; the sidecar is never launched
             // eagerly here.
@@ -241,7 +189,7 @@ fn main() {
                         .collect();
                     addons.sort_by_key(|c| c.rank);
                     for c in addons {
-                        // F3: an addon whose base URL fails policy is skipped
+                        // An addon whose base URL fails policy is skipped
                         // (a bad entry must not break the ladder).
                         if let Ok(a) = sources::addon::AddonSource::new(
                             c.config_id,
@@ -249,7 +197,9 @@ fn main() {
                             c.base_url,
                             c.allow_http,
                         ) {
-                            out.push(std::sync::Arc::new(a) as std::sync::Arc<dyn sources::MusicSource>);
+                            out.push(
+                                std::sync::Arc::new(a) as std::sync::Arc<dyn sources::MusicSource>
+                            );
                         }
                     }
                 }
@@ -258,7 +208,7 @@ fn main() {
                 }
                 out
             });
-            // S7: target metadata for fallback matching comes from the
+            // Target metadata for fallback matching comes from the
             // remote-track table (written by the single writer before the
             // command was sent).
             let meta_state = state.clone();
@@ -270,6 +220,7 @@ fn main() {
                     sources::SourceKind::Addon => "addon",
                     sources::SourceKind::Subsonic => "subsonic",
                     sources::SourceKind::Local => "local",
+                    sources::SourceKind::Radio => "radio",
                 };
                 persistence::repo::get_remote_track_by_key(&meta_state.db, kind_str, &key.id)
                     .ok()
@@ -280,13 +231,22 @@ fn main() {
                         duration_sec: Some(r.duration_sec),
                     })
             });
-            // S12: prefer a local library file for Lossless/Best before any
+            // Prefer a local library file for Lossless/Best before any
             // remote resolution. Read-only: db_ro only, and the file must
             // exist and be readable or resolution falls through to remote.
             let db_ro_for_local = state.db_ro.clone();
             let local_match = Arc::new(
                 move |meta: &sources::matcher::TrackMeta| -> Option<sources::ResolvedMedia> {
-                    let tracks = persistence::repo::list_tracks(&db_ro_for_local).ok()?;
+                    // The matcher requires a known duration on both sides, so a
+                    // target without one can never match: skip the query.
+                    let duration = meta.duration_sec?;
+                    let tolerance = sources::matcher::DURATION_TOLERANCE_SEC;
+                    let tracks = persistence::repo::tracks_in_duration_window(
+                        &db_ro_for_local,
+                        duration - tolerance,
+                        duration + tolerance,
+                    )
+                    .ok()?;
                     let hit = tracks.into_iter().find(|t| {
                         sources::matcher::matches(
                             meta,
@@ -324,20 +284,45 @@ fn main() {
                     .with_local_match(local_match),
             );
 
-            // F5: the stored quality ceiling feeds the factory at startup
+            // The stored quality ceiling feeds the factory at startup
             // (default Best). quality_set updates it live for future resolves.
             let startup_quality = persistence::repo::get_setting(&state.db, "audio_quality")
                 .ok()
                 .flatten()
                 .and_then(|raw| serde_json::from_str(&format!("\"{raw}\"")).ok())
-                .unwrap_or(sources::AudioQuality::Best)
+                .unwrap_or(sources::AudioQuality::High)
                 .to_stream_request();
-            let factory = Arc::new(rodio_factory::RodioFactory::with_resolver(
+            // Audio preferences are read once at startup and applied to the
+            // real pipeline (DSP + output negotiation). The UI patches them
+            // through `audio_settings_set`.
+            let audio = audio_settings::AudioSettings::load(&state.db);
+            let factory = rodio_factory::RodioFactory::with_resolver(
                 resolve,
                 Some(resolver),
                 Some(state.stream_cache()),
                 startup_quality,
+            );
+            let loudness = Arc::new(rodio_factory::LoudnessHandle::new(
+                state.db.clone(),
+                factory.dsp(),
+                audio.loudness,
             ));
+            let factory = Arc::new(factory.with_loudness(loudness));
+            factory.set_output_bits(audio.output_bits);
+            let curve = if audio.crossfade_curve == "equal-power" {
+                playback::pipeline::FADE_CURVE_EQUAL_POWER
+            } else {
+                playback::pipeline::FADE_CURVE_LINEAR
+            };
+            factory.configure_playback(
+                audio.effective_crossfade_ms(),
+                curve,
+                audio.gapless,
+                audio.skip_silence,
+                audio.skip_threshold_db,
+                audio.skip_min_ms,
+            );
+            factory.set_eq(audio.eq_enabled, &audio.eq_gains);
             let engine = tauri::async_runtime::block_on(async {
                 app_core::playback_engine::Engine::start(factory.clone() as Arc<_>)
             });
@@ -350,80 +335,99 @@ fn main() {
             let media_state = state.clone();
             tauri::async_runtime::spawn(async move {
                 let mut last_entry: Option<app_core::playback_types::EntryId> = None;
+                // Current listening event: (row id, duration ms). The last
+                // published position closes it when the entry changes.
+                let mut active: Option<(i64, u64, u64)> = None;
                 while engine_rx.changed().await.is_ok() {
                     let st = engine_rx.borrow().clone();
-                    if st.entry != last_entry {
+                    if st.status == app_core::playback_types::Status::Idle {
+                        if let Some((event_id, _, pos)) = active.take() {
+                            let _ = persistence::repo::finish_listening_event(
+                                &media_state.db,
+                                event_id,
+                                pos as i64,
+                            );
+                        }
                         last_entry = st.entry;
-                        // One play_history row per LOCAL track start (S6:
-                        // remote rows are source-keyed, not library rows —
-                        // recording them would violate the play_history FK).
-                        if st.status != app_core::playback_types::Status::Idle {
-                            if let Some(id) = st.entry.filter(|e| e.0 != 0) {
-                                let is_local = persistence::repo::get_track(
-                                    &media_state.db,
-                                    id.0 as i64,
-                                )
-                                .ok()
-                                .flatten()
-                                .is_some();
-                                if is_local {
-                                    let _ = persistence::repo::record_play(
+                    } else if st.entry != last_entry {
+                        if let Some((event_id, _, pos)) = active.take() {
+                            let _ = persistence::repo::finish_listening_event(
+                                &media_state.db,
+                                event_id,
+                                pos as i64,
+                            );
+                        }
+                        last_entry = st.entry;
+                        if let Some(entry) = st.entry.filter(|e| e.0 != 0) {
+                            let now = library::scanner::now_secs();
+                            let local =
+                                persistence::repo::get_track(&media_state.db, entry.0 as i64)
+                                    .ok()
+                                    .flatten();
+                            let remote = entry
+                                .0
+                                .checked_sub(app_core::playback_types::REMOTE_ID_OFFSET)
+                                .and_then(|rowid| {
+                                    persistence::repo::remote_tracks_by_ids(
                                         &media_state.db,
-                                        id.0 as i64,
-                                        library::scanner::now_secs(),
-                                    );
-                                }
+                                        &[rowid as i64],
+                                    )
+                                    .ok()
+                                    .and_then(|mut rows| rows.pop())
+                                });
+                            if let Some(track) = local {
+                                let _ =
+                                    persistence::repo::record_play(&media_state.db, track.id, now);
+                                let event_id = persistence::repo::start_listening_event(
+                                    &media_state.db,
+                                    "local",
+                                    &track.id.to_string(),
+                                    &track.title,
+                                    if track.artist.is_empty() {
+                                        &track.album_artist
+                                    } else {
+                                        &track.artist
+                                    },
+                                    (!track.album.is_empty()).then_some(track.album.as_str()),
+                                    track.art_path.as_deref(),
+                                    (track.duration_sec * 1000.0).max(0.0) as i64,
+                                    now,
+                                )
+                                .ok();
+                                active = event_id.map(|id| {
+                                    (
+                                        id,
+                                        (track.duration_sec.max(0.0) * 1000.0) as u64,
+                                        st.anchor.pos_ms,
+                                    )
+                                });
+                            } else if let Some(track) = remote {
+                                let duration_ms = (track.duration_sec.max(0.0) * 1000.0) as u64;
+                                let event_id = persistence::repo::start_listening_event(
+                                    &media_state.db,
+                                    &track.key_source,
+                                    &track.key_id,
+                                    &track.title,
+                                    &track.artist,
+                                    track.album.as_deref(),
+                                    track.artwork_url.as_deref(),
+                                    duration_ms as i64,
+                                    now,
+                                )
+                                .ok();
+                                active = event_id.map(|id| (id, duration_ms, st.anchor.pos_ms));
                             }
                         }
+                    } else if let Some((_, _, pos)) = active.as_mut() {
+                        *pos = st.anchor.pos_ms;
                     }
                     let _ = emitter.emit("playback_state", &st);
                 }
             });
 
-            // M1 bench hook (env-gated, never active in normal runs): start
-            // playing the fixture for the 60 s "playing" measurement.
-            if std::env::var("TANSEN_BENCH_PLAY").is_ok() {
-                use app_core::playback_types::{Command, EntryId, Placement};
-                tauri::async_runtime::block_on(async {
-                    engine
-                        .send(Command::Enqueue { tracks: vec![EntryId(u64::MAX)], remote: vec![], placement: Placement::Append })
-                        .await;
-                    engine.send(Command::Play { entry: EntryId(u64::MAX), remote: None }).await;
-                });
-                tracing::info!(target: "bench", stage = "autoplay-started", "bench: playback started");
-                // F0: user-facing seek latency (debug builds only). Waits
-                // for Playing, sends Seek{5000}, and logs the wall time
-                // until the engine publishes the seeked position.
-                #[cfg(debug_assertions)]
-                {
-                    let mut rx = engine.subscribe();
-                    let seek_engine = engine.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                            loop {
-                                if rx.changed().await.is_err() { return; }
-                                if rx.borrow().status == app_core::playback_types::Status::Playing {
-                                    break;
-                                }
-                            }
-                        });
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let t0 = std::time::Instant::now();
-                        seek_engine.send(app_core::playback_types::Command::Seek { ms: 5000 }).await;
-                        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                            loop {
-                                if rx.changed().await.is_err() { return; }
-                                if rx.borrow().anchor.pos_ms >= 4000 { break; }
-                            }
-                        });
-                        tracing::info!(target: "bench", stage = "seek", latency_ms = t0.elapsed().as_millis() as u64, "seek published");
-                    });
-                }
-            }
-
-            // S11: autoplay — app-crate task, event-driven only. The flag
-            // mirrors the stored setting (default off); the command channel
-            // feeds the task's queue mirror.
+            // Autoplay runs as an app-crate task. The flag mirrors the stored
+            // setting (default off); the command channel feeds the task's
+            // queue mirror.
             let autoplay_on = Arc::new(std::sync::atomic::AtomicBool::new(
                 persistence::repo::get_setting(&state.db, autoplay::AUTOPLAY_SETTING)
                     .ok()
@@ -449,9 +453,14 @@ fn main() {
                         // Catalogue off: nothing to add, never an error.
                         Err(_) => Ok(vec![]),
                     }
-                }) as std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<Vec<sources::yt::DiscoveryTrack>, String>> + Send>,
-                >
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<Vec<sources::yt::DiscoveryTrack>, String>,
+                                > + Send,
+                        >,
+                    >
             });
             let engine_for_enqueue = engine.clone();
             let state_for_enqueue = state.clone();
@@ -520,9 +529,14 @@ fn main() {
                         let _ = emitter.emit("autoplay_enqueued", &payload);
                     }
                     minted
-                }) as std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Vec<(app_core::playback_types::EntryId, String)>> + Send>,
-                >
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Vec<(app_core::playback_types::EntryId, String)>,
+                                > + Send,
+                        >,
+                    >
             });
             tauri::async_runtime::spawn(autoplay::run_autoplay(
                 engine.subscribe(),
@@ -543,73 +557,104 @@ fn main() {
             app.manage(engine.clone());
             app.manage(factory.clone());
 
-            // F9 Phase 4: debug-only self-test driver (TANSEN_E2E=1). The
-            // same command paths the UI uses; compiled out of release.
-            #[cfg(debug_assertions)]
-            e2e::maybe_run(&engine, factory.clone(), state.clone());
+            // Persistent download queue: resume interrupted rows off the UI
+            // thread, then let commands drive it.
+            let download_manager =
+                downloads::DownloadManager::new(state.db.clone(), app.handle().clone());
+            download_manager.bootstrap();
+            app.manage(download_manager);
+
             tracing::info!("playback engine started");
             Ok(())
         })
-        .on_page_load(|webview, payload| {
-            tracing::info!(target: "bench", event = ?payload.event(), url = ?webview.url().ok().map(|u| u.to_string()), "page load");
-        })
         .invoke_handler({
-            // M2: one wrapper counts every command invocation (debug builds
-            // only; no-op in release). The generated handler is pinned to a
-            // boxed trait object so the wrapper closure can capture it.
-            let handler: Box<
-                dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync,
-            > = Box::new(tauri::generate_handler![
-            commands::settings_get,
-            commands::settings_set,
-            commands::folder_add,
-            commands::folder_remove,
-            commands::folders_get,
-            commands::tracks_get,
-            commands::scan_start,
-            commands::playlist_create,
-            commands::playlists_get,
-            commands::playlist_tracks_get,
-            commands::playlist_tracks_set,
-            commands::albums_get,
-            commands::artists_get,
-            commands::album_tracks_get,
-            commands::artist_tracks_get,
-            commands::playlist_add_tracks,
-            commands::playlist_rename,
-            commands::playlist_delete,
-            commands::history_get,
-            commands::proxy_get,
-            commands::bench_marker,
-            commands::engine_command,
-            commands::queue_tracks_get,
-            commands::remote_track_upsert,
-            commands::yt_search,
-            commands::search_tracks,
-            commands::fetch_artwork,
-            commands::discovery_suggest,
-            commands::discovery_search,
-            commands::discovery_album,
-            commands::discovery_artist,
-            commands::discovery_playlist,
-            commands::discovery_continuation,
-            commands::discovery_home,
-            commands::discovery_home_more,
-            commands::discovery_explore,
-            commands::discovery_radio,
-            commands::sources_get,
-            commands::sources_get_with_health,
-            commands::source_reorder,
-            commands::stream_info_get,
-            commands::autoplay_get,
-            commands::autoplay_set,
-            commands::quality_get,
-            commands::quality_set,
-            commands::source_add,
-            commands::subsonic_add,
-            commands::source_remove,
-            commands::source_set_enabled,
-            ]);
+            // One wrapper counts every command invocation in debug builds;
+            // release keeps the no-op counter. The generated handler is
+            // pinned to a boxed trait object so the wrapper can capture it.
+            let handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
+                Box::new(tauri::generate_handler![
+                    commands::settings_get,
+                    commands::settings_set,
+                    commands::local_files_get,
+                    commands::local_files_set,
+                    commands::folder_add,
+                    commands::folder_remove,
+                    commands::folders_get,
+                    commands::tracks_get,
+                    commands::scan_start,
+                    commands::playlist_create,
+                    commands::playlists_get,
+                    commands::playlist_set_favourite,
+                    commands::playlist_tracks_get,
+                    commands::playlist_tracks_set,
+                    commands::albums_get,
+                    commands::artists_get,
+                    commands::album_tracks_get,
+                    commands::artist_tracks_get,
+                    commands::playlist_add_tracks,
+                    commands::playlist_add_remote_tracks,
+                    commands::playlist_rename,
+                    commands::playlist_delete,
+                    commands::history_get,
+                    commands::recently_added_get,
+                    commands::home_feed,
+                    commands::liked_tracks_get,
+                    commands::recommendation_dismissed_get,
+                    commands::liked_tracks_set,
+                    commands::liked_albums_get,
+                    commands::liked_albums_set,
+                    commands::followed_artists_get,
+                    commands::followed_artist_set,
+                    commands::recommendation_dismiss,
+                    commands::proxy_get,
+                    commands::engine_command,
+                    commands::queue_tracks_get,
+                    commands::spotify_playlist_fetch,
+                    commands::remote_track_upsert,
+                    commands::yt_search,
+                    commands::search_tracks,
+                    commands::fetch_artwork,
+                    commands::discovery_suggest,
+                    commands::discovery_search,
+                    commands::discovery_album,
+                    commands::discovery_artist,
+                    commands::discovery_playlist,
+                    commands::discovery_continuation,
+                    commands::discovery_home,
+                    commands::discovery_home_more,
+                    commands::discovery_explore,
+                    commands::discovery_radio,
+                    commands::sources_get,
+                    commands::sources_get_with_health,
+                    commands::source_reorder,
+                    commands::stream_info_get,
+                    commands::autoplay_get,
+                    commands::autoplay_set,
+                    commands::quality_get,
+                    commands::quality_set,
+                    commands::audio_settings_get,
+                    commands::audio_settings_set,
+                    downloads::downloads_get,
+                    downloads::downloads_add,
+                    downloads::downloads_set_destination,
+                    downloads::downloads_pause,
+                    downloads::downloads_resume,
+                    downloads::downloads_cancel,
+                    downloads::downloads_retry,
+                    downloads::downloads_remove,
+                    downloads::downloads_clear_completed,
+                    commands::source_add,
+                    commands::subsonic_add,
+                    commands::source_remove,
+                    commands::source_set_enabled,
+                    google_auth_commands::google_auth_start,
+                    google_auth_commands::google_auth_status,
+                    google_auth_commands::google_sign_out,
+                    radio::radio_stations,
+                    radio::radio_facets,
+                    radio::radio_click,
+                    radio::radio_artwork,
+                ]);
             move |invoke| {
                 metrics::cmd::hit(invoke.message.command());
                 handler(invoke)
@@ -662,7 +707,9 @@ fn stale_bundled_path(stored: &str, bundled: &std::path::Path) -> bool {
 fn serve_art(art_root: &std::path::Path, uri_path: &str) -> tauri::http::Response<Vec<u8>> {
     use tauri::http::Response;
     let path = uri_path.trim_start_matches('/');
-    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy().into_owned();
+    let decoded = percent_encoding::percent_decode_str(path)
+        .decode_utf8_lossy()
+        .into_owned();
     let file = PathBuf::from(&decoded);
     // Containment is judged on canonical paths: `Path::starts_with` alone
     // is a lexical component-prefix match, so an art-root-prefixed path
@@ -701,7 +748,8 @@ mod path_tests {
 
     #[test]
     fn stale_build_paths_self_heal_but_user_choices_do_not() {
-        let bundled = Path::new("/Applications/Tansen.app/Contents/Resources/resources/sidecar-all.jar");
+        let bundled =
+            Path::new("/Applications/Tansen.app/Contents/Resources/resources/sidecar-all.jar");
         // A dev build's or a trashed app's own resource is stale.
         assert!(stale_bundled_path(
             "/Users/x/Tansen/target/debug/resources/sidecar-all.jar",
@@ -714,7 +762,10 @@ mod path_tests {
         // Missing file is stale; the bundled path itself and a user JDK are not.
         assert!(stale_bundled_path("/nonexistent/java", bundled));
         assert!(!stale_bundled_path(bundled.to_str().unwrap(), bundled));
-        assert!(!stale_bundled_path("/opt/homebrew/opt/openjdk/bin/java", bundled));
+        assert!(!stale_bundled_path(
+            "/opt/homebrew/opt/openjdk/bin/java",
+            bundled
+        ));
     }
 }
 
@@ -734,7 +785,7 @@ mod art_tests {
         (root, inner)
     }
 
-    /// Regression (audit run-1: serve_art.lexical-containment-traversal):
+    /// Regression (serve_art.lexical-containment-traversal):
     /// the containment check was a lexical starts_with on the decoded
     /// path, so an art-root-prefixed path with embedded `..` (raw or
     /// percent-encoded, exactly what convertFileSrc produces) passed the
@@ -775,7 +826,11 @@ mod art_tests {
         // The encoded form the webview actually produces.
         let encoded = uri_of(&root.join("../tansen-art-test-outside.txt"));
         let refused = serve_art(&root, &encoded);
-        assert_eq!(refused.status(), 404, "percent-encoded .. traversal must not serve");
+        assert_eq!(
+            refused.status(),
+            404,
+            "percent-encoded .. traversal must not serve"
+        );
 
         // A symlink inside the root pointing outside must not serve either.
         #[cfg(unix)]

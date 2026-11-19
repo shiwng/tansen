@@ -1,8 +1,9 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useRef } from 'react';
 import { Outlet } from 'react-router';
 import { PlayerBar } from './PlayerBar';
 import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
+import { useSmoothScroll } from './smoothScroll';
 
 /**
  * The desktop shell, as the upstream web player composes it: a scrolling page
@@ -15,6 +16,8 @@ const FullScreenPlayer = lazy(() => import('./FullScreenPlayer').then((m) => ({ 
 const MobileTopBar = lazy(() => import('./MobileTopBar').then((m) => ({ default: m.MobileTopBar })));
 
 export function AppShell() {
+  const pageScroller = useRef<HTMLElement>(null);
+  useSmoothScroll(pageScroller);
   return (
     <div className="grid h-full grid-rows-[minmax(0,1fr)_auto]">
       <div className="relative min-h-0 overflow-hidden">
@@ -24,6 +27,7 @@ export function AppShell() {
           {/* Music's toolbar: the centred search field and the scope control. */}
           <Toolbar />
           <main
+            ref={pageScroller}
             id="scrollable-page"
             className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
           >

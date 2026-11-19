@@ -14,15 +14,20 @@ pub mod yt;
 
 use serde::{Deserialize, Serialize};
 
-/// User-facing audio quality ceiling (S2). Stored in settings, mapped to a
-/// `StreamRequest` for the sources.
+/// User-facing audio quality ceiling. Stored in settings, mapped to a
+/// `StreamRequest` for the sources. The aliases keep values stored before
+/// the Low/Medium/High ladder (and the old UI strings) parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AudioQuality {
-    /// Cheap streams: 64 kbps cap.
-    DataSaver,
-    /// Default.
-    Best,
+    /// 64 kbps cap.
+    #[serde(alias = "data-saver", alias = "datasaver")]
+    Low,
+    /// 128 kbps cap.
+    Medium,
+    /// Whatever the source considers its best lossy rendition.
+    #[serde(alias = "best")]
+    High,
     /// Bit-exact.
     Lossless,
 }
@@ -30,17 +35,18 @@ pub enum AudioQuality {
 impl AudioQuality {
     pub fn to_stream_request(self) -> StreamRequest {
         match self {
-            AudioQuality::DataSaver => StreamRequest::Capped { max_kbps: 64 },
-            AudioQuality::Best => StreamRequest::Best,
+            AudioQuality::Low => StreamRequest::Capped { max_kbps: 64 },
+            AudioQuality::Medium => StreamRequest::Capped { max_kbps: 128 },
+            AudioQuality::High => StreamRequest::Best,
             AudioQuality::Lossless => StreamRequest::Lossless,
         }
     }
 
-    pub const ALL: [Self; 3] = [Self::DataSaver, Self::Best, Self::Lossless];
+    pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::Lossless];
 }
 
 /// Composite identity of one track: which source, and that source's own id.
-/// The id is length-capped (S1) so hostile catalogues cannot cause unbounded
+/// The id is length-capped so hostile catalogues cannot cause unbounded
 /// allocations downstream.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackKey {
@@ -49,7 +55,7 @@ pub struct TrackKey {
 }
 
 impl TrackKey {
-    /// Constructs a key, rejecting ids over `TRACK_ID_MAX_LEN` (S1) so a
+    /// Constructs a key, rejecting ids over `TRACK_ID_MAX_LEN` so a
     /// hostile catalogue cannot cause unbounded downstream allocations.
     pub fn new(source: SourceKind, id: impl Into<String>) -> Result<Self, SourceError> {
         let id = id.into();
@@ -63,11 +69,12 @@ impl TrackKey {
     }
 }
 
-/// Upper bound on one `TrackKey.id` (S1).
+/// Upper bound on one `TrackKey.id`.
 pub const TRACK_ID_MAX_LEN: usize = 1024;
 
 /// Kinds of catalogue. `Local` is declared for parity with the contract but
-/// has no implementing source yet; `Addon`, `Subsonic` and `YouTube` are
+/// has no implementing source yet; `Addon`, `Subsonic`, `YouTube` and
+/// `Radio` (live broadcast streams, keyed by their stream URL) are
 /// implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -76,10 +83,13 @@ pub enum SourceKind {
     Addon,
     /// Local files — reserved; no source implements it yet.
     Local,
-    /// User-configured Subsonic/OpenSubsonic server (S9).
+    /// User-configured Subsonic/OpenSubsonic server.
     Subsonic,
     /// YouTube Music (fixed base source; PoToken gate pending).
     YouTube,
+    /// Live internet radio: the key id IS the stream URL, played as-is with
+    /// no fallback ladder (a broadcast has no second rendition).
+    Radio,
 }
 
 impl SourceKind {
@@ -90,6 +100,7 @@ impl SourceKind {
             SourceKind::Local => 1,
             SourceKind::Subsonic => 2,
             SourceKind::YouTube => 3,
+            SourceKind::Radio => 4,
         }
     }
 }
@@ -136,8 +147,9 @@ impl StreamFormat {
     pub fn is_lossless(codec: &str) -> Option<bool> {
         match codec.to_ascii_lowercase().as_str() {
             "flac" | "alac" | "wav" | "aiff" | "aif" | "ape" | "wv" => Some(true),
-            "mp3" | "aac" | "m4a" | "mp4" | "opus" | "ogg" | "vorbis" | "webm"
-            | "wma" => Some(false),
+            "mp3" | "aac" | "m4a" | "mp4" | "opus" | "ogg" | "vorbis" | "webm" | "wma" => {
+                Some(false)
+            }
             _ => None,
         }
     }
@@ -169,7 +181,7 @@ pub enum Container {
     Dash,
 }
 
-/// S4: whether the audio stack can actually decode a format/container pair
+/// Whether the audio stack can actually decode a format/container pair
 /// (Symphonia 0.5.5 via rodio 0.21 `symphonia-all`). The `all` feature set
 /// has NO Opus codec and NO WebM format — Opus-in-WebM is therefore not
 /// decodable. HLS/DASH are never decodable (progressive containers only).
@@ -180,8 +192,8 @@ pub fn decodable(format: &StreamFormat, container: Option<Container>) -> bool {
     }
     match format.codec.to_ascii_lowercase().as_str() {
         // Decodable codecs (symphonia feature set).
-        "flac" | "mp3" | "aac" | "m4a" | "alac" | "wav" | "pcm" | "aiff" | "aif"
-        | "vorbis" | "ogg" | "adpcm" => true,
+        "flac" | "mp3" | "aac" | "m4a" | "alac" | "wav" | "pcm" | "aiff" | "aif" | "vorbis"
+        | "ogg" | "adpcm" => true,
         // Decodable in principle, but the demuxer/container gate applies:
         // mp4/aac arrives in ISO-MP4 (present); webm is absent entirely.
         "mp4" => true,
@@ -219,7 +231,7 @@ pub struct SourceStream {
 }
 
 /// What catalogue resolution returns — a media URL handed to Rust (the
-/// sidecar never proxies audio bytes; verified in the M3 audit) plus
+/// sidecar never proxies audio bytes) plus
 /// everything the fetcher may need.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedMedia {
@@ -310,32 +322,34 @@ pub trait MusicSource: Send + Sync {
     async fn health(&self) -> Result<SourceHealth, SourceError>;
 
     /// Tracks matching `query`, tagged with this source's id.
-    async fn search(&self, query: &str, limit: usize)
-        -> Result<Vec<CatalogTrack>, SourceError>;
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<CatalogTrack>, SourceError>;
 
     /// An openable stream for one `TrackKey`, or `None` when the source
     /// turns out not to have it (a miss, not an error).
-    async fn stream(&self, key: &TrackKey, request: &StreamRequest)
-        -> Result<Option<SourceStream>, SourceError>;
+    async fn stream(
+        &self,
+        key: &TrackKey,
+        request: &StreamRequest,
+    ) -> Result<Option<SourceStream>, SourceError>;
 
     /// The resolution contract — a [`ResolvedMedia`] for one `TrackKey`.
     /// Default implementation derives from [`Self::stream`].
-    async fn resolve(&self, key: &TrackKey, request: &StreamRequest)
-        -> Result<Option<ResolvedMedia>, SourceError> {
-        Ok(self
-            .stream(key, request)
-            .await?
-            .map(|s| ResolvedMedia {
-                url: s.url,
-                headers: s.headers,
-                expiry: s.expiry_ms.map(|ms| ms.div_euclid(1000)),
-                length: None,
-                mime: s.mime,
-                format: Some(s.format),
-                container: s.container,
-                source: self.kind(),
-                below_request: s.below_request,
-            }))
+    async fn resolve(
+        &self,
+        key: &TrackKey,
+        request: &StreamRequest,
+    ) -> Result<Option<ResolvedMedia>, SourceError> {
+        Ok(self.stream(key, request).await?.map(|s| ResolvedMedia {
+            url: s.url,
+            headers: s.headers,
+            expiry: s.expiry_ms.map(|ms| ms.div_euclid(1000)),
+            length: None,
+            mime: s.mime,
+            format: Some(s.format),
+            container: s.container,
+            source: self.kind(),
+            below_request: s.below_request,
+        }))
     }
 }
 
@@ -347,13 +361,23 @@ mod tests {
     #[test]
     fn codec_lossless_table() {
         for lossless in ["flac", "FLAC", "alac", "wav", "aiff", "aif", "ape", "wv"] {
-            assert_eq!(StreamFormat::is_lossless(lossless), Some(true), "{lossless}");
+            assert_eq!(
+                StreamFormat::is_lossless(lossless),
+                Some(true),
+                "{lossless}"
+            );
         }
-        for lossy in ["mp3", "aac", "m4a", "mp4", "opus", "ogg", "vorbis", "webm", "wma"] {
+        for lossy in [
+            "mp3", "aac", "m4a", "mp4", "opus", "ogg", "vorbis", "webm", "wma",
+        ] {
             assert_eq!(StreamFormat::is_lossless(lossy), Some(false), "{lossy}");
         }
         for unknown in ["", "unknown", "wma-lossless", "aac-128"] {
-            assert_eq!(StreamFormat::is_lossless(unknown), None, "{unknown:?} = unknown");
+            assert_eq!(
+                StreamFormat::is_lossless(unknown),
+                None,
+                "{unknown:?} = unknown"
+            );
         }
     }
 
@@ -361,10 +385,22 @@ mod tests {
     fn lossless_never_falsely_claims_lossy() {
         // unknown codec is unknown; is_better_than ordering treats it as
         // non-lossless but never labels it lossy.
-        let unknown = StreamFormat { codec: "mystery".into(), is_lossless: None, ..Default::default() };
+        let unknown = StreamFormat {
+            codec: "mystery".into(),
+            is_lossless: None,
+            ..Default::default()
+        };
         assert!(unknown.is_lossless.is_none());
-        let flac = StreamFormat { codec: "FLAC".into(), is_lossless: Some(true), ..Default::default() };
-        let mp3 = StreamFormat { codec: "MP3".into(), is_lossless: Some(false), ..Default::default() };
+        let flac = StreamFormat {
+            codec: "FLAC".into(),
+            is_lossless: Some(true),
+            ..Default::default()
+        };
+        let mp3 = StreamFormat {
+            codec: "MP3".into(),
+            is_lossless: Some(false),
+            ..Default::default()
+        };
         assert!(flac.is_better_than(Some(&unknown)));
         assert!(!mp3.is_better_than(Some(&unknown)));
         assert!(flac.is_better_than(Some(&mp3)));
@@ -388,7 +424,8 @@ mod tests {
             kbps_inferred: false,
             ..Default::default()
         };
-        let round: StreamFormat = serde_json::from_str(&serde_json::to_string(&fmt).unwrap()).unwrap();
+        let round: StreamFormat =
+            serde_json::from_str(&serde_json::to_string(&fmt).unwrap()).unwrap();
         assert_eq!(round, fmt);
     }
 
@@ -402,7 +439,10 @@ mod tests {
     #[test]
     fn track_key_id_cap_is_enforced_by_construction_contract() {
         // The cap is a constant contract; keys are built from catalogue data.
-        let ok = TrackKey { source: SourceKind::YouTube, id: "x".repeat(1024) };
+        let ok = TrackKey {
+            source: SourceKind::YouTube,
+            id: "x".repeat(1024),
+        };
         assert_eq!(ok.id.len(), TRACK_ID_MAX_LEN);
         // A hostile catalogue id larger than the cap must be rejected by the
         // caller — the type cannot enforce it, but the contract is testable.
@@ -433,17 +473,49 @@ mod quality_tests {
 
     #[test]
     fn quality_maps_to_stream_request() {
-        assert_eq!(AudioQuality::DataSaver.to_stream_request(), StreamRequest::Capped { max_kbps: 64 });
-        assert_eq!(AudioQuality::Best.to_stream_request(), StreamRequest::Best);
-        assert_eq!(AudioQuality::Lossless.to_stream_request(), StreamRequest::Lossless);
+        assert_eq!(
+            AudioQuality::Low.to_stream_request(),
+            StreamRequest::Capped { max_kbps: 64 }
+        );
+        assert_eq!(
+            AudioQuality::Medium.to_stream_request(),
+            StreamRequest::Capped { max_kbps: 128 }
+        );
+        assert_eq!(AudioQuality::High.to_stream_request(), StreamRequest::Best);
+        assert_eq!(
+            AudioQuality::Lossless.to_stream_request(),
+            StreamRequest::Lossless
+        );
     }
 
     #[test]
     fn quality_serde_strict() {
         for q in AudioQuality::ALL {
-            assert_eq!(serde_json::from_str::<AudioQuality>(&serde_json::to_string(&q).unwrap()).unwrap(), q);
+            assert_eq!(
+                serde_json::from_str::<AudioQuality>(&serde_json::to_string(&q).unwrap()).unwrap(),
+                q
+            );
         }
         assert!(serde_json::from_str::<AudioQuality>("\"unlimited\"").is_err());
+    }
+
+    /// Values stored before the ladder (and the old UI strings) must keep
+    /// parsing: "datasaver" (old serde name), "data-saver" (old UI value)
+    /// and "best" (old default tier).
+    #[test]
+    fn quality_aliases_keep_stored_values_parsing() {
+        assert_eq!(
+            serde_json::from_str::<AudioQuality>("\"datasaver\"").unwrap(),
+            AudioQuality::Low
+        );
+        assert_eq!(
+            serde_json::from_str::<AudioQuality>("\"data-saver\"").unwrap(),
+            AudioQuality::Low
+        );
+        assert_eq!(
+            serde_json::from_str::<AudioQuality>("\"best\"").unwrap(),
+            AudioQuality::High
+        );
     }
 }
 
@@ -452,13 +524,19 @@ mod decodable_tests {
     use super::*;
 
     fn fmt(codec: &str) -> StreamFormat {
-        StreamFormat { codec: codec.into(), ..Default::default() }
+        StreamFormat {
+            codec: codec.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn decodable_table() {
         // Decodable codecs.
-        for c in ["flac", "FLAC", "mp3", "aac", "m4a", "alac", "wav", "aiff", "aif", "vorbis", "ogg", "adpcm"] {
+        for c in [
+            "flac", "FLAC", "mp3", "aac", "m4a", "alac", "wav", "aiff", "aif", "vorbis", "ogg",
+            "adpcm",
+        ] {
             assert!(decodable(&fmt(c), None), "{c} progressive");
         }
         // mp4 container + codec.

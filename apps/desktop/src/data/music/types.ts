@@ -73,13 +73,13 @@ export interface Track {
    */
   unavailable?: 'matching' | 'missing';
   /**
-   * S6: the source kind for remote (source-keyed) rows — `youtube` /
+   * The source kind for remote (source-keyed) rows — `youtube` /
    * `addon` — matching the Rust `SourceKind` serde name. Absent for local
    * library tracks.
    */
   sourceKind?: string;
   /**
-   * S6: the original catalogue artwork URL for remote rows (kept separate
+   * The original catalogue artwork URL for remote rows (kept separate
    * from `thumbnail`, which holds the locally cached `art://` path once
    * fetched). Never fetched directly; routed through `fetch_artwork`.
    */

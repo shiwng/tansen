@@ -1,12 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { invoke } from '@tauri-apps/api/core';
 import { Segmented } from '@/components/Segmented';
 import { LogoMark } from '@/components/icons/LogoMark';
+import { BrowseCategoryCard } from '@/components/music/BrowseCategoryCard';
 import { ShelfView } from '@/components/music/ShelfView';
 import { TrackList } from '@/components/music/TrackList';
 import { hrefFor } from '@/components/music/links';
+import { BROWSE_CATEGORIES } from '@/data/browse/categories';
+import { restoreBrowseOrigin } from '@/lib/browseScroll';
+import {
+  discoveryToTrack,
+  type DiscoveryFilter,
+  type DiscoverySearchPage,
+  type DiscoveryTrack,
+} from '@/lib/discovery';
 import { q, rowsToTracks, sourceFor } from '@/lib/rows';
 import {
   type SearchTrackRow,
@@ -44,31 +53,12 @@ export function SearchPage() {
   );
 }
 
-/** Genre shortcuts: real searches, not catalogue artwork (see ui-replica/progress.md). */
-const CATEGORIES: Array<[string, string, string]> = [
-  ['Bollywood', '#8f5bd6', '#3f2a73'],
-  ['Punjabi', '#7d57c9', '#2f2450'],
-  ['Tamil', '#7a5bd0', '#33255c'],
-  ['Pop', '#ff375f', '#b3123a'],
-  ['Telugu', '#8f6bd8', '#3a2a6b'],
-  ['Charts', '#7f7a1f', '#3c3a0d'],
-  ['Rock', '#ff453a', '#8c1d16'],
-  ['Metal', '#e5484d', '#7c1618'],
-  ['Hip-Hop', '#b86bd6', '#4a2364'],
-  ['Dance', '#12b5a5', '#0a5d55'],
-  ['Love', '#ff6b8a', '#a52a41'],
-  ['Fitness', '#7ac943', '#2f5c14'],
-  ['Sleep', '#5a6bd8', '#25306b'],
-  ['Focus', '#e0a21a', '#7a5306'],
-  ['Jazz', '#c98a3a', '#5c3a12'],
-  ['Live Music', '#b8871f', '#543d0b'],
-  ['K-Pop', '#ff5d8f', '#a01f47'],
-  ['Indie', '#3fbf8f', '#155842'],
-];
-
-/** Browse Categories, drawn from genre names — every tile runs a real search. */
+/**
+ * Browse Categories: real catalogue artwork per tile. Each tile opens its own
+ * detail page, and the grid's scroll offset is restored on the way back.
+ */
 function BrowseHome() {
-  const navigate = useNavigate();
+  useEffect(() => restoreBrowseOrigin(), []);
   const sources = useQuery({
     queryKey: ['sources'],
     queryFn: () => invoke<{ id: string; name: string; kind: string; enabled: boolean }[]>('sources_get'),
@@ -94,18 +84,9 @@ function BrowseHome() {
       )}
       <div className="mx-(--body-gutter) pt-5">
         <h1 className="mb-4 type-title-2-emphasized">Browse Categories</h1>
-        <div className="grid grid-cols-2 gap-[17px] md:grid-cols-3 lg:grid-cols-5">
-          {CATEGORIES.map(([label, from, to]) => (
-            <button
-              key={label}
-              onClick={() => navigate(`/search?q=${encodeURIComponent(label)}`)}
-              className="relative aspect-video overflow-hidden rounded-[8px] text-start"
-              style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
-            >
-              <span className="absolute bottom-2 left-3 type-body-emphasized text-white [text-shadow:0_1px_2px_#0006]">
-                {label}
-              </span>
-            </button>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+          {BROWSE_CATEGORIES.map((category, index) => (
+            <BrowseCategoryCard key={category.id} category={category} eager={index < 10} />
           ))}
         </div>
       </div>
@@ -199,44 +180,13 @@ function LibraryResults({ query }: { query: string }) {
   );
 }
 
-type DiscoveryFilter = 'songs' | 'videos' | 'albums' | 'artists' | 'playlists';
-
-interface DiscoveryTrack {
-  key: { source: string; id: string };
-  title: string;
-  artist: string;
-  album: string | null;
-  duration_sec: number | null;
-  thumbnail_url: string | null;
-  artists: Array<{ name: string; browse_id: string | null }>;
-  album_id: string | null;
-  is_video: boolean;
-  explicit: boolean;
-  playable: boolean;
-}
-
-interface DiscoveryCard {
-  kind: string;
-  browse_id: string;
-  title: string;
-  subtitle: string | null;
-  thumbnail_url: string | null;
-}
-
-interface DiscoverySearchPage {
-  tracks: DiscoveryTrack[];
-  cards: DiscoveryCard[];
-  queries: string[];
-  continuation: string | null;
-}
-
 interface SearchTrackResponse {
   page: DiscoverySearchPage;
   local: SearchTrackRow[];
 }
 
 /**
- * F5 unified sources search: one query across every enabled source (local
+ * Unified sources search: one query across every enabled source (local
  * library included via the backend seam), rendered as per-source sections
  * in rank order with unobtrusive per-source status.
  */
@@ -300,23 +250,6 @@ function SourcesResults({ query, filter }: { query: string; filter: DiscoveryFil
       {continuation && <button className="rounded-pill bg-quinary px-4 py-2 type-callout text-primary" onClick={() => void loadMore()}>Load more</button>}
     </div>
   );
-}
-
-function discoveryToTrack(row: DiscoveryTrack) {
-  return {
-    videoId: row.key.id,
-    title: row.title,
-    artists: row.artists.length ? row.artists.map((a) => ({ name: a.name, id: a.browse_id })) : [{ name: row.artist || 'Unknown Artist', id: null }],
-    album: row.album ? { id: row.album_id, name: row.album } : null,
-    durationSec: row.duration_sec,
-    explicit: row.explicit,
-    thumbnail: row.thumbnail_url,
-    index: null,
-    plays: null,
-    sourceKind: row.key.source,
-    artworkUrl: row.thumbnail_url,
-    ...(row.playable ? {} : { unavailable: 'missing' as const }),
-  };
 }
 
 function rowToTrack(row: SearchTrackRow) {

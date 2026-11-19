@@ -1,4 +1,4 @@
-//! S3: the resolver — one place a `TrackKey` becomes a pinned
+//! The resolver — one place a `TrackKey` becomes a pinned
 //! `ResolvedMedia`. Sequential only (no racing); single-flight per key;
 //! per-source timeout; URL cache TTL = min(media expiry, const); negative
 //! cache for permanent errors. Resolution never runs on the audio thread:
@@ -6,33 +6,36 @@
 
 use crate::matcher::TrackMeta;
 use crate::search::SEARCH_PER_SOURCE_LIMIT;
-use crate::{decodable, MusicSource, ResolvedMedia, SourceError, SourceKind, StreamRequest, StreamFormat, TrackKey};
+use crate::{
+    decodable, MusicSource, ResolvedMedia, SourceError, SourceKind, StreamFormat, StreamRequest,
+    TrackKey,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
-/// Per-source resolve timeout (S3).
+/// Per-source resolve timeout.
 pub const RESOLVE_TIMEOUT: Duration = Duration::from_secs(15);
 /// URL cache TTL ceiling; effective TTL = min(media.expiry, this).
 pub const URL_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 /// Negative-cache TTL for permanent failures.
 pub const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-/// One sequential retry for transient/timeout failures (S3).
+/// One sequential retry for transient/timeout failures.
 const TRANSIENT_RETRIES: u32 = 1;
 
 pub type SourceLookup = Arc<dyn Fn(SourceKind) -> Option<Arc<dyn MusicSource>> + Send + Sync>;
 
-/// S7: the enabled sources in rank order (kind rank, then user rank). The
+/// The enabled sources in rank order (kind rank, then user rank). The
 /// resolver consults this only when the pinned source fails; the provider
 /// decides what "enabled" means (shell builds it from the registry).
 pub type FallbackProvider = Arc<dyn Fn() -> Vec<Arc<dyn MusicSource>> + Send + Sync>;
 
-/// S7: target metadata for a key, so fallback candidates can be matched.
+/// Target metadata for a key, so fallback candidates can be matched.
 /// `None` = no metadata known → no fallback is attempted.
 pub type MetaLookup = Arc<dyn Fn(&TrackKey) -> Option<TrackMeta> + Send + Sync>;
 
-/// S12: an optional local-library match, injected by the shell as a plain
+/// An optional local-library match, injected by the shell as a plain
 /// closure (read-only; no trait, no new dependency edge). Returns a
 /// `ResolvedMedia` whose url is the local file path — the pipeline's
 /// `open_source` plays non-HTTP paths from disk directly. The closure owns
@@ -41,27 +44,33 @@ pub type MetaLookup = Arc<dyn Fn(&TrackKey) -> Option<TrackMeta> + Send + Sync>;
 pub type LocalMatch = Arc<dyn Fn(&TrackMeta) -> Option<ResolvedMedia> + Send + Sync>;
 
 enum CacheEntry {
-    Ok { media: ResolvedMedia, fetched_at: std::time::Instant },
-    Err { error: SourceError, at: std::time::Instant },
+    Ok {
+        media: ResolvedMedia,
+        fetched_at: std::time::Instant,
+    },
+    Err {
+        error: SourceError,
+        at: std::time::Instant,
+    },
 }
 
 pub struct Resolver {
     sources: SourceLookup,
     fallbacks: FallbackProvider,
     meta: MetaLookup,
-    /// S12: the injected local-library matcher, when the shell provides one.
+    /// The injected local-library matcher, when the shell provides one.
     local_match: Option<LocalMatch>,
     cache: Mutex<HashMap<(TrackKey, StreamRequest), CacheEntry>>,
     flights: Mutex<HashMap<TrackKey, Arc<OnceCell<Result<ResolvedMedia, SourceError>>>>>,
 }
 
 impl Resolver {
-    /// No fallback (S3 behavior preserved for tests/leaf callers).
+    /// No fallback (behavior preserved for tests/leaf callers).
     pub fn new(sources: SourceLookup) -> Self {
         Self::with_fallbacks(sources, Arc::new(Vec::new), Arc::new(|_| None))
     }
 
-    /// S7: add the fallback ladder — other enabled sources tried in rank
+    /// Add the fallback ladder — other enabled sources tried in rank
     /// order when the pinned source fails, using `meta` for matching.
     pub fn with_fallbacks(
         sources: SourceLookup,
@@ -78,7 +87,7 @@ impl Resolver {
         }
     }
 
-    /// S12: prefer a local file (Lossless/Best only) before any remote
+    /// Prefer a local file (Lossless/Best only) before any remote
     /// resolution. Builder method — existing constructors are unchanged.
     pub fn with_local_match(mut self, f: LocalMatch) -> Self {
         self.local_match = Some(f);
@@ -114,14 +123,17 @@ impl Resolver {
             }
         };
         let t0 = std::time::Instant::now();
-        let mut result = cell.get_or_init(|| self.resolve_upstream(key, request)).await.clone();
-        // S13: a cold resolve (including waiting on someone else's flight).
+        let mut result = cell
+            .get_or_init(|| self.resolve_upstream(key, request))
+            .await
+            .clone();
+        // A cold resolve (including waiting on someone else's flight).
         crate::metrics::source::resolve_cold(t0.elapsed().as_secs_f64() * 1000.0);
         self.flights
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(key);
-        // F1 conformance: a Lossless request answered with anything not
+        // Conformance: a Lossless request answered with anything not
         // codec-lossless (any source: local hit, pinned, ladder) is marked
         // below-request before it is cached, so every later consumer sees
         // the settle-for flag too.
@@ -190,20 +202,26 @@ impl Resolver {
     }
 
     fn cache_ok(&self, key: &TrackKey, request: &StreamRequest, media: ResolvedMedia) {
-        self.cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((key.clone(), request.clone()), CacheEntry::Ok { media, fetched_at: std::time::Instant::now() });
+        self.cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            (key.clone(), request.clone()),
+            CacheEntry::Ok {
+                media,
+                fetched_at: std::time::Instant::now(),
+            },
+        );
     }
 
     fn cache_err(&self, key: &TrackKey, request: &StreamRequest, error: SourceError) {
-        self.cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((key.clone(), request.clone()), CacheEntry::Err { error, at: std::time::Instant::now() });
+        self.cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            (key.clone(), request.clone()),
+            CacheEntry::Err {
+                error,
+                at: std::time::Instant::now(),
+            },
+        );
     }
 
-    /// S4: pick the best decodable candidate for the request. Candidates are
+    /// Pick the best decodable candidate for the request. Candidates are
     /// ordered by the source (best first → the resolve contract returns the
     /// best it has); if the best candidate is undecodable we still scan the
     /// rest so HLS/DASH/Opus answers don't hide a plain AAC sibling.
@@ -215,7 +233,12 @@ impl Resolver {
         // order). All-undecodable → Unsupported.
         candidates
             .into_iter()
-            .find(|m| decodable(m.format.as_ref().unwrap_or(&StreamFormat::default()), m.container))
+            .find(|m| {
+                decodable(
+                    m.format.as_ref().unwrap_or(&StreamFormat::default()),
+                    m.container,
+                )
+            })
             .ok_or(SourceError::Unsupported)
     }
 
@@ -224,7 +247,7 @@ impl Resolver {
         key: &TrackKey,
         request: &StreamRequest,
     ) -> Result<ResolvedMedia, SourceError> {
-        // S12: prefer a local file for Lossless/Best before any remote call.
+        // Prefer a local file for Lossless/Best before any remote call.
         // The closure's local media caches like any other answer; a miss
         // (no match, or a stale/unreadable path) falls through to remote.
         if matches!(request, StreamRequest::Lossless | StreamRequest::Best) {
@@ -242,7 +265,7 @@ impl Resolver {
         match self.resolve_pinned(source.as_ref(), key, request).await {
             Ok(media) => Ok(media),
             Err(original) => {
-                // S7: pinned failed (Permanent, or transient/timeout with
+                // Pinned failed (Permanent, or transient/timeout with
                 // retries exhausted) → try other enabled sources in rank
                 // order. No match anywhere → the ORIGINAL error.
                 let fell_back = self.try_fallback(source.as_ref(), key, request).await;
@@ -285,8 +308,8 @@ impl Resolver {
         Err(last)
     }
 
-    /// S7: sequential fallback ladder. Skips the pinned source itself (by
-    /// config id) and `Local` (no library lookup seam yet — S12). Each
+    /// Sequential fallback ladder. Skips the pinned source itself (by
+    /// config id) and `Local` (no library lookup seam yet). Each
     /// candidate is searched with the matcher's queries; the first candidate
     /// that matches AND streams successfully wins. No racing: strictly one
     /// source at a time.
@@ -302,9 +325,12 @@ impl Resolver {
                 continue;
             }
             if candidate.kind() == SourceKind::Local {
-                continue; // S12: no local lookup seam in the resolver
+                continue; // No local lookup seam in the resolver
             }
-            if let Some(mut media) = self.match_on_source(candidate.as_ref(), &target, request).await {
+            if let Some(mut media) = self
+                .match_on_source(candidate.as_ref(), &target, request)
+                .await
+            {
                 // The fallback source is the recorded source.
                 media.source = candidate.kind();
                 return Some(media);
@@ -338,11 +364,9 @@ impl Resolver {
                     continue;
                 }
                 let candidate_key = TrackKey::new(source.kind(), row.track_id).ok()?;
-                if let Ok(Ok(Some(media))) = tokio::time::timeout(
-                    RESOLVE_TIMEOUT,
-                    source.resolve(&candidate_key, request),
-                )
-                .await
+                if let Ok(Ok(Some(media))) =
+                    tokio::time::timeout(RESOLVE_TIMEOUT, source.resolve(&candidate_key, request))
+                        .await
                 {
                     return Some(media);
                 }
@@ -351,13 +375,13 @@ impl Resolver {
         None
     }
 
-    /// S4: resolve + decodability gate. A source may return multiple
+    /// Resolve + decodability gate. A source may return multiple
     /// candidate formats (future contract); the best decodable one wins.
     /// If the sidecar returns only one format, `candidates` is that one.
     pub async fn resolve_decodable(
         &self,
-        key: &TrackKey,
-        request: &StreamRequest,
+        _key: &TrackKey,
+        _request: &StreamRequest,
         candidates: Vec<ResolvedMedia>,
     ) -> Result<ResolvedMedia, SourceError> {
         self.pick_best_decodable(candidates)
@@ -385,7 +409,10 @@ mod tests {
             let (s, c, _sc) = Self::new_full(SourceKind::YouTube, "fake");
             (s, c)
         }
-        fn new_full(kind: SourceKind, config: &str) -> (Arc<Self>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        fn new_full(
+            kind: SourceKind,
+            config: &str,
+        ) -> (Arc<Self>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
             let calls = Arc::new(AtomicUsize::new(0));
             let search_calls = Arc::new(AtomicUsize::new(0));
             let this = Arc::new(Self {
@@ -407,20 +434,44 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl MusicSource for FakeSource {
-        fn config_id(&self) -> &str { &self.config }
-        fn kind(&self) -> SourceKind { self.kind }
-        fn display_name(&self) -> &str { "Fake" }
-        async fn health(&self) -> Result<SourceHealth, SourceError> { Ok(SourceHealth::Ok { detail: None }) }
+        fn config_id(&self) -> &str {
+            &self.config
+        }
+        fn kind(&self) -> SourceKind {
+            self.kind
+        }
+        fn display_name(&self) -> &str {
+            "Fake"
+        }
+        async fn health(&self) -> Result<SourceHealth, SourceError> {
+            Ok(SourceHealth::Ok { detail: None })
+        }
         async fn search(&self, _q: &str, _l: usize) -> Result<Vec<CatalogTrack>, SourceError> {
             self.search_calls.fetch_add(1, Ordering::SeqCst);
-            self.search_outcomes.lock().unwrap().pop_front().unwrap_or(Ok(vec![]))
+            self.search_outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(vec![]))
         }
-        async fn stream(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<SourceStream>, SourceError> {
+        async fn stream(
+            &self,
+            _k: &TrackKey,
+            _r: &StreamRequest,
+        ) -> Result<Option<SourceStream>, SourceError> {
             Err(SourceError::Unsupported)
         }
-        async fn resolve(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<ResolvedMedia>, SourceError> {
+        async fn resolve(
+            &self,
+            _k: &TrackKey,
+            _r: &StreamRequest,
+        ) -> Result<Option<ResolvedMedia>, SourceError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.outcomes.lock().unwrap().pop_front().unwrap_or(Ok(None))
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(None))
         }
     }
 
@@ -431,7 +482,10 @@ mod tests {
             expiry: expiry_s,
             length: None,
             mime: None,
-            format: Some(StreamFormat { codec: "AAC".into(), ..Default::default() }),
+            format: Some(StreamFormat {
+                codec: "AAC".into(),
+                ..Default::default()
+            }),
             container: None,
             source: SourceKind::YouTube,
             below_request: false,
@@ -446,7 +500,10 @@ mod tests {
     }
 
     fn key() -> TrackKey {
-        TrackKey { source: SourceKind::YouTube, id: "t".into() }
+        TrackKey {
+            source: SourceKind::YouTube,
+            id: "t".into(),
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -458,7 +515,11 @@ mod tests {
         assert_eq!(m1.url, "http://a");
         let m2 = r.resolve(&key(), &StreamRequest::Best).await.unwrap();
         assert_eq!(m2.url, "http://a");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "single-flight + cache = 1 call");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "single-flight + cache = 1 call"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -469,7 +530,9 @@ mod tests {
         let mut futs = Vec::new();
         for _ in 0..8 {
             let r = r.clone();
-            futs.push(tokio::spawn(async move { r.resolve(&key(), &StreamRequest::Best).await }));
+            futs.push(tokio::spawn(async move {
+                r.resolve(&key(), &StreamRequest::Best).await
+            }));
         }
         for f in futs {
             assert!(f.await.unwrap().is_ok());
@@ -479,12 +542,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn timeout_is_classified_and_not_cached() {
-        let (fake, _calls) = FakeSource::new();
+        let (_fake, _calls) = FakeSource::new();
         // A source that never answers: timeout after RESOLVE_TIMEOUT.
         let slow: SourceLookup = Arc::new(move |kind| {
-            (kind == SourceKind::YouTube).then(|| {
-                Arc::new(SlowSource) as Arc<dyn MusicSource>
-            })
+            (kind == SourceKind::YouTube).then(|| Arc::new(SlowSource) as Arc<dyn MusicSource>)
         });
         let r = Resolver::new(slow);
         let err = r.resolve(&key(), &StreamRequest::Best).await.unwrap_err();
@@ -494,15 +555,33 @@ mod tests {
     struct SlowSource;
     #[async_trait::async_trait]
     impl MusicSource for SlowSource {
-        fn config_id(&self) -> &str { "slow" }
-        fn kind(&self) -> SourceKind { SourceKind::YouTube }
-        fn display_name(&self) -> &str { "Slow" }
-        async fn health(&self) -> Result<SourceHealth, SourceError> { Ok(SourceHealth::Ok { detail: None }) }
-        async fn search(&self, _q: &str, _l: usize) -> Result<Vec<CatalogTrack>, SourceError> { Ok(vec![]) }
-        async fn stream(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<SourceStream>, SourceError> {
+        fn config_id(&self) -> &str {
+            "slow"
+        }
+        fn kind(&self) -> SourceKind {
+            SourceKind::YouTube
+        }
+        fn display_name(&self) -> &str {
+            "Slow"
+        }
+        async fn health(&self) -> Result<SourceHealth, SourceError> {
+            Ok(SourceHealth::Ok { detail: None })
+        }
+        async fn search(&self, _q: &str, _l: usize) -> Result<Vec<CatalogTrack>, SourceError> {
+            Ok(vec![])
+        }
+        async fn stream(
+            &self,
+            _k: &TrackKey,
+            _r: &StreamRequest,
+        ) -> Result<Option<SourceStream>, SourceError> {
             Err(SourceError::Unsupported)
         }
-        async fn resolve(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<ResolvedMedia>, SourceError> {
+        async fn resolve(
+            &self,
+            _k: &TrackKey,
+            _r: &StreamRequest,
+        ) -> Result<Option<ResolvedMedia>, SourceError> {
             tokio::time::sleep(Duration::from_secs(60)).await;
             Ok(Some(media("http://late", None)))
         }
@@ -524,7 +603,10 @@ mod tests {
         let (fake, calls) = FakeSource::new();
         fake.push(Err(SourceError::Permanent("nope".into())));
         let r = resolver_with(fake.clone());
-        assert!(matches!(r.resolve(&key(), &StreamRequest::Best).await.unwrap_err(), SourceError::Permanent(_)));
+        assert!(matches!(
+            r.resolve(&key(), &StreamRequest::Best).await.unwrap_err(),
+            SourceError::Permanent(_)
+        ));
         // Second resolve: no upstream call (negative cache).
         assert!(r.resolve(&key(), &StreamRequest::Best).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -561,7 +643,7 @@ mod tests {
         assert!(matches!(err, SourceError::Disabled));
     }
 
-    // ---- S7: fallback ladder ----
+    // Fallback ladder
 
     fn catalog_row(track_id: &str, title: &str, artist: &str, dur: Option<u32>) -> CatalogTrack {
         CatalogTrack {
@@ -578,7 +660,11 @@ mod tests {
     }
 
     fn target_meta() -> TrackMeta {
-        TrackMeta { title: "Song".into(), artist: "Artist".into(), duration_sec: Some(200.0) }
+        TrackMeta {
+            title: "Song".into(),
+            artist: "Artist".into(),
+            duration_sec: Some(200.0),
+        }
     }
 
     fn ladder_resolver(pinned: Arc<FakeSource>, fallbacks: Vec<Arc<FakeSource>>) -> Resolver {
@@ -586,7 +672,10 @@ mod tests {
             (kind == SourceKind::YouTube).then(|| pinned.clone() as Arc<dyn MusicSource>)
         });
         let provider: FallbackProvider = Arc::new(move || {
-            fallbacks.iter().map(|f| f.clone() as Arc<dyn MusicSource>).collect()
+            fallbacks
+                .iter()
+                .map(|f| f.clone() as Arc<dyn MusicSource>)
+                .collect()
         });
         let meta: MetaLookup = Arc::new(|_| Some(target_meta()));
         Resolver::with_fallbacks(lookup, provider, meta)
@@ -604,7 +693,11 @@ mod tests {
         assert_eq!(m.url, "http://fallback");
         assert_eq!(m.source, SourceKind::Addon, "fallback source recorded");
         assert_eq!(pinned_calls.load(Ordering::SeqCst), 1, "pinned tried once");
-        assert_eq!(fa_search_calls.load(Ordering::SeqCst), 1, "fallback searched once");
+        assert_eq!(
+            fa_search_calls.load(Ordering::SeqCst),
+            1,
+            "fallback searched once"
+        );
         assert_eq!(fa_calls.load(Ordering::SeqCst), 1, "fallback streamed once");
     }
 
@@ -613,11 +706,20 @@ mod tests {
         let (pinned, _) = FakeSource::new();
         pinned.push(Err(SourceError::Permanent("nope".into())));
         let (fa, fa_calls, _) = FakeSource::new_full(SourceKind::Addon, "addon-a");
-        fa.push_search(Ok(vec![catalog_row("id-a", "Different Song", "Artist", Some(200))]));
+        fa.push_search(Ok(vec![catalog_row(
+            "id-a",
+            "Different Song",
+            "Artist",
+            Some(200),
+        )]));
         let r = ladder_resolver(pinned.clone(), vec![fa.clone()]);
         let err = r.resolve(&key(), &StreamRequest::Best).await.unwrap_err();
         assert!(matches!(err, SourceError::Permanent(_)), "{err:?}");
-        assert_eq!(fa_calls.load(Ordering::SeqCst), 0, "non-matching candidate never streamed");
+        assert_eq!(
+            fa_calls.load(Ordering::SeqCst),
+            0,
+            "non-matching candidate never streamed"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -628,7 +730,10 @@ mod tests {
         fa.push_search(Err(SourceError::Network("down".into())));
         let r = ladder_resolver(pinned.clone(), vec![fa.clone()]);
         let err = r.resolve(&key(), &StreamRequest::Best).await.unwrap_err();
-        assert!(matches!(err, SourceError::Permanent(_)), "original error preserved: {err:?}");
+        assert!(
+            matches!(err, SourceError::Permanent(_)),
+            "original error preserved: {err:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -641,7 +746,10 @@ mod tests {
         // Provider includes the pinned source itself (same config id).
         let pinned_provider = pinned.clone();
         let provider: FallbackProvider = Arc::new(move || {
-            vec![pinned_provider.clone() as Arc<dyn MusicSource>, fa.clone() as Arc<dyn MusicSource>]
+            vec![
+                pinned_provider.clone() as Arc<dyn MusicSource>,
+                fa.clone() as Arc<dyn MusicSource>,
+            ]
         });
         let meta: MetaLookup = Arc::new(|_| Some(target_meta()));
         let lookup: SourceLookup = Arc::new(move |kind| {
@@ -650,7 +758,11 @@ mod tests {
         let r = Resolver::with_fallbacks(lookup, provider, meta);
         let m = r.resolve(&key(), &StreamRequest::Best).await.unwrap();
         assert_eq!(m.url, "http://fallback");
-        assert_eq!(pinned_calls.load(Ordering::SeqCst), 1, "pinned not re-tried as fallback");
+        assert_eq!(
+            pinned_calls.load(Ordering::SeqCst),
+            1,
+            "pinned not re-tried as fallback"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -662,7 +774,10 @@ mod tests {
         fa.push_search(Ok(vec![catalog_row("id-a", "Song", "Artist", Some(200))]));
         fa.push(Ok(Some(media("http://fallback", None))));
         let provider: FallbackProvider = Arc::new(move || {
-            vec![local.clone() as Arc<dyn MusicSource>, fa.clone() as Arc<dyn MusicSource>]
+            vec![
+                local.clone() as Arc<dyn MusicSource>,
+                fa.clone() as Arc<dyn MusicSource>,
+            ]
         });
         let meta: MetaLookup = Arc::new(|_| Some(target_meta()));
         let lookup: SourceLookup = Arc::new(move |kind| {
@@ -671,7 +786,11 @@ mod tests {
         let r = Resolver::with_fallbacks(lookup, provider, meta);
         let m = r.resolve(&key(), &StreamRequest::Best).await.unwrap();
         assert_eq!(m.url, "http://fallback");
-        assert_eq!(local_search.load(Ordering::SeqCst), 0, "Local never searched (S12)");
+        assert_eq!(
+            local_search.load(Ordering::SeqCst),
+            0,
+            "Local never searched"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -685,9 +804,16 @@ mod tests {
         fa2.push(Ok(Some(media("http://second", None))));
         let r = ladder_resolver(pinned.clone(), vec![fa1.clone(), fa2.clone()]);
         let m = r.resolve(&key(), &StreamRequest::Best).await.unwrap();
-        assert_eq!(m.url, "http://second", "second fallback wins after first fails");
+        assert_eq!(
+            m.url, "http://second",
+            "second fallback wins after first fails"
+        );
         assert_eq!(m.source, SourceKind::Addon);
-        assert_eq!(fa1_search.load(Ordering::SeqCst), 1, "first fallback attempted");
+        assert_eq!(
+            fa1_search.load(Ordering::SeqCst),
+            1,
+            "first fallback attempted"
+        );
         assert_eq!(fa2_search.load(Ordering::SeqCst), 1);
         assert_eq!(fa2_calls.load(Ordering::SeqCst), 1);
     }
@@ -707,11 +833,11 @@ mod tests {
         assert!(matches!(err, SourceError::Permanent(_)));
         assert_eq!(pinned_calls.load(Ordering::SeqCst), 1);
     }
-    // ---- S12: prefer-local — a local hit answers before any remote call
+    // Prefer-local — a local hit answers before any remote call
     // for Lossless/Best; a stale/unreadable path or no match falls through
-    // to the remote flow; Capped (DataSaver) never consults local. ----
+    // to the remote flow; Capped (DataSaver) never consults local.
 
-    fn s12_meta_lookup() -> MetaLookup {
+    fn local_meta_lookup() -> MetaLookup {
         Arc::new(|_| {
             Some(TrackMeta {
                 title: "Song".into(),
@@ -721,18 +847,24 @@ mod tests {
         })
     }
 
-    fn s12_key() -> TrackKey {
-        TrackKey { source: SourceKind::YouTube, id: "t1".into() }
+    fn sample_key() -> TrackKey {
+        TrackKey {
+            source: SourceKind::YouTube,
+            id: "t1".into(),
+        }
     }
 
-    fn s12_local_media(url: &str) -> ResolvedMedia {
+    fn local_media(url: &str) -> ResolvedMedia {
         ResolvedMedia {
             url: url.into(),
             headers: vec![],
             expiry: None,
             length: None,
             mime: None,
-            format: Some(StreamFormat { codec: "flac".into(), ..Default::default() }),
+            format: Some(StreamFormat {
+                codec: "flac".into(),
+                ..Default::default()
+            }),
             container: None,
             source: SourceKind::Local,
             below_request: false,
@@ -744,17 +876,18 @@ mod tests {
         // No remote sources at all: a remote path would answer Disabled, so
         // success with a local url proves the local seam answered first.
         let local: LocalMatch =
-            Arc::new(|m| (m.title == "Song").then(|| s12_local_media("/tmp/library/song.flac")));
-        let r = Resolver::with_fallbacks(Arc::new(|_| None), Arc::new(Vec::new), s12_meta_lookup())
-            .with_local_match(local);
+            Arc::new(|m| (m.title == "Song").then(|| local_media("/tmp/library/song.flac")));
+        let r =
+            Resolver::with_fallbacks(Arc::new(|_| None), Arc::new(Vec::new), local_meta_lookup())
+                .with_local_match(local);
         for request in [StreamRequest::Best, StreamRequest::Lossless] {
-            let media = r.resolve(&s12_key(), &request).await.unwrap();
+            let media = r.resolve(&sample_key(), &request).await.unwrap();
             assert_eq!(media.source, SourceKind::Local);
             assert_eq!(media.url, "/tmp/library/song.flac");
         }
         // Capped (DataSaver tier) skips the local seam → Disabled (no remotes).
         let err = r
-            .resolve(&s12_key(), &StreamRequest::Capped { max_kbps: 128 })
+            .resolve(&sample_key(), &StreamRequest::Capped { max_kbps: 128 })
             .await
             .unwrap_err();
         assert!(matches!(err, SourceError::Disabled), "{err:?}");
@@ -767,11 +900,15 @@ mod tests {
         let (fake, calls, _search) = FakeSource::new_full(SourceKind::YouTube, "yt");
         fake.push(Ok(Some(media("http://remote/1", None))));
         let fake_dyn: Arc<dyn MusicSource> = fake.clone();
-        let lookup: SourceLookup =
-            Arc::new(move |kind: SourceKind| (kind == SourceKind::YouTube).then(|| fake_dyn.clone()));
-        let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), s12_meta_lookup())
+        let lookup: SourceLookup = Arc::new(move |kind: SourceKind| {
+            (kind == SourceKind::YouTube).then(|| fake_dyn.clone())
+        });
+        let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), local_meta_lookup())
             .with_local_match(stale);
-        let resolved = r.resolve(&s12_key(), &StreamRequest::Best).await.unwrap();
+        let resolved = r
+            .resolve(&sample_key(), &StreamRequest::Best)
+            .await
+            .unwrap();
         assert_eq!(resolved.url, "http://remote/1", "stale local → remote");
         assert_eq!(resolved.source, SourceKind::YouTube);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "remote was consulted");
@@ -779,14 +916,18 @@ mod tests {
 
     #[tokio::test]
     async fn no_local_match_streams_remote() {
-        // No local seam injected at all — the S3 behavior is unchanged.
+        // No local seam injected at all — the behavior is unchanged.
         let (fake, calls, _search) = FakeSource::new_full(SourceKind::YouTube, "yt");
         fake.push(Ok(Some(media("http://remote/2", None))));
         let fake_dyn: Arc<dyn MusicSource> = fake.clone();
-        let lookup: SourceLookup =
-            Arc::new(move |kind: SourceKind| (kind == SourceKind::YouTube).then(|| fake_dyn.clone()));
-        let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), s12_meta_lookup());
-        let resolved = r.resolve(&s12_key(), &StreamRequest::Best).await.unwrap();
+        let lookup: SourceLookup = Arc::new(move |kind: SourceKind| {
+            (kind == SourceKind::YouTube).then(|| fake_dyn.clone())
+        });
+        let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), local_meta_lookup());
+        let resolved = r
+            .resolve(&sample_key(), &StreamRequest::Best)
+            .await
+            .unwrap();
         assert_eq!(resolved.url, "http://remote/2");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -794,14 +935,18 @@ mod tests {
     #[tokio::test]
     async fn local_hit_is_cached_like_any_answer() {
         let local: LocalMatch =
-            Arc::new(|m| (m.title == "Song").then(|| s12_local_media("/tmp/library/song.flac")));
-        let r = Resolver::with_fallbacks(Arc::new(|_| None), Arc::new(Vec::new), s12_meta_lookup())
-            .with_local_match(local);
-        assert!(r.resolve(&s12_key(), &StreamRequest::Best).await.is_ok());
-        assert!(r.resolve(&s12_key(), &StreamRequest::Best).await.is_ok(), "cache hit");
+            Arc::new(|m| (m.title == "Song").then(|| local_media("/tmp/library/song.flac")));
+        let r =
+            Resolver::with_fallbacks(Arc::new(|_| None), Arc::new(Vec::new), local_meta_lookup())
+                .with_local_match(local);
+        assert!(r.resolve(&sample_key(), &StreamRequest::Best).await.is_ok());
+        assert!(
+            r.resolve(&sample_key(), &StreamRequest::Best).await.is_ok(),
+            "cache hit"
+        );
     }
 
-    // ---- F1 conformance: G2 quality tiers + G4 cache semantics ----
+    // Conformance: G2 quality tiers + G4 cache semantics
 
     #[tokio::test]
     async fn lossless_with_only_lossy_marks_below_request() {
@@ -816,7 +961,10 @@ mod tests {
             (kind == SourceKind::YouTube).then(|| fake_dyn.clone())
         });
         let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), Arc::new(|_| None));
-        let key = TrackKey { source: SourceKind::YouTube, id: "t".into() };
+        let key = TrackKey {
+            source: SourceKind::YouTube,
+            id: "t".into(),
+        };
         let m = r.resolve(&key, &StreamRequest::Lossless).await.unwrap();
         assert!(m.below_request, "lossy answer to Lossless is below-request");
         // Second resolve is a cache hit and still carries the flag.
@@ -840,7 +988,10 @@ mod tests {
             (kind == SourceKind::YouTube).then(|| fake_dyn.clone())
         });
         let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), Arc::new(|_| None));
-        let key = TrackKey { source: SourceKind::YouTube, id: "t".into() };
+        let key = TrackKey {
+            source: SourceKind::YouTube,
+            id: "t".into(),
+        };
         let m1 = r.resolve(&key, &StreamRequest::Best).await.unwrap();
         let m2 = r.resolve(&key, &StreamRequest::Best).await.unwrap();
         assert_eq!(m1.url, "http://remote/1");
@@ -857,11 +1008,18 @@ mod tests {
             (kind == SourceKind::YouTube).then(|| fake_dyn.clone())
         });
         let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), Arc::new(|_| None));
-        let key = TrackKey { source: SourceKind::YouTube, id: "t".into() };
+        let key = TrackKey {
+            source: SourceKind::YouTube,
+            id: "t".into(),
+        };
         let e1 = r.resolve(&key, &StreamRequest::Best).await.unwrap_err();
         let e2 = r.resolve(&key, &StreamRequest::Best).await.unwrap_err();
         assert_eq!(e1.to_string(), e2.to_string());
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "second resolve served from the negative cache");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "second resolve served from the negative cache"
+        );
     }
 
     #[tokio::test]
@@ -876,7 +1034,10 @@ mod tests {
             (kind == SourceKind::YouTube).then(|| fake_dyn.clone())
         });
         let r = Resolver::with_fallbacks(lookup, Arc::new(Vec::new), Arc::new(|_| None));
-        let key = TrackKey { source: SourceKind::YouTube, id: "t".into() };
+        let key = TrackKey {
+            source: SourceKind::YouTube,
+            id: "t".into(),
+        };
         for _ in 0..3 {
             let m = r.resolve(&key, &StreamRequest::Best).await.unwrap();
             assert_eq!(m.url, "http://remote/pinned");
@@ -888,28 +1049,7 @@ mod tests {
 #[cfg(test)]
 mod decodable_resolver_tests {
     use super::*;
-    use crate::{CatalogTrack, Container, SourceHealth, SourceStream, StreamFormat};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct MultiFake {
-        calls: Arc<AtomicUsize>,
-        candidates: Vec<Result<Option<ResolvedMedia>, SourceError>>,
-    }
-    #[async_trait::async_trait]
-    impl MusicSource for MultiFake {
-        fn config_id(&self) -> &str { "multi" }
-        fn kind(&self) -> SourceKind { SourceKind::YouTube }
-        fn display_name(&self) -> &str { "Multi" }
-        async fn health(&self) -> Result<SourceHealth, SourceError> { Ok(SourceHealth::Ok { detail: None }) }
-        async fn search(&self, _q: &str, _l: usize) -> Result<Vec<CatalogTrack>, SourceError> { Ok(vec![]) }
-        async fn stream(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<SourceStream>, SourceError> {
-            Err(SourceError::Unsupported)
-        }
-        async fn resolve(&self, _k: &TrackKey, _r: &StreamRequest) -> Result<Option<ResolvedMedia>, SourceError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.candidates.first().cloned().unwrap_or(Ok(None))
-        }
-    }
+    use crate::{Container, StreamFormat};
 
     fn cand(url: &str, codec: &str, container: Option<Container>) -> ResolvedMedia {
         ResolvedMedia {
@@ -918,7 +1058,10 @@ mod decodable_resolver_tests {
             expiry: None,
             length: None,
             mime: None,
-            format: Some(StreamFormat { codec: codec.into(), ..Default::default() }),
+            format: Some(StreamFormat {
+                codec: codec.into(),
+                ..Default::default()
+            }),
             container,
             source: SourceKind::YouTube,
             below_request: false,
@@ -928,18 +1071,43 @@ mod decodable_resolver_tests {
     #[tokio::test]
     async fn picks_best_decodable_among_candidates() {
         // Source order: Opus (best, undecodable) then AAC (decodable).
-        let candidates = vec![cand("http://opus", "opus", None), cand("http://aac", "aac", None)];
+        let candidates = vec![
+            cand("http://opus", "opus", None),
+            cand("http://aac", "aac", None),
+        ];
         let r = Resolver::new(Arc::new(|_| None));
-        let picked = r.resolve_decodable(&TrackKey { source: SourceKind::YouTube, id: "t".into() }, &StreamRequest::Best, candidates).await.unwrap();
+        let picked = r
+            .resolve_decodable(
+                &TrackKey {
+                    source: SourceKind::YouTube,
+                    id: "t".into(),
+                },
+                &StreamRequest::Best,
+                candidates,
+            )
+            .await
+            .unwrap();
         assert_eq!(picked.url, "http://aac", "skips undecodable best");
     }
 
     #[tokio::test]
     async fn all_undecodable_returns_unsupported() {
-        let candidates = vec![cand("http://hls", "aac", Some(Container::Hls)), cand("http://opus", "opus", None)];
+        let candidates = vec![
+            cand("http://hls", "aac", Some(Container::Hls)),
+            cand("http://opus", "opus", None),
+        ];
         let r = Resolver::new(Arc::new(|_| None));
-        let err = r.resolve_decodable(&TrackKey { source: SourceKind::YouTube, id: "t".into() }, &StreamRequest::Best, candidates).await.unwrap_err();
+        let err = r
+            .resolve_decodable(
+                &TrackKey {
+                    source: SourceKind::YouTube,
+                    id: "t".into(),
+                },
+                &StreamRequest::Best,
+                candidates,
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, SourceError::Unsupported));
     }
-
 }

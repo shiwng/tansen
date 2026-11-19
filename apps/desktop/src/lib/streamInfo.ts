@@ -1,4 +1,4 @@
-/** F5: the `stream_info_get` DTO (camelCase wire shape) and its mapping. */
+/** The `stream_info_get` DTO (camelCase wire shape) and its mapping. */
 export interface StreamInfoDto {
   source: string;
   codec: string | null;

@@ -11,6 +11,8 @@
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/utilities.css' layer(utilities);
 @import './tokens.css' layer(base);
+/* Unlayered: the Settings → Appearance overrides must beat the tokens. */
+@import './appearance.css';
 
 /* Tailwind's hover: is (hover: hover)-gated; the design's hovers aren't. */
 @custom-variant hover (&:hover);
@@ -42,6 +44,7 @@
   --animate-zoom: zoom 0.2s ease-out;
   --animate-fade-in: fade-in 0.4s ease;
   --animate-enter: enter 0.3s var(--ease-out-panel);
+  --animate-exit: exit 0.2s var(--ease-out-panel) forwards;
   --animate-morph: morph 0.32s var(--ease-out-panel);
   --animate-spin: spin 1s linear infinite;
   --animate-shimmer: shimmer 1.6s ease-in-out infinite;
@@ -77,6 +80,17 @@
     from {
       opacity: 0;
       transform: scale(1.02);
+    }
+  }
+  @keyframes exit {
+    to {
+      opacity: 0;
+      transform: scale(1.01);
+    }
+  }
+  @keyframes fade-out {
+    to {
+      opacity: 0;
     }
   }
   /* One label melting into the next, as the quality switcher's text changes. */
@@ -147,6 +161,8 @@
   --color-glass-shadow: var(--glassMaterialShadowColor);
   --color-thin-material: var(--systemStandardThinMaterialSover);
   --color-thick-material: var(--systemStandardThickMaterialSover);
+  --color-context-menu: var(--contextMenuMaterial);
+  --color-menu-selection: var(--contextMenuSelection);
   --color-header-material: var(--systemHeaderMaterialSover);
   --color-nav-selected: var(--navSidebarSelectedState);
   --color-tracklist-hover: var(--tracklistHoverColor);
@@ -212,13 +228,92 @@
   font: --value([*]) var(--font-family);
 }
 
-/* Glass (report §1): the sidebar, the side panel and the phone's top bar. */
+/*
+ * Glass (report §1): the sidebar, the side panel and the phone's top bar.
+ *
+ * Liquid Glass material — evaluated dashersw/liquid-glass-js (MIT, 2025).
+ * That library renders every surface into its own WebGL2 canvas and samples
+ * the page with html2canvas each frame. Tansen's artwork arrives through the
+ * custom art:// protocol and remote CDN fetches, which taint that sampling
+ * canvas; three more GPU contexts for the player, search field and back
+ * control would also be disproportionate. The shared CSS material below is
+ * the lightweight equivalent: real backdrop blur + saturation (the refraction
+ * stand-in), a tinted fill, and the specular top edge with a 0.5px inner rim.
+ * Every floating surface uses this one implementation.
+ */
 @utility glass-material {
   background-color: var(--glassMaterialBackground);
   backdrop-filter: var(--glassMaterialBackdropFilter);
 }
 
-/* The player pill's glass: blurred fill and drop shadow (::before), 0.5px inner stroke (::after). */
+/* The settings switch (glisse) fills with the app accent, not iOS green. */
+.settings-switch {
+  --lg-on: var(--keyColor);
+}
+
+/*
+ * The toolbar's two glass surfaces (search field and scope control) use
+ * glisse's Liquid Glass: it draws the lit rim and applies the frost from the
+ * same material tokens as the player pill. WKWebView does not apply SVG
+ * filters to a live backdrop, so glisse skips that Chromium-only refraction
+ * and keeps this frost + rim, which WebKit renders natively. No focus ring is
+ * painted at rest; an actively focused field gets the same subtle lift plus a
+ * restrained key-colour halo.
+ */
+.header-glass {
+  --lg-glass: var(--pillMaterialBackground);
+  --lg-glass-active: var(--headerGlassActiveBackground);
+  --lg-edge: var(--headerGlassEdge);
+  --lg-rim-shine: var(--headerGlassRimShine);
+  --lg-blur: 16px;
+  --lg-filter: saturate(180%);
+  background-color: var(--pillMaterialBackground);
+  box-shadow: 0 1px 3px var(--glassMaterialShadowColor);
+}
+
+.header-glass[data-rim] {
+  box-shadow: 0 1px 3px var(--glassMaterialShadowColor);
+}
+
+.header-glass:has(:focus-visible) {
+  background-color: var(--headerGlassActiveBackground);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--keyColor) 24%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--keyColor) 9%, transparent),
+    0 1px 3px var(--glassMaterialShadowColor);
+}
+
+.header-glass[data-rim]:has(:focus-visible) {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--keyColor) 24%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--keyColor) 9%, transparent),
+    0 1px 3px var(--glassMaterialShadowColor);
+}
+
+/*
+ * The liquid signature shared by every floating glass surface: a specular
+ * top edge (light from above) over the 0.5px inner rim. Compose on a
+ * positioned element whose ::after is free; glass-pill layers it into its own.
+ */
+@utility glass-edge {
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow:
+      inset 0 0.5px 0 var(--glassEdgeHighlight),
+      inset 0.5px 0.5px 0 var(--glassMaterialInnerStroke),
+      inset 0.5px -0.5px 0 var(--glassMaterialInnerStroke),
+      inset -0.5px 0.5px 0 var(--glassMaterialInnerStroke),
+      inset -0.5px -0.5px 0 var(--glassMaterialInnerStroke);
+    opacity: var(--glassMaterialInnerStrokeAlpha);
+  }
+}
+
+/* The player pill, search field, segmented control and back control share this:
+   blurred fill, a top sheen, a soft shadow and the 0.5px inner stroke. */
 @utility glass-pill {
   isolation: isolate;
 
@@ -234,18 +329,44 @@
   &::before {
     z-index: -1;
     background-color: var(--pillMaterialBackground);
-    backdrop-filter: saturate(2.2) blur(16px);
-    box-shadow: 0 10px 40px var(--glassMaterialShadowColor);
+    background-image: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--glassEdgeHighlight) 13%, transparent),
+      transparent 48%
+    );
+    /* Var so Liquid Glass off can zero it (appearance.css). */
+    backdrop-filter: var(--pillMaterialBackdropFilter, saturate(2.2) blur(16px));
+    box-shadow:
+      0 10px 40px var(--glassMaterialShadowColor),
+      inset 0 -1px 0 color-mix(in srgb, var(--glassEdgeHighlight) 9%, transparent);
   }
 
   &::after {
     box-shadow:
+      inset 0 0.5px 0 var(--glassEdgeHighlight),
       inset 0.5px 0.5px 0 var(--glassMaterialInnerStroke),
       inset 0.5px -0.5px 0 var(--glassMaterialInnerStroke),
       inset -0.5px 0.5px 0 var(--glassMaterialInnerStroke),
       inset -0.5px -0.5px 0 var(--glassMaterialInnerStroke);
     opacity: var(--glassMaterialInnerStrokeAlpha);
   }
+}
+
+/*
+ * The same glass over artwork (the category hero's back control). Only the
+ * local tint tokens change so the white chevron stays legible on any cover;
+ * blur, sheen and rim are the shared material above.
+ */
+.glass-on-art {
+  --pillMaterialBackground: rgb(18 18 20 / 0.38);
+  --glassMaterialInnerStroke: #ffffff;
+  --glassMaterialInnerStrokeAlpha: 0.24;
+  --glassEdgeHighlight: rgb(255 255 255 / 0.55);
+  color: #fff;
+}
+
+.glass-on-art:hover {
+  --pillMaterialBackground: rgb(18 18 20 / 0.5);
 }
 
 /* Artwork's 0.5px inner stroke (report §1, "Inner stroke"), Apple's "has-borders". */
@@ -389,7 +510,6 @@
     *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
-      transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
       transition-duration: 0.01ms !important;
     }

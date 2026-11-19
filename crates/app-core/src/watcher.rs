@@ -73,7 +73,9 @@ fn run(db: Arc<Db>, scanner: Scanner, scan_events: broadcast::Sender<library::Sc
                     let _ = w.unwatch(std::path::Path::new(old));
                 }
                 for path in &paths {
-                    if let Err(e) = w.watch(std::path::Path::new(path), notify::RecursiveMode::Recursive) {
+                    if let Err(e) =
+                        w.watch(std::path::Path::new(path), notify::RecursiveMode::Recursive)
+                    {
                         tracing::warn!(path = %path, error = %e, "watch failed");
                     }
                 }
@@ -96,12 +98,17 @@ fn run(db: Arc<Db>, scanner: Scanner, scan_events: broadcast::Sender<library::Sc
                     .flatten()
                     .map(|v| v != "false")
                     .unwrap_or(true);
-                if !watch_on || watching.is_empty() {
+                let local_on = crate::state::local_files_enabled(&db);
+                if !watch_on || !local_on || watching.is_empty() {
                     continue;
                 }
                 match scan_quiet(&db, &scanner) {
                     Ok(summary) => {
-                        tracing::info!(added = summary.added, missing = summary.marked_missing, "watcher rescan");
+                        tracing::info!(
+                            added = summary.added,
+                            missing = summary.marked_missing,
+                            "watcher rescan"
+                        );
                         let _ = scan_events.send(summary);
                     }
                     Err(e) => tracing::warn!(error = %e, "watcher scan failed"),

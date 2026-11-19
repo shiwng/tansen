@@ -41,7 +41,7 @@ export function orderedSources(saved: readonly string[]): LyricsSourceId[] {
   return result;
 }
 
-// ---- LyricsQuery.kt -------------------------------------------------------------------
+// LyricsQuery.kt
 
 const CREDITS = [
   /\s*[([]\s*(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi,

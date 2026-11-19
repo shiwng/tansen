@@ -3,7 +3,7 @@
 pub mod playback_engine;
 pub mod playback_types;
 pub mod state;
-pub mod yt_handle;
 pub mod watcher;
+pub mod yt_handle;
 
 pub use state::{AppState, CoreError};

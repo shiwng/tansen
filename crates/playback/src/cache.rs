@@ -76,16 +76,23 @@ impl StreamCache {
         // A stale .part from an interrupted run restarts from scratch.
         let _ = fs::remove_file(&part);
 
-        // F7: the same media redirect policy as the streaming readers —
+        // The same media redirect policy as the streaming readers —
         // CDN hops allowed, internal-network pivots refused, https never
-        // downgraded.
+        // downgraded. The initial URL is resolved and pinned too: a public
+        // name that answers with a loopback/private address must not make
+        // the cache downloader fetch an internal service.
         let original_local = crate::remote::media_host_is_local(url);
-        let original_scheme = reqwest::Url::parse(url)
-            .map(|u| u.scheme().to_string())
-            .unwrap_or_default();
-        let client = reqwest::blocking::Client::builder()
+        let parsed =
+            reqwest::Url::parse(url).map_err(|e| CacheError::Http(format!("media url: {e}")))?;
+        let original_scheme = parsed.scheme().to_string();
+        let mut builder = reqwest::blocking::Client::builder()
             .timeout(DOWNLOAD_TIMEOUT)
-            .user_agent("Tansen/0.3")
+            .user_agent("Tansen/0.3");
+        if let Some(domain) = netguard::dns_host(&parsed) {
+            let addr = netguard::resolve_validated(&parsed).map_err(CacheError::Http)?;
+            builder = builder.resolve(&domain, addr);
+        }
+        let client = builder
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {
                 match crate::remote::media_redirect_verdict(
                     attempt.previous().len(),
@@ -102,15 +109,16 @@ impl StreamCache {
         let mut file = fs::File::create(&part)?;
         // blocking::Response implements Read; stream straight to disk.
         let mut response = client
-            .get(url)
+            .get(parsed)
             .send()
             .and_then(|r| r.error_for_status())
-            .map_err(|e| CacheError::Http(e.to_string()))?;
-        std::io::copy(&mut response, &mut file)
-            .map_err(|e| {
-                let _ = fs::remove_file(&part);
-                CacheError::Http(e.to_string())
-            })?;
+            // reqwest Display appends the full URL (Subsonic token+salt,
+            // googlevideo signed params) to transport errors.
+            .map_err(|e| CacheError::Http(e.without_url().to_string()))?;
+        std::io::copy(&mut response, &mut file).map_err(|e| {
+            let _ = fs::remove_file(&part);
+            CacheError::Http(e.to_string())
+        })?;
         file.flush()?;
         drop(file);
         fs::rename(&part, &final_path)?;
@@ -196,12 +204,28 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
         let mut disk = Vec::new();
-        fs::File::open(&first).unwrap().read_to_end(&mut disk).unwrap();
+        fs::File::open(&first)
+            .unwrap()
+            .read_to_end(&mut disk)
+            .unwrap();
         assert_eq!(&disk, data);
 
         // Second fetch: no HTTP hit, served from the cache.
         cache.fetch(&url).unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fetch_errors_drop_the_credential_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StreamCache::new(dir.path().join("cache"), u64::MAX);
+        let error = cache
+            .fetch("http://127.0.0.1:1/rest/download?id=1&u=alice&t=deadbeef&s=cafe")
+            .expect_err("connection to port 1 must fail");
+        let message = error.to_string();
+        assert!(!message.contains("deadbeef"), "token leaked: {message}");
+        assert!(!message.contains("u=alice"), "username leaked: {message}");
+        assert!(message.contains("http:"), "{message}");
     }
 
     #[test]

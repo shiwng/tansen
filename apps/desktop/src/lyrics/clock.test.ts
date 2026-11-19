@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LyricClock } from './clock';
+import { isJump, LyricClock } from './clock';
 
 // Ported from the native app's LyricClockTest.kt.
 
@@ -135,5 +135,25 @@ describe('LyricClock', () => {
       now += FRAME_MS;
     }
     expect(Math.abs(shown - (60_000 + (now - FRAME_MS - seekAt)))).toBeLessThan(100);
+  });
+});
+
+describe('isJump', () => {
+  it('accepts steady playback and engine jitter', () => {
+    expect(isJump(10, 10.02, 16)).toBe(false);
+    expect(isJump(10, 10.15, 16)).toBe(false); // a 150 ms correction is drift, not a seek
+  });
+
+  it('reports a seek in either direction', () => {
+    expect(isJump(10, 62, 16)).toBe(true);
+    expect(isJump(62, 10, 16)).toBe(true);
+  });
+
+  it('reports a track change even when both readings sit near zero', () => {
+    expect(isJump(180, 0.4, 16)).toBe(true);
+  });
+
+  it('does not mistake a long frame gap for a jump', () => {
+    expect(isJump(10, 11, 1000)).toBe(false);
   });
 });

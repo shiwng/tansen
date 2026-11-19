@@ -1,4 +1,4 @@
-//! M12 timing measurement (`#[ignore]`): create 100 000 real library files,
+//! Timing measurement (`#[ignore]`): create 100 000 real library files,
 //! insert their rows, and measure the read paths the library search uses
 //! (`list_tracks` — the data behind `tracks_get`) plus the scanner's
 //! stat-compare rescan. No criterion (not a dependency) — plain `Instant`,
@@ -98,7 +98,7 @@ fn search_read_paths_on_100k_tracks() {
         median(&mut list_runs)
     );
 
-    // The M11 queue-rows query at scale (1000 ids spread across the library).
+    // The queue-rows query at scale (1000 ids spread across the library).
     let ids: Vec<i64> = (1..=100_000).step_by(100).collect();
     let mut by_ids_runs: Vec<Duration> = Vec::new();
     for _ in 0..5 {
@@ -122,7 +122,10 @@ fn search_read_paths_on_100k_tracks() {
             .scan(&db, &[(folder, root.to_string_lossy().into())], |_| {})
             .unwrap();
         scan_runs.push(t.elapsed());
-        assert_eq!(summary.unchanged, 100_000, "every row skipped by stat compare");
+        assert_eq!(
+            summary.unchanged, 100_000,
+            "every row skipped by stat compare"
+        );
         assert_eq!(summary.added, 0);
         assert_eq!(summary.errors, 0);
     }

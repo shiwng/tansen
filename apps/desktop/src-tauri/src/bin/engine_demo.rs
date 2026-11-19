@@ -1,4 +1,4 @@
-//! M7 end-to-end exercise (debug binary): the app-core playback `Engine`
+//! End-to-end exercise (debug binary): the app-core playback `Engine`
 //! drives the rodio-backed `PipelineFactory` over local files — play, pause,
 //! resume, seek, volume — while printing every published state and the
 //! `frames_played` counter.
@@ -7,7 +7,7 @@
 //! ```sh
 //! cargo run -p tansen --bin engine_demo -- [file.wav ...]
 //! ```
-//! With no arguments it picks four WAVs from the M4 stress fixtures.
+//! With no arguments it looks for four WAVs in /tmp/tansen-demo-lib.
 //! Needs an audio device; not part of `cargo test`.
 
 #[path = "../rodio_factory.rs"]
@@ -51,7 +51,9 @@ fn write_wav(path: &str, sample_rate: usize, samples: usize) {
     buf.extend_from_slice(b"data");
     buf.extend_from_slice(&(data_len as u32).to_le_bytes());
     for i in 0..samples {
-        let v = (9000.0 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / sample_rate as f64).sin()) as i16;
+        let v = (9000.0
+            * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / sample_rate as f64).sin())
+            as i16;
         buf.extend_from_slice(&v.to_le_bytes());
     }
     let _ = f.write_all(&buf);
@@ -63,12 +65,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         files = default_fixtures();
     }
     if files.is_empty() {
-        return Err("no wav files given and no /tmp/tansen-stress-lib fixtures".into());
+        return Err("no wav files given and no /tmp/tansen-demo-lib fixtures".into());
     }
     println!("demo files: {files:?}");
 
-    let resolve: HashMap<u64, String> =
-        files.iter().enumerate().map(|(i, p)| (i as u64, p.clone())).collect();
+    let resolve: HashMap<u64, String> = files
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i as u64, p.clone()))
+        .collect();
     let factory = Arc::new(RodioFactory::new(
         Box::new(move |id: u64| {
             resolve.get(&id).cloned().map(|url| sources::ResolvedMedia {
@@ -86,7 +91,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
     ));
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async move {
         let engine = Engine::start(factory.clone());
         let rx = engine.subscribe();

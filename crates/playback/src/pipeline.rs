@@ -1,75 +1,372 @@
-//! The rodio-backed pipeline (M7/M19): the real-media implementation the
+//! The rodio-backed pipeline: the real-media implementation the
 //! app-core `PipelineFactory` drives.
 //!
-//! M19 architecture: the audio callback only **copies samples from an SPSC
-//! ring buffer, applies volume, and increments `frames_played`** — no locks,
-//! no allocations, no I/O. A dedicated decode thread per stream runs
+//! Architecture: the audio callback only **copies samples from an SPSC
+//! ring buffer, applies volume + DSP, and increments `frames_played`** — no
+//! locks, no allocations, no I/O. A dedicated decode thread per stream runs
 //! Symphonia and fills the ring. The whole stream pipeline (decode thread +
 //! ring + consumer source) is **immutable per (track, seek epoch)**: a load
 //! or seek builds a fresh one and swaps the consumer into the sink; the old
-//! one is shut down. Volume is a lock-free atomic applied at copy time.
+//! one is shut down. Volume, EQ and loudness are atomics applied at copy
+//! time.
+//!
+//! Gapless and crossfade: `preload` builds the next stream ahead of the
+//! transition. For gapless the consumer is appended to the same sink (the
+//! sink runs straight into it); for a crossfade it lives on a second sink
+//! that starts at the transition while both fade ramps run in the callback.
 
 use crate::cache::StreamCache;
+use crate::dsp::{DspParams, EqProcessor, SilenceSkipConfig};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 
-/// Opens the default output. Debug builds route cpal's error callback into
-/// the M4 reliability counters; release uses rodio's default behavior.
-fn open_output_stream() -> Result<OutputStream, rodio::StreamError> {
-    #[cfg(debug_assertions)]
-    {
-        OutputStreamBuilder::from_default_device()
-            .and_then(|b| {
-                b.with_error_callback(|e| crate::metrics::audio::record_stream_error(&e.to_string()))
-                    .open_stream()
-            })
+/// Output bit-depth preference. 16 and 32 are the only supported hardware
+/// formats; internal processing is always 32-bit float.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputDepth {
+    Bits16,
+    Bits32,
+}
+
+impl OutputDepth {
+    pub fn bits(self) -> u32 {
+        match self {
+            OutputDepth::Bits16 => 16,
+            OutputDepth::Bits32 => 32,
+        }
     }
-    #[cfg(not(debug_assertions))]
-    {
-        OutputStreamBuilder::open_default_stream()
+    pub fn from_bits(bits: u32) -> Self {
+        if bits == 16 {
+            OutputDepth::Bits16
+        } else {
+            OutputDepth::Bits32
+        }
+    }
+}
+
+/// Shared, atomically-updated pipeline configuration. Written by the shell
+/// and engine threads; read by the audio/decode threads.
+/// Crossfade gain curves. Linear is the classic straight ramp; equal-power
+/// keeps the summed loudness constant through the overlap.
+pub const FADE_CURVE_LINEAR: u32 = 0;
+pub const FADE_CURVE_EQUAL_POWER: u32 = 1;
+
+pub struct PipelineConfig {
+    /// Requested hardware output depth (16 or 32).
+    pub output_bits: AtomicU32,
+    /// The depth the open stream actually negotiated.
+    pub negotiated_bits: AtomicU32,
+    /// Crossfade duration in ms; 0 = gapless/no overlap.
+    pub crossfade_ms: AtomicU64,
+    /// Fade shape for crossfades (`FADE_CURVE_*`).
+    pub crossfade_curve: Arc<AtomicU32>,
+    /// Preload the next stream into the same sink (0 ms handoff).
+    pub gapless: AtomicBool,
+    pub skip_silence: AtomicBool,
+    pub skip_threshold_db: AtomicU32,
+    pub skip_min_ms: AtomicU64,
+    /// Human-readable negotiated format, e.g. "i16 44.1 kHz stereo".
+    pub negotiated_format: Mutex<Option<String>>,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            output_bits: AtomicU32::new(32),
+            negotiated_bits: AtomicU32::new(32),
+            crossfade_ms: AtomicU64::new(0),
+            crossfade_curve: Arc::new(AtomicU32::new(FADE_CURVE_LINEAR)),
+            gapless: AtomicBool::new(false),
+            skip_silence: AtomicBool::new(false),
+            skip_threshold_db: AtomicU32::new((-50.0f32).to_bits()),
+            skip_min_ms: AtomicU64::new(2_000),
+            negotiated_format: Mutex::new(None),
+        }
+    }
+}
+
+impl PipelineConfig {
+    pub fn silence_config(&self) -> SilenceSkipConfig {
+        SilenceSkipConfig {
+            enabled: self.skip_silence.load(Ordering::Relaxed),
+            threshold_db: f32::from_bits(self.skip_threshold_db.load(Ordering::Relaxed)),
+            min_duration_ms: self.skip_min_ms.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn crossfade_ms(&self) -> u64 {
+        self.crossfade_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn crossfade_curve(&self) -> u32 {
+        self.crossfade_curve.load(Ordering::Relaxed)
+    }
+
+    pub fn gapless(&self) -> bool {
+        self.gapless.load(Ordering::Relaxed)
+    }
+}
+
+/// Bit depth of a concrete CoreAudio/cpal sample format, for the Settings
+/// report. Integer and float formats both map to their storage width.
+fn sample_format_bits(format: rodio::cpal::SampleFormat) -> u32 {
+    use rodio::cpal::SampleFormat;
+    match format {
+        SampleFormat::I8 | SampleFormat::U8 => 8,
+        SampleFormat::I16 | SampleFormat::U16 => 16,
+        SampleFormat::I24 => 24,
+        SampleFormat::I32 | SampleFormat::U32 | SampleFormat::F32 => 32,
+        SampleFormat::I64 | SampleFormat::U64 | SampleFormat::F64 => 64,
+        _ => 32,
+    }
+}
+
+fn sample_format_description(format: rodio::cpal::SampleFormat) -> &'static str {
+    use rodio::cpal::SampleFormat;
+    match format {
+        SampleFormat::I16 | SampleFormat::U16 => "16-bit int",
+        SampleFormat::I24 => "24-bit int",
+        SampleFormat::I32 | SampleFormat::U32 => "32-bit int",
+        SampleFormat::F32 => "32-bit float",
+        SampleFormat::F64 => "64-bit float",
+        _ => "PCM",
+    }
+}
+
+/// Opens the output with the requested hardware depth. Falls back through
+/// the device's supported formats: a requested 16-bit stream on a device that
+/// only accepts float yields a working 32-bit stream (and the negotiated
+/// value says so), never silence.
+fn open_output_stream(bits: u32) -> Result<(OutputStream, u32, String), rodio::StreamError> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    use rodio::cpal::SampleFormat;
+
+    let host = rodio::cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or(rodio::StreamError::NoDevice)?;
+    let device_name = device.name().unwrap_or_else(|_| "Output".into());
+
+    // Build the preference order: exact requested format first, then the
+    // other common formats, then the device default.
+    let mut order: Vec<SampleFormat> = Vec::new();
+    if bits == 16 {
+        order.push(SampleFormat::I16);
+        order.push(SampleFormat::F32);
+        order.push(SampleFormat::I32);
+    } else {
+        order.push(SampleFormat::F32);
+        order.push(SampleFormat::I16);
+        order.push(SampleFormat::I32);
+    }
+
+    let supported: Vec<_> = device
+        .supported_output_configs()
+        .map(|c| c.collect())
+        .unwrap_or_default();
+    for fmt in order {
+        if let Some(config) = supported.iter().find(|c| c.sample_format() == fmt) {
+            // Prefer 44.1 kHz when the device supports it, otherwise its max.
+            let chosen = {
+                let min = config.min_sample_rate().0;
+                let max = config.max_sample_rate().0;
+                if (min..=max).contains(&44_100) {
+                    config.with_sample_rate(rodio::cpal::SampleRate(44_100))
+                } else {
+                    config.with_max_sample_rate()
+                }
+            };
+            let stream = OutputStreamBuilder::from_device(device.clone())
+                .ok()
+                .map(|b| b.with_supported_config(&chosen).open_stream_or_fallback())
+                .and_then(|r| r.ok())
+                .or_else(|| {
+                    OutputStreamBuilder::from_default_device()
+                        .ok()
+                        .and_then(|b| b.open_stream_or_fallback().ok())
+                });
+            if let Some(stream) = stream {
+                // `open_stream_or_fallback` may silently negotiate a different
+                // format than requested. Report the stream that actually
+                // opened, never the one we asked for.
+                let actual = stream.config();
+                let negotiated = sample_format_bits(actual.sample_format());
+                let format = format!(
+                    "{} {} · {} Hz · {} ch",
+                    sample_format_description(actual.sample_format()),
+                    device_name,
+                    actual.sample_rate(),
+                    actual.channel_count()
+                );
+                return Ok((stream, negotiated, format));
+            }
+        }
+    }
+
+    // Last resort: the device default. If this fails the caller surfaces
+    // ErrorKind::Device; we never pretend playback is possible.
+    let stream = OutputStreamBuilder::open_default_stream()?;
+    let actual = stream.config();
+    let negotiated = sample_format_bits(actual.sample_format());
+    let format = format!(
+        "{} {} · {} Hz · {} ch · device default",
+        sample_format_description(actual.sample_format()),
+        device_name,
+        actual.sample_rate(),
+        actual.channel_count()
+    );
+    Ok((stream, negotiated, format))
+}
+
+/// Public capability report for the Settings UI. Reads the real default
+/// device through CoreAudio (cpal) — no guesses.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputCapabilities {
+    pub device_name: Option<String>,
+    pub channels: Option<u16>,
+    pub sample_rate: Option<u32>,
+    /// Format labels the device advertises, e.g. "f32", "i16".
+    pub formats: Vec<String>,
+    pub supports_16_bit: bool,
+    pub supports_32_bit: bool,
+    /// Why the Atmos path is not available in this build, when it isn't.
+    pub atmos_supported: bool,
+    pub atmos_reason: String,
+}
+
+/// Real device negotiation facts. Atmos is only claimed when a complete
+/// supported path exists — this pipeline decodes to PCM and renders stereo,
+/// so it is never claimed here.
+pub fn output_capabilities() -> OutputCapabilities {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    use rodio::cpal::SampleFormat;
+
+    let host = rodio::cpal::default_host();
+    let device = host.default_output_device();
+    let mut formats = Vec::new();
+    let mut channels = None;
+    let mut sample_rate = None;
+    let mut supports_16 = false;
+    let mut supports_32 = false;
+    if let Some(device) = &device {
+        if let Ok(configs) = device.supported_output_configs() {
+            for c in configs {
+                if !formats
+                    .iter()
+                    .any(|f| f == &sample_format_label(c.sample_format()))
+                {
+                    formats.push(sample_format_label(c.sample_format()).to_string());
+                }
+                supports_16 |= matches!(c.sample_format(), SampleFormat::I16 | SampleFormat::U16);
+                supports_32 |= matches!(c.sample_format(), SampleFormat::F32 | SampleFormat::I32);
+                channels = channels.or(Some(c.channels()));
+                sample_rate = sample_rate.or(Some(c.max_sample_rate().0));
+            }
+        }
+    }
+    let device_name = device.and_then(|d| d.name().ok());
+    OutputCapabilities {
+        device_name,
+        channels,
+        sample_rate,
+        formats,
+        supports_16_bit: supports_16,
+        supports_32_bit: supports_32,
+        atmos_supported: false,
+        atmos_reason: "This build decodes every source to PCM and renders a stereo mix; Dolby Atmos on macOS needs a Dolby-rendered path (Apple Music/AVFoundation) that Tansen does not implement. Atmos-track metadata is shown on sources that provide it, but it is never relabelled or simulated."
+            .into(),
+    }
+}
+
+fn sample_format_label(fmt: rodio::cpal::SampleFormat) -> &'static str {
+    use rodio::cpal::SampleFormat::*;
+    match fmt {
+        I8 => "i8",
+        I16 => "i16",
+        I24 => "i24",
+        I32 => "i32",
+        I64 => "i64",
+        U8 => "u8",
+        U16 => "u16",
+        U32 => "u32",
+        U64 => "u64",
+        F32 => "f32",
+        F64 => "f64",
+        _ => "unknown",
     }
 }
 
 enum Request {
     /// Replace the sink's content with this path and start playing.
     /// The ack answers once the decoder is open (or not).
-    Load { path: String, ack: mpsc::SyncSender<Result<(), String>> },
+    Load {
+        path: String,
+        live: bool,
+        ack: mpsc::SyncSender<Result<(), String>>,
+    },
     Play,
     Pause,
-    /// M19: rebuild the stream pipeline at this position (new decode
+    /// Rebuild the stream pipeline at this position (new decode
     /// thread + ring, consumer swapped into the sink).
     SeekMs(u64),
     Volume(f32),
     /// Drop all queued audio without touching the pipeline itself.
     Clear,
-    /// M18: drop the output stream; the next load reopens the (possibly
+    /// Drop the output stream; the next load reopens the (possibly
     /// new) default device.
     ReopenOutput,
+    /// Build the next stream ahead of the transition.
+    Preload {
+        path: String,
+        ack: mpsc::SyncSender<Result<PreloadMeta, String>>,
+    },
+    /// Promote the preloaded stream; `crossfade_ms` > 0 starts the overlap
+    /// and fade ramps.
+    AdoptPreloaded {
+        crossfade_ms: u64,
+        ack: mpsc::SyncSender<Result<(), String>>,
+    },
+    /// Drop a preloaded stream (skip/seek/queue change).
+    DiscardPreloaded,
+    /// Live DSP update (EQ gains, loudness target).
+    Dsp,
     Quit,
 }
 
-/// M15: mid-stream fill status. Defined on the reader; re-exported here.
+/// Mid-stream fill status. Defined on the reader; re-exported here.
 pub use crate::remote::StreamStatus;
 
 /// Handle to the audio thread.
 pub struct AudioPipeline {
     tx: Option<mpsc::Sender<Request>>,
     /// Interleaved sample *frames* delivered to the output — incremented by
-    /// the audio callback itself (M19).
+    /// the audio callback itself.
     frames: Arc<AtomicU64>,
     /// Sample rate of the currently loaded source (for ms conversion).
     sample_rate: Arc<AtomicU64>,
     /// Duration of the current media (0 = unknown).
     duration_ms: Arc<AtomicU64>,
-    /// M15: receiver side of the current stream's fill status (the sender
+    /// Receiver side of the current stream's fill status (the sender
     /// lives in the fetch task).
     status_rx: watch::Receiver<crate::remote::StreamStatus>,
+    pub params: Arc<DspParams>,
+    pub config: Arc<PipelineConfig>,
+}
+
+/// Metadata of a preloaded stream, returned to the factory so the engine's
+/// next state uses the right duration/rate.
+#[derive(Debug, Clone, Copy)]
+pub struct PreloadMeta {
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub duration_ms: u64,
 }
 
 impl AudioPipeline {
@@ -80,43 +377,127 @@ impl AudioPipeline {
         cache: Option<Arc<StreamCache>>,
         status: watch::Sender<crate::remote::StreamStatus>,
     ) -> Result<Self, String> {
+        Self::spawn_with_config(
+            cache,
+            status,
+            Arc::new(DspParams::default()),
+            Arc::new(PipelineConfig::default()),
+        )
+    }
+
+    pub fn spawn_with_config(
+        cache: Option<Arc<StreamCache>>,
+        status: watch::Sender<crate::remote::StreamStatus>,
+        params: Arc<DspParams>,
+        config: Arc<PipelineConfig>,
+    ) -> Result<Self, String> {
         let frames = Arc::new(AtomicU64::new(0));
         let sample_rate = Arc::new(AtomicU64::new(44_100));
         let duration_ms = Arc::new(AtomicU64::new(0));
-        let volume = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-        let spec = Arc::new(std::sync::Mutex::new(None));
         let (tx, rx) = mpsc::channel::<Request>();
-        let (frames_t, rate_t, dur_t, vol_t, spec_t) = (
-            frames.clone(),
-            sample_rate.clone(),
-            duration_ms.clone(),
-            volume.clone(),
-            spec.clone(),
-        );
-        let status_t = status.clone();
+        let status_rx = status.subscribe();
+        let frames_thread = frames.clone();
+        let sample_rate_thread = sample_rate.clone();
+        let duration_thread = duration_ms.clone();
+        let params_thread = params.clone();
+        let config_thread = config.clone();
+        // The CoreAudio output stream is not `Send` on macOS (cpal keeps a
+        // property-listener callback), so it is constructed *inside* the
+        // audio thread rather than moved into it.
         std::thread::Builder::new()
             .name("pipeline-audio".into())
-            .spawn(move || audio_thread(rx, cache, frames_t, rate_t, dur_t, vol_t, spec_t, status_t))
+            .spawn(move || {
+                let ctx = AudioThread {
+                    rx,
+                    cache,
+                    status,
+                    frames: frames_thread,
+                    sample_rate: sample_rate_thread,
+                    duration_ms: duration_thread,
+                    params: params_thread,
+                    config: config_thread,
+                    slot: None,
+                    sink: None,
+                    retired: Vec::new(),
+                    retired_streams: Vec::new(),
+                    current: None,
+                    preloaded: None,
+                    current_path: None,
+                    current_live: false,
+                    last_meta: PreloadMeta {
+                        channels: 2,
+                        sample_rate: 44_100,
+                        duration_ms: 0,
+                    },
+                };
+                ctx.run();
+            })
             .map_err(|e| format!("pipeline thread: {e}"))?;
-        let status_rx = status.subscribe();
-        Ok(Self { tx: Some(tx), frames, sample_rate, duration_ms, status_rx })
+        Ok(Self {
+            tx: Some(tx),
+            frames,
+            sample_rate,
+            duration_ms,
+            status_rx,
+            params,
+            config,
+        })
     }
 
-    /// M15: subscribe to the current stream's fill status.
+    /// Subscribe to the current stream's fill status.
     pub fn status_rx(&self) -> watch::Receiver<crate::remote::StreamStatus> {
         self.status_rx.clone()
     }
 
-    /// Opens `path` as the sink's sole content and starts it. Blocking until
-    /// the decoder answers (local files: fast; the factory calls this from
-    /// the engine task — remote URLs would block that task, documented M7
-    /// limitation, fixtures are local).
+    /// Opens `path` as the sink's sole content and starts it. A `live` stream
+    /// (internet radio) is read as one unbounded, unseekable body.
     pub fn load(&self, path: &str) -> Result<(), String> {
+        self.load_with(path, false)
+    }
+
+    pub fn load_live(&self, path: &str) -> Result<(), String> {
+        self.load_with(path, true)
+    }
+
+    fn load_with(&self, path: &str, live: bool) -> Result<(), String> {
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         let tx = self.tx.as_ref().ok_or("pipeline thread gone")?;
-        tx.send(Request::Load { path: path.to_owned(), ack: ack_tx })
-            .map_err(|_| "pipeline thread gone")?;
+        tx.send(Request::Load {
+            path: path.to_owned(),
+            live,
+            ack: ack_tx,
+        })
+        .map_err(|_| "pipeline thread gone")?;
         ack_rx.recv().map_err(|_| "pipeline thread gone")?
+    }
+
+    /// Builds the next stream without swapping it in. Returns its metadata
+    /// (sample rate/duration) so the caller can arm the transition.
+    pub fn preload(&self, path: &str) -> Result<PreloadMeta, String> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        let tx = self.tx.as_ref().ok_or("pipeline thread gone")?;
+        tx.send(Request::Preload {
+            path: path.to_owned(),
+            ack: ack_tx,
+        })
+        .map_err(|_| "pipeline thread gone")?;
+        ack_rx.recv().map_err(|_| "pipeline thread gone")?
+    }
+
+    /// Promotes the preloaded stream. `crossfade_ms` 0 = gapless handoff.
+    pub fn adopt_preloaded(&self, crossfade_ms: u64) -> Result<(), String> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        let tx = self.tx.as_ref().ok_or("pipeline thread gone")?;
+        tx.send(Request::AdoptPreloaded {
+            crossfade_ms,
+            ack: ack_tx,
+        })
+        .map_err(|_| "pipeline thread gone")?;
+        ack_rx.recv().map_err(|_| "pipeline thread gone")?
+    }
+
+    pub fn discard_preloaded(&self) {
+        self.fire(Request::DiscardPreloaded);
     }
 
     pub fn play(&self) {
@@ -127,14 +508,27 @@ impl AudioPipeline {
         self.fire(Request::Pause);
     }
 
-    /// M19: rebuild the stream pipeline at this position — a fresh decode
+    /// Rebuild the stream pipeline at this position — a fresh decode
     /// thread + ring, the consumer swapped into the sink.
     pub fn seek_ms(&self, ms: u64) {
         self.fire(Request::SeekMs(ms));
     }
 
     pub fn set_volume(&self, v: f32) {
+        self.params.set_master_volume(v);
         self.fire(Request::Volume(v));
+    }
+
+    /// Applies an EQ configuration; coefficients are recomputed in the audio
+    /// callback without locks or allocations.
+    pub fn set_eq(&self, enabled: bool, gains: &[f32; 10]) {
+        self.params.set_eq(enabled, gains);
+        self.fire(Request::Dsp);
+    }
+
+    pub fn set_loudness_gain_db(&self, gain_db: f32) {
+        self.params.set_loudness_gain_db(gain_db);
+        self.fire(Request::Dsp);
     }
 
     /// Drop all queued audio; the next `load` starts fresh.
@@ -142,7 +536,7 @@ impl AudioPipeline {
         self.fire(Request::Clear);
     }
 
-    /// M18: drop the output stream. The next `load` reopens whatever the OS
+    /// Drop the output stream. The next `load` reopens whatever the OS
     /// now considers the default device.
     pub fn reopen_output(&self) {
         self.fire(Request::ReopenOutput);
@@ -165,6 +559,11 @@ impl AudioPipeline {
         }
     }
 
+    /// The format the currently open stream negotiated.
+    pub fn negotiated_bits(&self) -> u32 {
+        self.config.negotiated_bits.load(Ordering::Relaxed)
+    }
+
     fn fire(&self, req: Request) {
         if let Some(tx) = self.tx.as_ref() {
             let _ = tx.send(req);
@@ -180,138 +579,25 @@ impl Drop for AudioPipeline {
     }
 }
 
-fn audio_thread(
-    rx: mpsc::Receiver<Request>,
-    cache: Option<Arc<StreamCache>>,
-    frames: Arc<AtomicU64>,
-    sample_rate: Arc<AtomicU64>,
-    duration_ms: Arc<AtomicU64>,
-    volume: Arc<AtomicU32>,
-    spec: Arc<std::sync::Mutex<Option<String>>>,
-    status: watch::Sender<crate::remote::StreamStatus>,
-) {
-    // The stream lives here forever: `OutputStream` is not `Send`.
-    let mut slot: Option<OutputStream> = None;
-    let mut sink: Option<Sink> = None;
-    // The stream pipeline for the current track (decode thread + ring +
-    // consumer). Immutable per (track, seek epoch) — swapped wholesale.
-    let mut current: Option<StreamPipeline> = None;
-
-    macro_rules! ensure_open {
-        () => {
-            if slot.is_none() {
-                match open_output_stream() {
-                    Ok(stream) => {
-                        let s = Sink::connect_new(stream.mixer());
-                        s.pause();
-                        slot = Some(stream);
-                        sink = Some(s);
-                    }
-                    Err(e) => {
-                        let _ = e.to_string();
-                    }
-                }
-            }
-        };
-    }
-
-    for req in rx {
-        match req {
-            Request::Load { path, ack } => {
-                ensure_open!();
-                // TAN-03: a panic here (hostile media header) would unwind
-                // this thread and drop the ack sender, hanging the caller
-                // forever. Route it into the normal error path instead.
-                let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let sink = sink.as_ref().ok_or_else(|| "no audio output device".to_string())?;
-                    *spec.lock().map_err(|_| "spec lock poisoned".to_string())? = Some(path.clone());
-                    build_stream(
-                        &path,
-                        None,
-                        sink,
-                        &mut current,
-                        cache.as_ref(),
-                        status.clone(),
-                        &volume,
-                        &frames,
-                        &sample_rate,
-                        &duration_ms,
-                    )
-                }))
-                .unwrap_or_else(|_| Err("decoder panicked while opening media".to_string()));
-                let _ = ack.send(answer);
-            }
-            Request::Play => {
-                if let Some(s) = &sink {
-                    s.play();
-                }
-            }
-            Request::Pause => {
-                if let Some(s) = &sink {
-                    s.pause();
-                }
-            }
-            Request::SeekMs(ms) => {
-                // M19: rebuild at the position (immutable-per-epoch; no
-                // in-place mutation of a running pipeline).
-                let resume_path = spec.lock().ok().and_then(|s| s.clone());
-                if let (Some(path), Some(sink)) = (resume_path, sink.as_ref()) {
-                    let _ = build_stream(
-                        &path,
-                        Some(ms),
-                        sink,
-                        &mut current,
-                        cache.as_ref(),
-                        status.clone(),
-                        &volume,
-                        &frames,
-                        &sample_rate,
-                        &duration_ms,
-                    );
-                }
-            }
-            Request::Volume(v) => {
-                volume.store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-            }
-            Request::Clear => {
-                if let Some(s) = &sink {
-                    s.clear();
-                }
-                if let Some(old) = current.take() {
-                    old.shutdown();
-                }
-            }
-            Request::ReopenOutput => {
-                // Drop the stream: the sink dies with it. The stream
-                // pipeline survives (its decode thread keeps filling the
-                // ring until the next load replaces it); the volume atomic
-                // survives too.
-                slot = None;
-                sink = None;
-            }
-            Request::Quit => {
-                if let Some(old) = current.take() {
-                    old.shutdown();
-                }
-                break;
-            }
-        }
-    }
-}
-
 /// One (track, seek-epoch) stream: decode thread + ring + shutdown flag.
-/// Immutable once built; replaced wholesale on load/seek.
 struct StreamPipeline {
     shutdown: Arc<AtomicBool>,
-    /// Decode-thread handle; the thread exits on `shutdown` or EOF.
+    /// Set when a preload is discarded before adoption: the consumer returns
+    /// `None` at its turn instead of playing, so dropping a gapless preload
+    /// never cuts the current track.
+    cancelled: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// Whether this stream's consumer increments the shared frames counter.
+    counting: Arc<AtomicBool>,
+    /// The stream's fade ramp control (crossfades).
+    fade_target: Arc<AtomicU32>,
+    fade_step: Arc<AtomicU32>,
+    fade_current: Arc<AtomicU32>,
 }
 
 impl StreamPipeline {
     fn shutdown(mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        // Do not join: the thread parks at most one poll interval, and the
-        // audio thread must never block on a decoder.
         drop(self.handle.take());
     }
 }
@@ -322,6 +608,440 @@ impl Drop for StreamPipeline {
     }
 }
 
+/// A preloaded stream waiting for the transition.
+struct Preloaded {
+    pipe: StreamPipeline,
+    meta: PreloadMeta,
+    /// Decoder path, promoted to `current_path` on adoption so a later seek
+    /// rebuilds the right track.
+    path: String,
+    /// Separate sink for a crossfade; `None` for a gapless append.
+    sink: Option<Sink>,
+}
+
+struct AudioThread {
+    rx: mpsc::Receiver<Request>,
+    cache: Option<Arc<StreamCache>>,
+    status: watch::Sender<crate::remote::StreamStatus>,
+    frames: Arc<AtomicU64>,
+    sample_rate: Arc<AtomicU64>,
+    duration_ms: Arc<AtomicU64>,
+    params: Arc<DspParams>,
+    config: Arc<PipelineConfig>,
+    slot: Option<OutputStream>,
+    sink: Option<Sink>,
+    /// Sinks kept alive while their stream fades out.
+    retired: Vec<Sink>,
+    /// Decode threads that must outlive the pipeline swap so a crossfading
+    /// stream keeps its buffer fed until the fade completes.
+    retired_streams: Vec<StreamPipeline>,
+    current: Option<StreamPipeline>,
+    preloaded: Option<Preloaded>,
+    /// Path of the current stream, kept so a seek (or a crossfade follow-up)
+    /// can rebuild the decoder without the engine re-sending it.
+    current_path: Option<String>,
+    /// The current stream is a live broadcast: a seek cannot be honoured and
+    /// is ignored instead of rebuilding a non-seekable body.
+    current_live: bool,
+    /// Metadata of the most recently built stream (used by `build_preload`).
+    last_meta: PreloadMeta,
+}
+
+impl AudioThread {
+    fn ensure_open(&mut self) {
+        if self.slot.is_some() {
+            return;
+        }
+        let bits = self.config.output_bits.load(Ordering::Relaxed);
+        match open_output_stream(bits) {
+            Ok((stream, negotiated, label)) => {
+                self.config
+                    .negotiated_bits
+                    .store(negotiated, Ordering::Relaxed);
+                if let Ok(mut f) = self.config.negotiated_format.lock() {
+                    *f = Some(label);
+                }
+                let s = Sink::connect_new(stream.mixer());
+                s.pause();
+                self.slot = Some(stream);
+                self.sink = Some(s);
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "audio output open failed");
+            }
+        }
+    }
+
+    /// Recreates the primary sink if a panicking build dropped it. The output
+    /// stream is still open, so this only loses queued audio.
+    fn restore_sink(&mut self) {
+        if self.sink.is_none() {
+            if let Some(slot) = self.slot.as_ref() {
+                let sink = Sink::connect_new(slot.mixer());
+                sink.pause();
+                self.sink = Some(sink);
+            }
+        }
+    }
+
+    fn drop_output(&mut self) {
+        self.discard_preloaded();
+        if let Some(old) = self.current.take() {
+            old.shutdown();
+        }
+        self.retired.clear();
+        for stream in self.retired_streams.drain(..) {
+            stream.shutdown();
+        }
+        self.sink = None;
+        self.slot = None;
+    }
+
+    fn discard_preloaded(&mut self) {
+        if let Some(pre) = self.preloaded.take() {
+            pre.pipe.cancelled.store(true, Ordering::SeqCst);
+            if let Some(sink) = pre.sink {
+                // Crossfade preloads live on their own sink: clear it so the
+                // prepared track never leaks into the mix.
+                sink.clear();
+            }
+            pre.pipe.shutdown();
+        }
+    }
+
+    fn run(mut self) {
+        while let Ok(req) = self.rx.recv() {
+            match req {
+                Request::Load { path, live, ack } => {
+                    self.ensure_open();
+                    let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        // A new load always supersedes any preloaded stream.
+                        self.discard_preloaded();
+                        let sink = self
+                            .sink
+                            .take()
+                            .ok_or_else(|| "no audio output device".to_string())?;
+                        let result = self.build_and_swap(&path, None, &sink, false, live);
+                        self.sink = Some(sink);
+                        result
+                    }))
+                    .unwrap_or_else(|_| Err("decoder panicked while opening media".to_string()));
+                    self.restore_sink();
+                    let _ = ack.send(answer);
+                }
+                Request::Preload { path, ack } => {
+                    self.ensure_open();
+                    let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let crossfade = self.config.crossfade_ms() > 0;
+                        let sink = self
+                            .sink
+                            .take()
+                            .ok_or_else(|| "no audio output device".to_string())?;
+                        let result = self.build_preload(&path, &sink, crossfade);
+                        self.sink = Some(sink);
+                        result
+                    }))
+                    .unwrap_or_else(|_| Err("decoder panicked while preloading media".to_string()));
+                    self.restore_sink();
+                    let _ = ack.send(answer);
+                }
+                Request::AdoptPreloaded { crossfade_ms, ack } => {
+                    let answer = self.adopt(crossfade_ms);
+                    let _ = ack.send(answer);
+                }
+                Request::DiscardPreloaded => self.discard_preloaded(),
+                Request::Play => {
+                    if let Some(s) = &self.sink {
+                        s.play();
+                    }
+                    for s in &self.retired {
+                        s.play();
+                    }
+                }
+                Request::Pause => {
+                    if let Some(s) = &self.sink {
+                        s.pause();
+                    }
+                    for s in &self.retired {
+                        s.pause();
+                    }
+                }
+                Request::SeekMs(ms) => {
+                    self.discard_preloaded();
+                    // A live stream has no timeline: seeking is meaningless.
+                    if self.current_live {
+                        continue;
+                    }
+                    if let Some(path) = self.current_path() {
+                        if let Some(sink) = self.sink.take() {
+                            let _ = self.build_and_swap(&path, Some(ms), &sink, false, false);
+                            self.sink = Some(sink);
+                        }
+                    }
+                }
+                Request::Volume(v) => {
+                    self.params.set_master_volume(v);
+                }
+                Request::Dsp => {}
+                Request::Clear => {
+                    self.discard_preloaded();
+                    if let Some(s) = &self.sink {
+                        s.clear();
+                    }
+                    self.retired.clear();
+                    for stream in self.retired_streams.drain(..) {
+                        stream.shutdown();
+                    }
+                    if let Some(old) = self.current.take() {
+                        old.shutdown();
+                    }
+                }
+                Request::ReopenOutput => {
+                    self.drop_output();
+                }
+                Request::Quit => {
+                    self.discard_preloaded();
+                    if let Some(old) = self.current.take() {
+                        old.shutdown();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn current_path(&self) -> Option<String> {
+        self.current_path.clone()
+    }
+
+    /// Builds a stream and swaps it into `sink` as the current one.
+    fn build_and_swap(
+        &mut self,
+        path: &str,
+        resume_ms: Option<u64>,
+        sink: &Sink,
+        start_paused: bool,
+        live: bool,
+    ) -> Result<(), String> {
+        // Build the replacement first; a failure leaves the current stream
+        // audible (never a dead ring).
+        let counting = Arc::new(AtomicBool::new(true));
+        let built = self.build_stream(path, resume_ms, sink, counting, false, live)?;
+        if let Some(old) = self.current.replace(built) {
+            old.shutdown();
+        }
+        self.current_path = Some(path.to_owned());
+        self.current_live = live;
+        sink.play();
+        if start_paused {
+            sink.pause();
+        }
+        Ok(())
+    }
+
+    /// Builds the replacement stream into `sink`, not yet swapping state.
+    fn build_stream(
+        &mut self,
+        path: &str,
+        resume_ms: Option<u64>,
+        sink: &Sink,
+        counting: Arc<AtomicBool>,
+        append: bool,
+        live: bool,
+    ) -> Result<StreamPipeline, String> {
+        self.prepare_build_with_fade(path, resume_ms, sink, counting, append, false, true, live)
+    }
+
+    fn build_preload(
+        &mut self,
+        path: &str,
+        sink: &Sink,
+        crossfade: bool,
+    ) -> Result<PreloadMeta, String> {
+        self.discard_preloaded();
+        let counting = Arc::new(AtomicBool::new(false));
+        if crossfade {
+            // A second sink plays concurrently at the transition.
+            let stream = self.slot.as_ref().ok_or("no audio output device")?;
+            let next_sink = Sink::connect_new(stream.mixer());
+            next_sink.pause();
+            let pipe = self.prepare_build_with_fade(
+                path, None, &next_sink, counting, false, true, false, false,
+            )?;
+            let meta = self.last_meta;
+            self.preloaded = Some(Preloaded {
+                pipe,
+                meta,
+                path: path.to_owned(),
+                sink: Some(next_sink),
+            });
+        } else {
+            // Same sink: the consumer is appended and starts when the current
+            // source ends — a true gapless transition.
+            let pipe = self
+                .prepare_build_with_fade(path, None, sink, counting, true, false, false, false)?;
+            let meta = self.last_meta;
+            self.preloaded = Some(Preloaded {
+                pipe,
+                meta,
+                path: path.to_owned(),
+                sink: None,
+            });
+        }
+        Ok(self
+            .preloaded
+            .as_ref()
+            .map(|p| p.meta)
+            .unwrap_or(PreloadMeta {
+                channels: 2,
+                sample_rate: 44_100,
+                duration_ms: 0,
+            }))
+    }
+
+    fn adopt(&mut self, crossfade_ms: u64) -> Result<(), String> {
+        let Some(pre) = self.preloaded.take() else {
+            return Err("no preloaded stream".into());
+        };
+        if pre.pipe.cancelled.load(Ordering::SeqCst) {
+            return Err("preloaded stream was discarded".into());
+        }
+        let frames = self.frames.clone();
+        // The old stream stops counting frames; the new one starts at zero.
+        if let Some(old) = &self.current {
+            old.counting.store(false, Ordering::SeqCst);
+            if crossfade_ms > 0 {
+                let rate = self.sample_rate.load(Ordering::Relaxed).max(1);
+                let frames = crossfade_ms.saturating_mul(rate) / 1000;
+                old.fade_target.store(0f32.to_bits(), Ordering::SeqCst);
+                old.fade_step
+                    .store((1.0 / frames.max(1) as f32).to_bits(), Ordering::SeqCst);
+            } else {
+                // Gapless append: no overlap; the old source has ended.
+                old.fade_target.store(1f32.to_bits(), Ordering::SeqCst);
+            }
+        }
+        frames.store(0, Ordering::SeqCst);
+        self.current_path = Some(pre.path);
+        self.sample_rate
+            .store(u64::from(pre.meta.sample_rate.max(1)), Ordering::SeqCst);
+        self.duration_ms
+            .store(pre.meta.duration_ms, Ordering::SeqCst);
+        pre.pipe.counting.store(true, Ordering::SeqCst);
+        pre.pipe
+            .fade_current
+            .store(0f32.to_bits(), Ordering::SeqCst);
+        pre.pipe.fade_target.store(1f32.to_bits(), Ordering::SeqCst);
+        let rate = f64::from(pre.meta.sample_rate.max(1));
+        let fade_frames = (f64::from(crossfade_ms as u32) * rate / 1000.0).max(1.0) as f32;
+        pre.pipe
+            .fade_step
+            .store((1.0 / fade_frames).to_bits(), Ordering::SeqCst);
+
+        if let Some(new_sink) = pre.sink {
+            new_sink.play();
+            if let Some(old_sink) = self.sink.replace(new_sink) {
+                self.retired.push(old_sink);
+            }
+        }
+        // Retire finished fades before adding another.
+        self.retired_streams.retain(|stream| {
+            let done = stream.fade_target.load(Ordering::Relaxed) == 0f32.to_bits()
+                && stream.fade_current.load(Ordering::Relaxed) == 0f32.to_bits();
+            if done {
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(old) = self.current.replace(pre.pipe) {
+            if crossfade_ms == 0 {
+                old.shutdown();
+            } else {
+                // Keep feeding the fading stream until its ramp reaches zero.
+                self.retired_streams.push(old);
+            }
+        }
+        Ok(())
+    }
+
+    /// Shared build path. `append` = push the consumer after the current
+    /// sink content (gapless preload); otherwise clear the sink first.
+    /// `publish` = update the shared rate/duration/position atomics (true for
+    /// a real load or seek, false for a preload that has not been adopted).
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_build_with_fade(
+        &mut self,
+        path: &str,
+        resume_ms: Option<u64>,
+        sink: &Sink,
+        counting: Arc<AtomicBool>,
+        append: bool,
+        start_silent: bool,
+        publish: bool,
+        live: bool,
+    ) -> Result<StreamPipeline, String> {
+        let silence = self.config.silence_config();
+        let status = self.status.clone();
+        let cache = self.cache.clone();
+        let params = self.params.clone();
+        let frames = self.frames.clone();
+        let fade_curve = self.config.crossfade_curve.clone();
+        let mut built = build_ring_stream(
+            path,
+            resume_ms,
+            sink,
+            cache.as_ref(),
+            status,
+            params,
+            frames,
+            fade_curve,
+            counting,
+            silence,
+            append,
+            start_silent,
+            live,
+        )?;
+        self.last_meta = built.meta;
+        // Update the shared atomics only for the current load, not a preload:
+        // the caller decides. `adopt` / `build_and_swap` set them.
+        if publish {
+            self.sample_rate
+                .store(u64::from(built.meta.sample_rate.max(1)), Ordering::Relaxed);
+            self.duration_ms
+                .store(built.meta.duration_ms, Ordering::Relaxed);
+            let seed = resume_ms
+                .map(|ms| ms.saturating_mul(u64::from(built.meta.sample_rate.max(1))) / 1000)
+                .unwrap_or(0);
+            self.frames.store(seed, Ordering::Relaxed);
+        }
+        Ok(StreamPipeline {
+            shutdown: built
+                .shutdown
+                .take()
+                .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+            cancelled: built.cancelled,
+            handle: built.handle.take(),
+            counting: built.counting,
+            fade_target: built.fade_target,
+            fade_step: built.fade_step,
+            fade_current: built.fade_current,
+        })
+    }
+}
+
+/// Built-but-not-yet-adopted pieces of one stream.
+struct BuiltStream {
+    shutdown: Option<Arc<AtomicBool>>,
+    cancelled: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    counting: Arc<AtomicBool>,
+    fade_target: Arc<AtomicU32>,
+    fade_step: Arc<AtomicU32>,
+    fade_current: Arc<AtomicU32>,
+    meta: PreloadMeta,
+}
+
 /// Metadata published by the decode worker only after the source has opened
 /// and, for a seek, the decoder has reached the requested position.
 struct DecodeReady {
@@ -330,49 +1050,37 @@ struct DecodeReady {
     duration_ms: u64,
 }
 
-/// A failed candidate never replaces the currently active stream.
-fn commit_replacement<T, E>(current: &mut Option<T>, candidate: Result<T, E>) -> Result<Option<T>, E> {
-    let candidate = candidate?;
-    Ok(current.replace(candidate))
-}
-
-/// M19: builds one (track, seek-epoch) pipeline: open the decoder (seeked
-/// to `resume_ms` when given), spawn the decode thread filling an SPSC ring,
-/// and swap the ring consumer into the sink.
 #[allow(clippy::too_many_arguments)]
-fn build_stream(
+fn build_ring_stream(
     path: &str,
     resume_ms: Option<u64>,
     sink: &Sink,
-    current: &mut Option<StreamPipeline>,
     cache: Option<&Arc<StreamCache>>,
     status: watch::Sender<crate::remote::StreamStatus>,
-    volume: &Arc<AtomicU32>,
-    frames: &Arc<AtomicU64>,
-    sample_rate: &Arc<AtomicU64>,
-    duration_ms: &Arc<AtomicU64>,
-) -> Result<(), String> {
-    // Open the replacement before retiring the current epoch. A failed
-    // resolve/decode/seek must leave the currently audible stream intact;
-    // shutting it down first leaves the sink attached to a dead ring and
-    // makes pause/resume silently produce no frames.
+    params: Arc<DspParams>,
+    frames: Arc<AtomicU64>,
+    fade_curve: Arc<AtomicU32>,
+    counting: Arc<AtomicBool>,
+    silence: SilenceSkipConfig,
+    append: bool,
+    start_silent: bool,
+    live: bool,
+) -> Result<BuiltStream, String> {
     let _ = status.send(crate::remote::StreamStatus::Refilled);
-    #[cfg(debug_assertions)]
-    tracing::debug!(resume_ms = ?resume_ms, "preparing stream replacement");
 
     let shutdown = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(AtomicBool::new(false));
     let ring = Arc::new(crate::ring::SpscRing::new(1 << 21));
     let eof = Arc::new(AtomicBool::new(false));
     let starved = Arc::new(AtomicBool::new(false));
 
-    // Decode thread: Symphonia pulls from the (prefetching) reader and fills
-    // the ring. It may block on the reader's condvar (network stall) or park
-    // when the ring is full — it is never the audio callback.
     let decode_shutdown = shutdown.clone();
     let eof_t = eof.clone();
     let starved_t = starved.clone();
     let ring_t = ring.clone();
     let status_t = status.clone();
+    let counting_t = counting.clone();
+    let frames_t = frames.clone();
     let path_owned = path.to_owned();
     let cache_t = cache.cloned();
     let seek_ms = resume_ms;
@@ -380,7 +1088,14 @@ fn build_stream(
     let handle = std::thread::Builder::new()
         .name("stream-decode".into())
         .spawn(move || {
-            let opened = open_source(&path_owned, cache_t.as_ref(), status_t.clone(), decode_shutdown.clone()).and_then(|mut source| {
+            let opened = open_source(
+                &path_owned,
+                cache_t.as_ref(),
+                status_t.clone(),
+                decode_shutdown.clone(),
+                live,
+            )
+            .and_then(|mut source| {
                 if let Some(ms) = seek_ms {
                     source
                         .try_seek(Duration::from_millis(ms))
@@ -406,20 +1121,57 @@ fn build_stream(
                     return;
                 }
             };
+            // Silence skipping state (decode thread only — never the audio
+            // callback). The first `min_duration` of silence is still heard;
+            // after that the decoder fast-forwards, counting the skipped
+            // frames so the seek position stays truthful.
+            let rate = u64::from(source.sample_rate().max(1));
+            let channels = u64::from(source.channels().max(1));
+            let min_silent_frames = silence.min_duration_ms.saturating_mul(rate) / 1000;
+            let threshold = silence.threshold();
+            let mut silent_frames = 0u64;
+            let mut skipping = false;
+            let mut skipped_frames = 0u64;
+            let mut frame_peak = 0f32;
+            let mut frame_channel = 0u64;
             loop {
                 if decode_shutdown.load(Ordering::Relaxed) {
                     return;
                 }
-                // TAN-03: a decoder panic on this thread is contained — the
-                // track ends (EOF) instead of taking the thread down with
-                // unhandled unwinding.
-                let sample = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    source.next()
-                }));
+                let sample =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.next()));
                 match sample {
                     Ok(Some(sample)) => {
-                        // Park when the ring is full (paused consumer);
-                        // re-check shutdown each poll.
+                        if silence.enabled && channels > 0 {
+                            frame_peak = frame_peak.max(sample.abs());
+                            frame_channel += 1;
+                            if frame_channel >= channels {
+                                let is_silent = frame_peak < threshold;
+                                frame_peak = 0.0;
+                                frame_channel = 0;
+                                if skipping {
+                                    if is_silent {
+                                        skipped_frames += 1;
+                                        continue;
+                                    }
+                                    // Sound returned: publish the skipped
+                                    // span into the position counter.
+                                    if counting_t.load(Ordering::Relaxed) && skipped_frames > 0 {
+                                        frames_t.fetch_add(skipped_frames, Ordering::Relaxed);
+                                    }
+                                    skipping = false;
+                                    silent_frames = 0;
+                                } else if is_silent {
+                                    silent_frames += 1;
+                                    if min_silent_frames > 0 && silent_frames >= min_silent_frames {
+                                        skipping = true;
+                                        skipped_frames = 0;
+                                    }
+                                } else {
+                                    silent_frames = 0;
+                                }
+                            }
+                        }
                         loop {
                             if ring_t.push(sample).is_ok() {
                                 break;
@@ -429,13 +1181,14 @@ fn build_stream(
                             }
                             std::thread::sleep(Duration::from_micros(500));
                         }
-                        // Recovery signal: a starved consumer gets Refilled
-                        // once data flows again.
                         if starved_t.swap(false, Ordering::SeqCst) {
                             let _ = status_t.send(crate::remote::StreamStatus::Refilled);
                         }
                     }
                     Ok(None) => {
+                        if skipping && counting_t.load(Ordering::Relaxed) && skipped_frames > 0 {
+                            frames_t.fetch_add(skipped_frames, Ordering::Relaxed);
+                        }
                         eof_t.store(true, Ordering::SeqCst);
                         return;
                     }
@@ -450,83 +1203,172 @@ fn build_stream(
         })
         .map_err(|e| format!("decode thread: {e}"))?;
 
-    // The old stream remains active while the worker performs network I/O,
-    // opens the decoder, and completes a real decoder seek.
     let ready = ready_rx
         .recv()
         .map_err(|_| "decode worker stopped before opening media".to_string())??;
-    #[cfg(debug_assertions)]
-    tracing::debug!(
-        channels = ready.channels,
-        sample_rate = ready.sample_rate,
-        duration_ms = ready.duration_ms,
-        seek_ms = ?resume_ms,
-        "decode worker ready"
-    );
-    let channels = ready.channels;
-    let rate = ready.sample_rate;
-    sample_rate.store(u64::from(rate), Ordering::Relaxed);
-    duration_ms.store(ready.duration_ms, Ordering::Relaxed);
+    let meta = PreloadMeta {
+        channels: ready.channels,
+        sample_rate: ready.sample_rate,
+        duration_ms: ready.duration_ms,
+    };
 
-    let seed_frames = resume_ms
-        .map(|ms| ms.saturating_mul(u64::from(rate)) / 1000)
-        .unwrap_or(0);
-    frames.store(seed_frames, Ordering::Relaxed);
-
-    // Consumer: the audio callback pops from the ring, applies volume, and
-    // counts frames — nothing else.
-    let consumer = RingSource { ring, volume: volume.clone(), frames: frames.clone(), channels, eof, starved, samples: 0 };
-    sink.clear();
-    sink.append(consumer);
-    sink.play();
-
-    let replacement = StreamPipeline { shutdown, handle: Some(handle) };
-    if let Some(old) = commit_replacement(current, Ok::<StreamPipeline, String>(replacement))? {
-        old.shutdown();
+    let fade_target = Arc::new(AtomicU32::new(
+        if start_silent { 0f32 } else { 1f32 }.to_bits(),
+    ));
+    let fade_step = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let fade_current = Arc::new(AtomicU32::new(
+        if start_silent { 0f32 } else { 1f32 }.to_bits(),
+    ));
+    let eq = EqProcessor::new(meta.channels, meta.sample_rate as f32);
+    // The audio-callback-side source: ring pops, volume, EQ, fade and frame
+    // counting only.
+    let consumer = RingSource {
+        ring,
+        params,
+        frames,
+        counting: counting.clone(),
+        channels: meta.channels,
+        sample_rate: meta.sample_rate,
+        eof,
+        starved,
+        cancelled: cancelled.clone(),
+        samples: 0,
+        eq,
+        fade_current: fade_current.clone(),
+        fade_target: fade_target.clone(),
+        fade_step: fade_step.clone(),
+        fade_curve,
+        loudness: 1.0,
+        loudness_initialized: false,
+    };
+    if append {
+        // Gapless: queue after the current source; the sink's own queue
+        // makes the handoff sample-contiguous.
+        sink.append(consumer);
+    } else {
+        sink.clear();
+        sink.append(consumer);
     }
-    Ok(())
+    if start_silent {
+        // A preloaded sink is paused until adoption.
+    } else {
+        sink.play();
+    }
+    Ok(BuiltStream {
+        shutdown: Some(shutdown),
+        cancelled,
+        handle: Some(handle),
+        counting,
+        fade_target,
+        fade_step,
+        fade_current,
+        meta,
+    })
 }
 
-/// M19: the audio-callback-side source. `next()` pops one sample from the
-/// SPSC ring (lock-free atomics), applies volume, and counts frames. On
-/// underflow it emits silence and flags Starved (the decode thread's push
-/// path reports Refilled); after EOF it ends the track. No locks, no
-/// allocation, no I/O.
+/// The audio-callback-side source. `next()` pops one sample from the
+/// SPSC ring (lock-free atomics), applies loudness, EQ, fade and volume, and
+/// counts frames. On underflow it emits silence and flags Starved (the
+/// decode thread's push path reports Refilled); after EOF it ends the track.
+/// No locks, no allocation, no I/O.
 struct RingSource {
     ring: Arc<crate::ring::SpscRing>,
-    volume: Arc<AtomicU32>,
+    params: Arc<DspParams>,
     frames: Arc<AtomicU64>,
+    counting: Arc<AtomicBool>,
     channels: u16,
+    sample_rate: u32,
     eof: Arc<AtomicBool>,
     starved: Arc<AtomicBool>,
+    /// A discarded preload ends silently at its turn.
+    cancelled: Arc<AtomicBool>,
     samples: u64,
+    eq: EqProcessor,
+    fade_current: Arc<AtomicU32>,
+    fade_target: Arc<AtomicU32>,
+    fade_step: Arc<AtomicU32>,
+    fade_curve: Arc<AtomicU32>,
+    loudness: f32,
+    loudness_initialized: bool,
 }
 
 impl Iterator for RingSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
         match self.ring.pop() {
             Some(sample) => {
-                self.samples = self.samples.wrapping_add(1);
-                if self.samples % u64::from(self.channels) == 0 {
+                let channel = (self.samples % u64::from(self.channels.max(1))) as usize;
+                let counting = self.counting.load(Ordering::Relaxed);
+                if counting && channel == 0 {
                     self.frames.fetch_add(1, Ordering::Relaxed);
                 }
-                let volume = f32::from_bits(self.volume.load(Ordering::Relaxed));
-                // G(Phase-2 G): debug-only sink peak meter (atomic, no
-                // alloc/lock) so non-silent output is provable.
+                self.samples = self.samples.wrapping_add(1);
+
+                // Loudness gain (smooth; no jumps between tracks or when a
+                // background analysis lands mid-play).
+                let target_db = self.params.loudness_gain_db();
+                if !self.loudness_initialized {
+                    self.loudness = crate::dsp::db_to_linear(target_db);
+                    self.loudness_initialized = true;
+                } else {
+                    let target = crate::dsp::db_to_linear(target_db);
+                    // ~40 ms time constant at 44.1 kHz.
+                    self.loudness += (target - self.loudness) * 0.00055;
+                }
+                let mut out = sample * self.loudness;
+
+                // EQ: channel bank, coefficients refreshed every 32 frames.
+                if channel == 0 {
+                    self.eq.tick(&self.params);
+                }
+                out = self.eq.process(out, channel, &self.params);
+
+                // Crossfade / fade-out ramp.
+                let target = f32::from_bits(self.fade_target.load(Ordering::Relaxed));
+                let step = f32::from_bits(self.fade_step.load(Ordering::Relaxed)).max(0.0);
+                let mut current = f32::from_bits(self.fade_current.load(Ordering::Relaxed));
+                if current < target {
+                    current = (current + step).min(target);
+                    self.fade_current
+                        .store(current.to_bits(), Ordering::Relaxed);
+                } else if current > target {
+                    current = (current - step).max(target);
+                    self.fade_current
+                        .store(current.to_bits(), Ordering::Relaxed);
+                }
+                let curve_gain =
+                    if self.fade_curve.load(Ordering::Relaxed) == FADE_CURVE_EQUAL_POWER {
+                        // sin() and cos() are complementary: the outgoing stream
+                        // (current 1→0) and incoming stream (0→1) sum to roughly
+                        // constant power through the overlap.
+                        (current.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).sin()
+                    } else {
+                        current
+                    };
+                out *= curve_gain * self.params.master_volume();
+
+                // Never wrap: a hot normalized track clips symmetrically
+                // instead of folding over.
+                if out > 1.0 {
+                    out = 1.0;
+                } else if out < -1.0 {
+                    out = -1.0;
+                }
+
                 #[cfg(debug_assertions)]
                 crate::metrics::audio::metrics()
                     .peak_bits
-                    .fetch_max(sample.abs().to_bits(), Ordering::Relaxed);
-                Some(sample * volume)
+                    .fetch_max(out.abs().to_bits(), Ordering::Relaxed);
+                Some(out)
             }
             None => {
                 if self.eof.load(Ordering::SeqCst) {
                     return None; // decode done + ring drained: track over
                 }
-                // Underflow: silence + one-shot Starved flag (the decode
-                // thread's push path turns it into Refilled).
                 self.starved.store(true, Ordering::SeqCst);
                 Some(0.0)
             }
@@ -542,7 +1384,9 @@ impl Source for RingSource {
         self.channels
     }
     fn sample_rate(&self) -> u32 {
-        44_100 // informational; timing uses the pipeline sample_rate atomic
+        // The mixer resamples using this; reporting the real rate keeps
+        // non-44.1 kHz sources in tune.
+        self.sample_rate.max(1)
     }
     fn total_duration(&self) -> Option<Duration> {
         None
@@ -555,15 +1399,13 @@ impl Source for RingSource {
 fn open_source(
     path: &str,
     cache: Option<&Arc<StreamCache>>,
-    status: watch::Sender<crate::remote::StreamStatus>,
-    shutdown: Arc<AtomicBool>,
+    _status: watch::Sender<crate::remote::StreamStatus>,
+    _shutdown: Arc<AtomicBool>,
+    live: bool,
 ) -> Result<Box<dyn Source<Item = f32> + Send>, String> {
-    // F9: googlevideo's MP4 streams are fragmented DASH (`ftyp dash`) — the
-    // bare probe returns UnrecognizedFormat without a hint. Sniff the
-    // container from the first bytes and feed the probe a hint.
     fn sniff_hint(head: &[u8]) -> Option<&'static str> {
         if head.len() >= 8 && &head[4..8] == b"ftyp" {
-            return Some("m4a"); // MP4/AAC (covers DASH init segments)
+            return Some("m4a");
         }
         if head.starts_with(b"OggS") {
             return Some("ogg");
@@ -580,439 +1422,61 @@ fn open_source(
         None
     }
 
-
-    let source: Box<dyn Source<Item = f32> + Send> =
-        if let Some(cached) = cache.and_then(|c| c.get(path)) {
-            let file = File::open(cached).map_err(|e| e.to_string())?;
-            Box::new(Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?)
-        } else if path.starts_with("http://") || path.starts_with("https://") {
-            // F9: bounded-range reader (Phase 2-E). One reader serves the
-            // sniff AND the decode: read the first 64 bytes for the
-            // container hint (googlevideo MP4s are DASH-branded and fail
-            // the bare probe), seek back, then hand the same reader to the
-            // decoder. ~3 MiB/s measured — 160× real-time.
-            let mut reader = crate::remote::HttpRangeReader::new(path.to_owned(), vec![])
-                .map_err(|e| e.to_string())?;
-            let mut head = vec![0u8; 64];
-            let _ = std::io::Read::read_exact(&mut reader, &mut head);
-            let hint = sniff_hint(&head);
-            #[cfg(debug_assertions)]
-            eprintln!("[F9-sniff] hint={hint:?}");
-            std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0))
-                .map_err(|e| e.to_string())?;
-            let mut builder = Decoder::builder();
-            if let Some(ext) = hint {
-                builder = builder.with_hint(ext);
-            }
-            return Ok(Box::new(
-                builder
-                    .with_data(BufReader::new(reader))
-                    .build()
-                    .map_err(|e| e.to_string())?,
-            ));
-        } else {
-            let file = File::open(PathBuf::from(path)).map_err(|e| e.to_string())?;
-            Box::new(Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?)
-        };
+    let source: Box<dyn Source<Item = f32> + Send> = if let Some(cached) =
+        cache.and_then(|c| c.get(path))
+    {
+        let file = File::open(cached).map_err(|e| e.to_string())?;
+        Box::new(Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?)
+    } else if live {
+        // A broadcast: one unbounded body, no ranges, no seeking.
+        let (reader, hint) = crate::remote::LiveReader::open(path)?;
+        let mut builder = Decoder::builder();
+        if let Some(hint) = hint {
+            builder = builder.with_hint(hint);
+        }
+        return Ok(Box::new(
+            builder
+                .with_data(BufReader::new(reader))
+                .build()
+                .map_err(|e| format!("unsupported station stream: {e}"))?,
+        ));
+    } else if path.starts_with("http://") || path.starts_with("https://") {
+        let mut reader = crate::remote::HttpRangeReader::new(path.to_owned(), vec![])
+            .map_err(|e| e.to_string())?;
+        let mut head = vec![0u8; 64];
+        let _ = std::io::Read::read_exact(&mut reader, &mut head);
+        let hint = sniff_hint(&head);
+        std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+        let mut builder = Decoder::builder();
+        if let Some(ext) = hint {
+            builder = builder.with_hint(ext);
+        }
+        return Ok(Box::new(
+            builder
+                .with_data(BufReader::new(reader))
+                .build()
+                .map_err(|e| e.to_string())?,
+        ));
+    } else {
+        let file = File::open(PathBuf::from(path)).map_err(|e| e.to_string())?;
+        Box::new(Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?)
+    };
     Ok(source)
 }
 
-/// F9: reproduce the pipeline's exact probe path (PrefetchReader + hint)
-/// for diagnostics; returns samples decoded or the error.
-pub fn diagnostic_probe_decode(
-    url: String,
-) -> Result<u64, String> {
-    use std::io::Read as _;
-    let (status_tx, _status_rx) = tokio::sync::watch::channel(crate::remote::StreamStatus::Refilled);
-    let reader = crate::remote::PrefetchReader::new(
-        url,
-        vec![],
-        status_tx,
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    )
-    .map_err(|e| e.to_string())?;
-    let mut builder = Decoder::builder();
-    builder = builder.with_hint("m4a");
-    let mut dec = builder
-        .with_data(std::io::BufReader::new(reader))
-        .build()
-        .map_err(|e| format!("probe/build: {e:?}"))?;
-    let mut n = 0u64;
-    let mut buf = [0f32; 1024];
-    while n < 4096 {
-        let got = std::iter::Iterator::by_ref(&mut dec).take(buf.len()).count();
-        if got == 0 {
-            break;
-        }
-        n += got as u64;
-    }
-    Ok(n as u64)
-}
-
-/// F9: build a rodio decoder with an explicit format hint (used by the
-/// debug E2E hook to reproduce the pipeline's probe path).
-pub fn build_decoder_with_hint<R: std::io::Read + std::io::Seek + Send + Sync + 'static>(
-    reader: R,
-    hint: &str,
-) -> Result<rodio::Decoder<R>, String> {
-    let mut builder = Decoder::builder();
-    builder = builder.with_hint(hint);
-    builder.with_data(reader).build().map_err(|e| e.to_string())
-}
-
-/// M18: name of the OS default output device, if any.
+/// Name of the OS default output device, if any.
 pub fn default_output_name() -> Option<String> {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
-    rodio::cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+    rodio::cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
 }
 
-/// M18: whether a device with this exact name still exists (removal check).
+/// Whether a device with this exact name still exists (removal check).
 pub fn output_device_exists(name: &str) -> bool {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
     let host = rodio::cpal::default_host();
     host.devices()
-        .map(|mut ds| {
-            ds.any(|d| {
-                d.name()
-                    .map(|n| n == name)
-                    .unwrap_or(false)
-            })
-        })
+        .map(|mut ds| ds.any(|d| d.name().map(|n| n == name).unwrap_or(false)))
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "test code")]
-mod tests {
-    use super::*;
-
-    /// A decoder that panics mid-stream (TAN-03 rehearsal at the new
-    /// location: the decode thread's catch_unwind).
-    struct PanicSource {
-        first: bool,
-    }
-    impl Iterator for PanicSource {
-        type Item = f32;
-        fn next(&mut self) -> Option<f32> {
-            if self.first {
-                self.first = false;
-                Some(0.0)
-            } else {
-                panic!("hostile media decoder panic");
-            }
-        }
-    }
-    impl Source for PanicSource {
-        fn current_span_len(&self) -> Option<usize> {
-            None
-        }
-        fn channels(&self) -> u16 {
-            2
-        }
-        fn sample_rate(&self) -> u32 {
-            44_100
-        }
-        fn total_duration(&self) -> Option<Duration> {
-            None
-        }
-    }
-
-    #[test]
-    fn failed_rebuild_does_not_tear_down_current_stream() {
-        let mut current = Some("audible-current");
-        let result: Result<Option<&str>, &str> = commit_replacement(&mut current, Err("decode failed"));
-        assert_eq!(result, Err("decode failed"));
-        assert_eq!(current, Some("audible-current"));
-    }
-
-    #[test]
-    fn successful_rebuild_replaces_current_stream() {
-        let mut current = Some("old");
-        let old = commit_replacement(&mut current, Ok::<_, &str>("new")).unwrap();
-        assert_eq!(old, Some("old"));
-        assert_eq!(current, Some("new"));
-    }
-
-    #[test]
-    fn decoder_seek_moves_decoder_not_only_position_counter() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/testmusic/Test Signal/test.wav");
-        let file = File::open(path).expect("committed WAV fixture");
-        let mut linear = Decoder::new(BufReader::new(file)).expect("fixture decoder");
-        let rate = linear.sample_rate();
-        let channels = u64::from(linear.channels());
-        let skip = u64::from(rate) / 2 * channels;
-        for _ in 0..skip {
-            assert!(linear.next().is_some(), "fixture has 500 ms");
-        }
-        let expected = linear.next().expect("sample after linear skip");
-
-        let file = File::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/testmusic/Test Signal/test.wav"),
-        )
-        .expect("committed WAV fixture");
-        let mut sought = Decoder::new(BufReader::new(file)).expect("fixture decoder");
-        sought
-            .try_seek(Duration::from_millis(500))
-            .expect("decoder seek succeeds");
-        let actual = sought.next().expect("sample after decoder seek");
-        assert!((actual - expected).abs() < 0.01, "seek moved decoder: {actual} vs {expected}");
-    }
-
-    #[test]
-    fn ring_source_applies_volume_and_counts_frames() {
-        let ring = Arc::new(crate::ring::SpscRing::new(64));
-        let volume = Arc::new(AtomicU32::new(0.5f32.to_bits()));
-        let frames = Arc::new(AtomicU64::new(0));
-        let mut source = RingSource {
-            ring: ring.clone(),
-            volume: volume.clone(),
-            frames: frames.clone(),
-            channels: 2,
-            eof: Arc::new(AtomicBool::new(false)),
-            starved: Arc::new(AtomicBool::new(false)),
-            samples: 0,
-        };
-        // Feed 10 samples (5 frames at 2 channels) at unity level.
-        for i in 0..10 {
-            ring.push(if i % 2 == 0 { 2.0 } else { 0.0 }).unwrap();
-        }
-        let mut out = Vec::new();
-        for _ in 0..10 {
-            out.push(source.next().unwrap());
-        }
-        assert_eq!(out[0], 1.0, "0.5 × 2.0");
-        assert_eq!(frames.load(Ordering::Relaxed), 5, "frames, not samples");
-        // Volume change applies to subsequent samples without any lock.
-        volume.store(1.0f32.to_bits(), Ordering::Relaxed);
-        ring.push(2.0).unwrap();
-        assert_eq!(source.next().unwrap(), 2.0);
-    }
-
-    #[test]
-    fn ring_source_underflow_emits_silence_then_eof() {
-        let ring = Arc::new(crate::ring::SpscRing::new(64));
-        let eof = Arc::new(AtomicBool::new(false));
-        let mut source = RingSource {
-            ring: ring.clone(),
-            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-            frames: Arc::new(AtomicU64::new(0)),
-            channels: 2,
-            eof: eof.clone(),
-            starved: Arc::new(AtomicBool::new(false)),
-            samples: 0,
-        };
-        // Empty and not EOF: silence (the callback never blocks).
-        assert_eq!(source.next().unwrap(), 0.0);
-        assert!(source.starved.load(Ordering::SeqCst), "starved flagged");
-        // EOF after drain: the track ends.
-        eof.store(true, Ordering::SeqCst);
-        assert!(source.next().is_none());
-    }
-
-    #[test]
-    fn ring_source_stops_at_shutdown_eof() {
-        // A decode thread that was told to shut down marks EOF; the
-        // consumer must end instead of looping silence forever.
-        let ring = Arc::new(crate::ring::SpscRing::new(64));
-        let eof = Arc::new(AtomicBool::new(false));
-        eof.store(true, Ordering::SeqCst);
-        let mut source = RingSource {
-            ring,
-            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-            frames: Arc::new(AtomicU64::new(0)),
-            channels: 2,
-            eof,
-            starved: Arc::new(AtomicBool::new(false)),
-            samples: 0,
-        };
-        assert!(source.next().is_none());
-    }
-}
-
-/// F1: HLS/DASH fail-closed evidence (documented limitation). The pipeline
-/// has no manifest demuxer — `open_source` hands the path to Symphonia's
-/// file demuxers, which cannot read HLS `.m3u8` or DASH `.mpd` text. The
-/// contract: such a path errors gracefully (decoder error path), it never
-/// panics and never produces silence.
-#[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "test code")]
-mod adaptive_stream_tests {
-    use super::*;
-    use std::sync::atomic::AtomicBool;
-
-    fn probe(path: &std::path::Path) -> Result<Box<dyn Source<Item = f32> + Send>, String> {
-        let (tx, _rx) = watch::channel(crate::remote::StreamStatus::Refilled);
-        open_source(
-            path.to_str().unwrap(),
-            None,
-            tx,
-            Arc::new(AtomicBool::new(false)),
-        )
-    }
-
-    #[test]
-    fn hls_and_dash_manifests_fail_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let m3u8 = dir.path().join("stream.m3u8");
-        std::fs::write(
-            &m3u8,
-            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg0.aac\n#EXT-X-ENDLIST\n",
-        )
-        .unwrap();
-        assert!(probe(&m3u8).is_err(), "an HLS playlist must not decode");
-        let mpd = dir.path().join("stream.mpd");
-        std::fs::write(
-            &mpd,
-            "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\"><Period/></MPD>",
-        )
-        .unwrap();
-        assert!(probe(&mpd).is_err(), "a DASH manifest must not decode");
-    }
-
-    /// F2: a missing/moved local file yields a clean decoder error (the
-    /// engine maps it to Error(Decode)), never a panic or a hang.
-    #[test]
-    fn missing_local_file_errors_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        let gone = dir.path().join("deleted.flac");
-        assert!(probe(&gone).is_err(), "missing file => Err");
-    }
-
-    /// F2: every generated local fixture (wav/flac/alac/aac under
-    /// /tmp/f2-local, produced by the afconvert step) opens and decodes
-    /// through the real `open_source` path. Self-skips when the fixtures
-    /// are absent (CI without the generation step).
-    #[test]
-    fn local_fixture_files_decode_through_open_source() {
-        for name in ["sample.wav", "sample.flac", "sample_alac.m4a", "sample_aac.m4a"] {
-            let p = std::path::Path::new("/tmp/f2-local").join(name);
-            if !p.is_file() {
-                println!("SKIP {name}: fixture missing");
-                continue;
-            }
-            let source = probe(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
-            // Decodes at least a few hundred real samples without error.
-            let mut source = source;
-            let mut got = 0;
-            while got < 1000 {
-                match source.next() {
-                    Some(_) => got += 1,
-                    None => break,
-                }
-            }
-            assert!(got >= 1000, "{name} decodes real samples");
-            println!("{name}: decodes via open_source ({got}+ samples)");
-        }
-    }
-}
-
-#[cfg(test)]
-mod http_branch_tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::AtomicBool;
-
-    /// F9: the HTTP branch of `open_source` must probe/decode an MP4/AAC
-    /// stream exactly like the file branch does (regression for the
-    /// "Unrecognized format" launch failure).
-    #[test]
-    fn http_branch_decodes_dash_branded_m4a() {
-        let src = std::path::Path::new("/tmp/f2-local/sample_aac.m4a");
-        if !src.is_file() {
-            println!("SKIP: fixture missing");
-            return;
-        }
-        let mut bytes = std::fs::read(src).unwrap();
-        // googlevideo's itag-140 MP4s carry major brand `dash` (fragmented).
-        assert_eq!(&bytes[4..8], b"ftyp");
-        bytes[8..12].copy_from_slice(b"dash");
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut stream in listener.incoming().flatten() {
-                let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf);
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: audio/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&bytes);
-            }
-        });
-        let (tx, _rx) = watch::channel(crate::remote::StreamStatus::Refilled);
-        let reader = crate::remote::PrefetchReader::new(
-            format!("http://127.0.0.1:{port}/audio.m4a"),
-            vec![],
-            tx,
-            Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap();
-        let mut builder = Decoder::builder();
-        builder = builder.with_hint("m4a");
-        let mut source = builder
-            .with_data(BufReader::new(reader))
-            .build()
-            .unwrap_or_else(|e| panic!("probe with hint m4a failed: {e}"));
-        let mut got = 0;
-        while got < 1000 {
-            match source.next() {
-                Some(_) => got += 1,
-                None => break,
-            }
-        }
-        assert!(got >= 1000, "decodes real samples (got {got})");
-    }
-
-    #[test]
-    fn http_branch_decodes_m4a_like_file_branch() {
-        let src = std::path::Path::new("/tmp/f2-local/sample_aac.m4a");
-        if !src.is_file() {
-            println!("SKIP: fixture missing");
-            return;
-        }
-        let bytes = std::fs::read(src).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut stream in listener.incoming().flatten() {
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let start: usize = req
-                    .split("Range: bytes=")
-                    .nth(1)
-                    .and_then(|r| r.split('-').next().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0);
-                let end = (start + bytes.len()).min(bytes.len());
-                let slice = &bytes[start.min(bytes.len())..end];
-                let status = if start > 0 { 206 } else { 200 };
-                let head = format!(
-                    "HTTP/1.1 {} OK\r\nContent-Type: audio/mp4\r\nContent-Range: bytes {}-{}/{}\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    status, start, end.saturating_sub(1), bytes.len(), slice.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(slice);
-            }
-        });
-        let (tx, _rx) = watch::channel(crate::remote::StreamStatus::Refilled);
-        let source = open_source(
-            &format!("http://127.0.0.1:{port}/audio.m4a"),
-            None,
-            tx,
-            Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap_or_else(|e| panic!("http branch open failed: {e}"));
-        let mut source = source;
-        let mut got = 0;
-        while got < 1000 {
-            match source.next() {
-                Some(_) => got += 1,
-                None => break,
-            }
-        }
-        assert!(got >= 1000, "http branch decodes real samples (got {got})");
-    }
 }

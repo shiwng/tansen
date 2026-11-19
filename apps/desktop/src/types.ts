@@ -11,6 +11,10 @@ export interface TrackRef {
   path: string;
   /** Catalogue video id for remote rows (id is 0 for those). */
   video_id?: string | null;
+  /** Source kind for remote playlist rows: `youtube` = matched/playable, `spotify` = imported metadata only. */
+  key_source?: string | null;
+  /** Original catalogue artwork URL for remote playlist rows (routed through `fetch_artwork`). */
+  artwork_url?: string | null;
 }
 
 /** Queue snapshot as `queue_snapshot` returns it. */
@@ -29,3 +33,14 @@ export interface Folder {
 
 export type ScanProgress = { scanned: number; total: number; folder_id: number };
 export type ScanSummary = { added: number; updated: number; marked_missing: number; errors: number };
+
+/** One row of the All Playlists page (playlists_get). */
+export interface PlaylistRow {
+  id: number;
+  name: string;
+  favourite: boolean;
+  /** Unix seconds; the "Date Added" sort. */
+  created_at: number;
+  /** Local + imported-remote rows, matching what the playlist page shows. */
+  track_count: number;
+}

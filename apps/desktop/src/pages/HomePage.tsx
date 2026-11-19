@@ -1,158 +1,228 @@
 import { useQuery } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
-import { ShelfView, trackItem } from '@/components/music/ShelfView';
+import { PlayIcon } from '@/components/icons/Transport';
+import { PrefetchLink } from '@/components/PrefetchLink';
+import { Artwork } from '@/components/music/Artwork';
+import { ShelfView } from '@/components/music/ShelfView';
+import { hrefFor } from '@/components/music/links';
+import { playTrack } from '@/components/music/play';
 import { SkeletonBlock } from '@/components/Skeleton';
-import { q, rowsToTracks, sourceFor } from '@/lib/rows';
-import { shuffleList } from '@/components/music/play';
-import type { MusicItem, Shelf, Track } from '@/data/music/types';
+import { RotateCw } from 'lucide-react';
+import { useState } from 'react';
+import type { ItemKind, MusicItem, Shelf } from '@/data/music/types';
 
-/** Home: a Start Listening hero over the recently-added shelves. */
+/**
+ * Home: real catalogue tiles and shelves, ranked by the listening profile in
+ * the Rust recommendation service. No account is required — new listeners
+ * get general discovery, and own listening replaces it as events accumulate.
+ */
+
+interface HomeItem {
+  kind: string;
+  id: string;
+  title: string;
+  subtitle: string;
+  thumbnail_url: string | null;
+  duration_sec: number | null;
+  is_video: boolean;
+}
+
+interface HomeSection {
+  id: string;
+  title: string;
+  subtitle: string;
+  layout: string;
+  items: HomeItem[];
+}
+
+interface HomeFeed {
+  personalized: boolean;
+  plays: number;
+  top_artists: string[];
+  featured: HomeItem[];
+  sections: HomeSection[];
+  catalogue_error: string | null;
+}
+
+const KINDS: ItemKind[] = ['song', 'video', 'album', 'playlist', 'artist', 'episode', 'podcast'];
+
+function itemKind(item: HomeItem): ItemKind {
+  return KINDS.includes(item.kind as ItemKind) ? (item.kind as ItemKind) : 'unknown';
+}
+
+function musicItem(item: HomeItem): MusicItem {
+  return {
+    kind: itemKind(item),
+    id: item.id,
+    title: item.title,
+    subtitle: item.subtitle,
+    artists: item.kind === 'song' || item.kind === 'video' ? [{ name: item.subtitle || 'Unknown Artist', id: null }] : [],
+    album: null,
+    thumbnail: item.thumbnail_url,
+    wide: item.is_video,
+    durationSec: item.duration_sec,
+    explicit: false,
+  };
+}
+
+function shelfFor(section: HomeSection): Shelf {
+  const layout = section.layout === 'video' ? 'video' : section.layout === 'circle' ? 'circle' : 'square';
+  return {
+    title: section.title,
+    strapline: section.subtitle || null,
+    layout,
+    items: section.items.map(musicItem),
+    seeAll: null,
+  };
+}
+
 export function HomePage() {
-  const tracks = useQuery(q.tracks());
-  const catalogue = useQuery({
-    queryKey: ['catalogue-home'],
-    queryFn: () => invoke<DiscoveryHome>('discovery_home'),
+  const [refresh, setRefresh] = useState(0);
+  const feed = useQuery({
+    queryKey: ['home', 'feed', refresh],
+    queryFn: () => invoke<HomeFeed>('home_feed', { refresh: refresh > 0 }),
     retry: false,
-    staleTime: 10 * 60_000,
+    staleTime: 5 * 60_000,
+    // Cheap: the backend answers from its cache unless the profile changed.
+    refetchInterval: 5 * 60_000,
+    refetchIntervalInBackground: false,
   });
-  const explore = useQuery({
-    queryKey: ['catalogue-explore', 'explore'],
-    queryFn: () => invoke<DiscoveryHome>('discovery_explore', { section: 'explore' }),
-    retry: false,
-    staleTime: 10 * 60_000,
-  });
-  const newReleases = useQuery({
-    queryKey: ['catalogue-explore', 'new-releases'],
-    queryFn: () => invoke<DiscoveryHome>('discovery_explore', { section: 'new-releases' }),
-    retry: false,
-    staleTime: 10 * 60_000,
-  });
-  if (tracks.isError) {
-    return <p className="mx-(--body-gutter) pt-11 type-body text-secondary">{String(tracks.error)}</p>;
-  }
-  if (tracks.isPending) {
-    return (
-      <div className="mx-(--body-gutter) pt-11">
-        <SkeletonBlock width={220} height={34} radius={8} className="mb-6" />
-        <SkeletonBlock width="100%" height={220} radius={10} />
-      </div>
-    );
-  }
-  const rows = rowsToTracks(tracks.data);
-  const catalogueShelves = [
-    ...(catalogue.data?.shelves ?? []),
-    ...(explore.data?.shelves ?? []),
-    ...(newReleases.data?.shelves ?? []),
-  ];
+
+  const data = feed.data;
+  const sections = data?.sections ?? [];
+  const featured = data?.featured?.length
+    ? data.featured
+    : sections.flatMap((section) => section.items.filter((item) => item.thumbnail_url)).slice(0, 10);
+
   return (
-    <div>
-      <h1 className="mx-(--body-gutter) pt-11 type-header-emphasized">Home</h1>
-      {rows.length === 0 && catalogueShelves.length === 0 ? (
-        <EmptyLibrary />
-      ) : (
-        <div className="mt-4">
-          {rows.length > 0 && <HeroBanner tracks={rows} />}
-          {rows.length > 0 && <ShelfView shelf={albumShelf(rows)} />}
-          {rows.length > 0 && <ShelfView shelf={trackShelf(rows)} />}
-          {catalogueShelves.map((shelf) => <ShelfView key={shelf.title} shelf={homeShelf(shelf)} />)}
+    <div className="pb-16">
+      <header className="mx-(--body-gutter) flex flex-wrap items-end justify-between gap-x-6 gap-y-2 pt-8">
+        <div className="min-w-0">
+          <h1 className="type-header-emphasized">Home</h1>
+          <p className="mt-1 type-callout text-secondary">
+            {data?.personalized
+              ? `Picked for you from ${data.plays} ${data.plays === 1 ? 'play' : 'plays'}${
+                  data.top_artists.length ? ` · ${data.top_artists.join(', ')}` : ''
+                }`
+              : 'Popular music, new releases and artists to explore'}
+          </p>
         </div>
+        <button
+          className="mb-1 flex items-center gap-1.5 rounded-pill bg-quinary px-3 py-1.5 type-callout text-secondary transition-colors hover:text-primary disabled:opacity-50"
+          onClick={() => setRefresh((n) => n + 1)}
+          disabled={feed.isFetching}
+          aria-label="Refresh recommendations"
+        >
+          <RotateCw size={13} strokeWidth={2.2} className={feed.isFetching ? 'animate-spin' : undefined} />
+          {feed.isFetching ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </header>
+
+      {feed.isPending && <HomeSkeleton />}
+
+      {feed.isError && (
+        <div className="mx-(--body-gutter) mt-8 max-w-lg">
+          <p className="type-body text-secondary">
+            Home is unavailable: {String(feed.error).replace(/^Error:\s*/, '')}
+          </p>
+          <button
+            className="mt-3 rounded-pill bg-quinary px-4 py-2 type-callout-emphasized text-primary"
+            onClick={() => setRefresh((n) => n + 1)}
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {data && featured.length > 0 && (
+        <section aria-label="Featured" className="mx-(--body-gutter) mt-7">
+          <div className="grid grid-cols-2 gap-x-5 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+            {featured.map((item) => (
+              <FeatureTile key={`${item.kind}-${item.id}`} item={item} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {data && sections.map((section) => <ShelfView key={section.id} shelf={shelfFor(section)} />)}
+
+      {data && sections.length === 0 && featured.length === 0 && (
+        <p className="mx-(--body-gutter) mt-8 max-w-lg type-body text-secondary">
+          No catalogue shelves are available right now. Check Settings → Sources, then refresh.
+        </p>
+      )}
+
+      {data?.catalogue_error && (
+        <p className="mx-(--body-gutter) mt-8 flex items-center gap-2 type-caption text-secondary">
+          Some sections could not load.
+          <button
+            className="rounded-pill bg-quinary px-3 py-1 type-caption text-primary hover:bg-quaternary"
+            onClick={() => setRefresh((n) => n + 1)}
+            disabled={feed.isFetching}
+          >
+            Retry
+          </button>
+        </p>
       )}
     </div>
   );
 }
 
-interface DiscoveryHomeItem { title: string; subtitle: string; thumbnail_url: string | null; video_id: string | null; browse_id: string | null; is_video: boolean }
-interface DiscoveryHomeShelf { title: string; subtitle: string; layout: string; more_browse_id: string | null; more_params: string | null; items: DiscoveryHomeItem[] }
-interface DiscoveryHome { shelves: DiscoveryHomeShelf[]; continuation: string | null }
-
-function homeShelf(shelf: DiscoveryHomeShelf): Shelf {
-  return {
-    title: shelf.title,
-    strapline: shelf.subtitle || null,
-    layout: shelf.layout === 'video' ? 'video' : shelf.layout === 'list' ? 'tracks' : 'square',
-    seeAll: shelf.more_browse_id ? { browseId: shelf.more_browse_id, params: shelf.more_params } : null,
-    items: shelf.items.map((item) => ({
-      kind: item.video_id ? (item.is_video ? 'video' : 'song') : item.browse_id?.startsWith('UC') ? 'artist' : item.browse_id?.startsWith('VL') ? 'playlist' : 'album',
-      id: item.video_id ?? item.browse_id ?? item.title,
-      title: item.title,
-      subtitle: item.subtitle,
-      artists: [{ name: item.subtitle || 'Unknown Artist', id: null }],
-      album: null,
-      thumbnail: item.thumbnail_url,
-      wide: item.is_video,
-      durationSec: null,
-      explicit: false,
-    })),
-  };
-}
-
-/** The banner card: real library stats and a one-tap start into the queue. */
-function HeroBanner({ tracks }: { tracks: Track[] }) {
-  const albums = new Set(tracks.map((t) => t.album?.name).filter(Boolean)).size;
-  const artists = new Set(tracks.map((t) => t.artists[0]?.name).filter(Boolean)).size;
+/** A large browse tile, matching the reference's five-column feature grid. */
+function FeatureTile({ item }: { item: HomeItem }) {
+  const music = musicItem(item);
+  const href = hrefFor(music);
+  const playable = music.kind === 'song' || music.kind === 'video';
+  const body = (
+    <>
+      <Artwork src={item.thumbnail_url} displayWidth={280} aspect={5 / 3} radius="var(--radius-artwork-large)" className="min-h-full" />
+      <span className="pointer-events-none absolute inset-0 z-1 rounded-[inherit] bg-gradient-to-t from-black/85 via-black/25 to-transparent" />
+      <span className="absolute inset-x-0 bottom-0 z-2 line-clamp-2 px-3 pb-2.5 type-title-3-emphasized text-white [text-shadow:0_1px_6px_#0009]">
+        {item.title}
+      </span>
+      {playable && (
+        <span className="pointer-events-none absolute top-2.5 right-2.5 z-2 grid size-8 place-items-center rounded-full bg-black/45 text-white opacity-0 backdrop-blur-sm transition-opacity duration-150 group-hover/tile:opacity-100">
+          <PlayIcon size={16} />
+        </span>
+      )}
+    </>
+  );
+  const className =
+    'group/tile relative aspect-[5/3] overflow-hidden rounded-[var(--radius-artwork-large)] bg-joe artwork-stroke';
+  if (href) {
+    return (
+      <PrefetchLink to={href} className={className} aria-label={item.title}>
+        {body}
+      </PrefetchLink>
+    );
+  }
   return (
-    <section
-      aria-label="Start Listening"
-      className="mx-(--body-gutter) mb-8 flex flex-wrap items-center gap-x-6 gap-y-4 rounded-[14px] px-7 py-6"
-      style={{ background: 'linear-gradient(120deg, var(--systemRed), color-mix(in srgb, var(--systemRed) 45%, black))' }}
+    <button
+      className={`${className} text-left`}
+      aria-label={playable ? `Play ${item.title}` : item.title}
+      onClick={() => (playable ? playTrack(music) : undefined)}
     >
-      <span className="type-header-emphasized text-white">Tansen</span>
-      <span className="hidden h-12 w-px bg-white/30 sm:block" />
-      <div className="min-w-0 flex-1">
-        <p className="type-title-3-emphasized text-white">Your library, ready to play.</p>
-        <p className="type-callout text-white/75">
-          {tracks.length} songs · {albums} albums · {artists} artists
-        </p>
-      </div>
-      <button
-        className="rounded-pill bg-white px-5 py-2.5 type-body-emphasized text-black transition-colors hover:bg-white/85"
-        onClick={() => shuffleList(tracks, { source: sourceFor('home', 'Home') })}
-      >
-        Start Listening
-      </button>
-    </section>
+      {body}
+    </button>
   );
 }
 
-/** Albums as square lockups (newest first — tracks_get returns insertion order). */
-function albumShelf(tracks: ReturnType<typeof rowsToTracks>): Shelf {
-  const seen = new Map<string, MusicItem>();
-  for (const t of [...tracks].reverse()) {
-    const name = t.album?.name;
-    if (!name || seen.has(name)) continue;
-    const artist = t.artists[0]?.name ?? 'Unknown Artist';
-    seen.set(name, {
-      kind: 'album',
-      id: `${artist}||${name}`,
-      title: name,
-      subtitle: `Album • ${artist}`,
-      artists: t.artists,
-      album: null,
-      thumbnail: t.thumbnail,
-      wide: false,
-      durationSec: null,
-      explicit: false,
-    });
-  }
-  return { title: 'Recently Added Albums', strapline: null, layout: 'square', items: [...seen.values()].slice(0, 24), seeAll: null };
-}
-
-function trackShelf(tracks: ReturnType<typeof rowsToTracks>): Shelf {
-  const items = [...tracks].reverse().slice(0, 24).map(trackItem);
-  return { title: 'Recently Added Songs', strapline: null, layout: 'tracks', items, seeAll: null };
-}
-
-export function EmptyLibrary() {
+function HomeSkeleton() {
   return (
-    <div className="mt-6 max-w-md pb-10">
-      <p className="type-body text-secondary">
-        Millions of songs are one search away — press <strong>Search</strong> and type anything. Results come from
-        YouTube Music and play immediately.
-      </p>
-      <p className="mt-2 type-body text-secondary">
-        For your own files, open <strong>Settings → Library</strong> and add a folder — the player indexes it, artwork
-        included.
-      </p>
+    <div className="mx-(--body-gutter) mt-7">
+      <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <SkeletonBlock key={i} width="100%" height={168} radius={10} />
+        ))}
+      </div>
+      <div className="mt-10 flex flex-col gap-6">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i}>
+            <SkeletonBlock width={190} height={22} radius={6} className="mb-3.5" />
+            <SkeletonBlock width="100%" height={190} radius={10} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -64,6 +64,22 @@ describe('cover art URL', () => {
     expect(isArtworkUrl('/tmp/a.jpg')).toBe(false);
   });
 
+  it('reveals an image that finished before its load handler was wired', async () => {
+    const complete = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'complete');
+    const naturalWidth = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'naturalWidth');
+    Object.defineProperty(HTMLImageElement.prototype, 'complete', { configurable: true, get: () => true });
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', { configurable: true, get: () => 100 });
+    try {
+      const img = await render('art://localhost/%2Ftmp%2Fcached.jpg');
+      expect(img?.hasAttribute('data-loaded')).toBe(true);
+    } finally {
+      if (complete) Object.defineProperty(HTMLImageElement.prototype, 'complete', complete);
+      else delete (HTMLImageElement.prototype as { complete?: boolean }).complete;
+      if (naturalWidth) Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', naturalWidth);
+      else delete (HTMLImageElement.prototype as { naturalWidth?: number }).naturalWidth;
+    }
+  });
+
   it('renders no image when the fetch is refused', async () => {
     mocked.mockRejectedValueOnce(new Error('host not allowed: yt3.googleusercontent.com'));
     // A URL this module has not cached yet (the cache is process-wide).

@@ -7,7 +7,7 @@ export function clock(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-// ---- The Automix pulse (the phone's MixPulse, ThinSlider.kt) -------------------------------
+// The Automix pulse (the phone's MixPulse, ThinSlider.kt)
 
 /** How long the fill takes to glide out to full width, and back, around a blend. */
 const COVER_SEC = 0.7;

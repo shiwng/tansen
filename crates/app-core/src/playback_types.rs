@@ -1,4 +1,4 @@
-//! Normalized playback types (M5): the vocabulary for playback state and
+//! Normalized playback types: the vocabulary for playback state and
 //! commands, pure and dependency-free — no I/O, no Tauri, no serde (nothing
 //! on the wire uses these yet; derive serde only when an IPC consumer
 //! exists).
@@ -9,9 +9,9 @@
 //! is the lifecycle the engine walks; [`validate_transition`] is the pure
 //! law for walking it.
 //!
-//! Serde: M5 shipped these without derives because nothing crossed IPC.
-//! M9 put `Command` on the Tauri bridge and `PlaybackState` into an event,
-//! so the types now carry `Serialize`/`Deserialize`.
+//! Serde: the types started without derives because nothing crossed IPC.
+//! `Command` then moved onto the Tauri bridge and `PlaybackState` into an
+//! event, so they now carry `Serialize`/`Deserialize`.
 
 /// Remote track identity used by engine commands: (kind, id) — the app
 /// layer converts to/from `sources::TrackKey`.
@@ -22,10 +22,10 @@ pub type RemoteKey = (String, String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EntryId(pub u64);
 
-/// F5: remote_tracks rowids are minted into EntryIds at this offset, so
+/// Remote_tracks rowids are minted into EntryIds at this offset, so
 /// the remote id space never collides with library track ids (both start
-/// at 1). Safe in JSON (2^40 ≈ 1.1e12 < 2^53) and clear of u64::MAX (bench
-/// sentinel). Subtract before treating an EntryId as a DB rowid.
+/// at 1). Safe in JSON (2^40 ≈ 1.1e12 < 2^53) and clear of u64::MAX.
+/// Subtract before treating an EntryId as a DB rowid.
 pub const REMOTE_ID_OFFSET: u64 = 1 << 40;
 
 /// The class of a playback failure, mirroring the engine's existing load /
@@ -66,7 +66,7 @@ impl Status {
             Idle => matches!(self, Resolving | Playing),
             Resolving => matches!(self, Buffering | Playing | Error(_) | Idle),
             // Resolving is reachable: skipping while buffering restarts
-            // the lifecycle (M6's Next-from-Buffering).
+            // the lifecycle (Next-from-Buffering).
             Buffering => matches!(self, Playing | Resolving | Error(_) | Idle),
             Playing => matches!(self, Paused | Buffering | Resolving | Idle | Error(_)),
             Paused => matches!(self, Playing | Resolving | Idle | Error(_)),
@@ -129,15 +129,39 @@ impl PlaybackState {
     pub fn validate(&self) -> Result<(), ShapeError> {
         if self.status.runs_clock() {
             if self.anchor.rate != 1 {
-                return Err(ShapeError::PlayingWithoutRate { rate: self.anchor.rate });
+                return Err(ShapeError::PlayingWithoutRate {
+                    rate: self.anchor.rate,
+                });
             }
         } else if self.anchor.rate != 0 {
-            return Err(ShapeError::RateNotZero { status: self.status, rate: self.anchor.rate });
+            return Err(ShapeError::RateNotZero {
+                status: self.status,
+                rate: self.anchor.rate,
+            });
         }
         if !(0.0..=1.0).contains(&self.volume) {
             return Err(ShapeError::VolumeOutOfRange(self.volume));
         }
         Ok(())
+    }
+}
+
+/// Queue repeat behaviour. Stored by the shell, owned by the engine at
+/// runtime so auto-advance can honour it without a frontend round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    pub fn from_str_lossy(raw: &str) -> Self {
+        match raw.to_ascii_lowercase().as_str() {
+            "all" => RepeatMode::All,
+            "one" => RepeatMode::One,
+            _ => RepeatMode::Off,
+        }
     }
 }
 
@@ -152,19 +176,25 @@ pub enum Placement {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     /// Make this entry the current one (load + start). `remote` carries the
-    /// TrackKey when the entry is a remote (source) track (S6).
-    Play { entry: EntryId, #[serde(default)] remote: Option<crate::playback_types::RemoteKey> },
+    /// TrackKey when the entry is a remote (source) track.
+    Play {
+        entry: EntryId,
+        #[serde(default)]
+        remote: Option<crate::playback_types::RemoteKey>,
+    },
     Pause,
     Resume,
     Next,
     Prev,
     /// Jump the anchor; the clock keeps its current rate.
-    Seek { ms: u64 },
+    Seek {
+        ms: u64,
+    },
     SetVolume(f32),
     /// Add entries to the queue; `queue_rev` bumps, playback does not change.
     /// `tracks` carries every entry id in queue order — local library ids
     /// and remote (source-keyed) row ids alike; `remote` maps the remote
-    /// subset to their TrackKeys (S6). The enqueue length cap covers the
+    /// subset to their TrackKeys. The enqueue length cap covers the
     /// combined list.
     Enqueue {
         tracks: Vec<EntryId>,
@@ -173,17 +203,25 @@ pub enum Command {
         placement: Placement,
     },
     /// Remove a non-current entry from the queue by stable identity.
-    Remove { entry: EntryId },
+    Remove {
+        entry: EntryId,
+    },
     /// Move a queued entry to a bounded positional slot.
-    Move { entry: EntryId, to: usize },
-    /// Empty the queue and stop (M10: the frontend's "play X now" replaces
+    Move {
+        entry: EntryId,
+        to: usize,
+    },
+    /// Empty the queue and stop (the frontend's "play X now" replaces
     /// the queue — ClearQueue + Enqueue + Play; the old path's Load did it in
-    /// one op). Amends the M5 set; the UI cannot replace queues without it.
+    /// one op). Amends the set; the UI cannot replace queues without it.
     ClearQueue,
-    /// M18: the output device changed, the system slept/woke, or the stream
+    /// The output device changed, the system slept/woke, or the stream
     /// died. Rebuild the pipeline at the current position; keep the user's
     /// play state (Playing resumes at the anchor, Paused stays paused).
     RebuildOutput,
+    /// Repeat off/all/one. Owned by the engine so auto-advance is right even
+    /// while the UI is closed.
+    SetRepeat(RepeatMode),
 }
 
 /// Why a transition was refused.
@@ -211,13 +249,22 @@ pub fn validate_transition(
     from.validate().map_err(TransitionError::Shape)?;
     to.validate().map_err(TransitionError::Shape)?;
     if to.rev <= from.rev {
-        return Err(TransitionError::RevNotIncreasing { from: from.rev, to: to.rev });
+        return Err(TransitionError::RevNotIncreasing {
+            from: from.rev,
+            to: to.rev,
+        });
     }
     if to.status == from.status {
-        return Err(TransitionError::IllegalStatus { from: from.status, to: to.status });
+        return Err(TransitionError::IllegalStatus {
+            from: from.status,
+            to: to.status,
+        });
     }
     if !to.status.can_follow(from.status) {
-        return Err(TransitionError::IllegalStatus { from: from.status, to: to.status });
+        return Err(TransitionError::IllegalStatus {
+            from: from.status,
+            to: to.status,
+        });
     }
     Ok(())
 }
@@ -257,7 +304,11 @@ mod tests {
         for (from, to) in steps {
             rev += 1;
             let next = state(rev, to, 1234);
-            assert_eq!(validate_transition(&cur, &next), Ok(()), "{from:?} → {to:?}");
+            assert_eq!(
+                validate_transition(&cur, &next),
+                Ok(()),
+                "{from:?} → {to:?}"
+            );
             cur = next;
         }
     }
@@ -279,17 +330,20 @@ mod tests {
     #[test]
     fn illegal_status_edges_are_refused() {
         let cases = [
-            (Status::Idle, Status::Paused),        // nothing is loaded
-            (Status::Idle, Status::Buffering),     // must resolve or play first
-            (Status::Resolving, Status::Paused),   // not started yet
-            (Status::Paused, Status::Buffering),   // resume, don't re-buffer
+            (Status::Idle, Status::Paused),                 // nothing is loaded
+            (Status::Idle, Status::Buffering),              // must resolve or play first
+            (Status::Resolving, Status::Paused),            // not started yet
+            (Status::Paused, Status::Buffering),            // resume, don't re-buffer
             (Status::Error(ErrorKind::Io), Status::Paused), // recover first
         ];
         for (from_s, to_s) in cases {
             let from = state(1, from_s, 0);
             let to = state(2, to_s, 0);
             assert!(
-                matches!(validate_transition(&from, &to), Err(TransitionError::IllegalStatus { .. })),
+                matches!(
+                    validate_transition(&from, &to),
+                    Err(TransitionError::IllegalStatus { .. })
+                ),
                 "expected {from_s:?} → {to_s:?} refused"
             );
         }
@@ -299,7 +353,10 @@ mod tests {
     fn same_status_is_not_a_transition() {
         let a = state(1, Status::Playing, 100);
         let b = state(2, Status::Playing, 200);
-        assert!(matches!(validate_transition(&a, &b), Err(TransitionError::IllegalStatus { .. })));
+        assert!(matches!(
+            validate_transition(&a, &b),
+            Err(TransitionError::IllegalStatus { .. })
+        ));
     }
 
     #[test]
@@ -310,7 +367,9 @@ mod tests {
         let next = state(2, Status::Paused, 0);
         assert!(matches!(
             validate_transition(&playing, &next),
-            Err(TransitionError::Shape(ShapeError::PlayingWithoutRate { rate: 0 }))
+            Err(TransitionError::Shape(ShapeError::PlayingWithoutRate {
+                rate: 0
+            }))
         ));
 
         // Nothing else may carry rate 1.
@@ -328,7 +387,9 @@ mod tests {
         to.anchor.rate = 0;
         assert!(matches!(
             validate_transition(&paused_ok, &to),
-            Err(TransitionError::Shape(ShapeError::PlayingWithoutRate { rate: 0 }))
+            Err(TransitionError::Shape(ShapeError::PlayingWithoutRate {
+                rate: 0
+            }))
         ));
     }
 

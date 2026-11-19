@@ -41,7 +41,7 @@ function json<T>(body: string | null): T | null {
   }
 }
 
-// ---- lrc.red (LrcRed.kt) -----------------------------------------------------------------
+// lrc.red (LrcRed.kt)
 
 const LRC_RED = 'https://lrc.red/';
 const ISRC = /^[A-Z]{2}[A-Z0-9]{3}\d{7}$/;
@@ -115,7 +115,7 @@ export async function lrcRed(q: LyricsQuery, get: SharedGet): Promise<Parsed | n
   return url && url !== known ? fromTtml(await get(url)) : null;
 }
 
-// ---- BiniLyrics (BiniLyrics.kt) ------------------------------------------------------------
+// BiniLyrics (BiniLyrics.kt)
 
 export interface BiniHit {
   isrc?: string;
@@ -137,7 +137,7 @@ export async function bini(q: LyricsQuery, get: SharedGet, hit: BiniHit | null):
   return parsed ? { ...parsed, isrc: found.isrc || null } : null;
 }
 
-// ---- BetterLyrics (BetterLyrics.kt) -----------------------------------------------------------
+// BetterLyrics (BetterLyrics.kt)
 
 async function betterLyricsAt(endpoint: string, q: LyricsQuery): Promise<Parsed | null> {
   const body = await lyricsGet(urlWith(endpoint, { s: q.title, a: q.artist, d: seconds(q.durationMs), al: q.album }));
@@ -146,7 +146,7 @@ async function betterLyricsAt(endpoint: string, q: LyricsQuery): Promise<Parsed 
 export const betterLyrics = (q: LyricsQuery) => betterLyricsAt('https://lyrics-api.boidu.dev/getLyrics', q);
 export const betterLyricsPortato = (q: LyricsQuery) => betterLyricsAt('https://lyrics-api.boidu.dev/qq/getLyrics', q);
 
-// ---- Unison (Unison.kt) -----------------------------------------------------------------------
+// Unison (Unison.kt)
 
 export async function unison(q: LyricsQuery): Promise<Parsed | null> {
   const body = json<{ success?: boolean; data?: { lyrics?: string; format?: string; syncType?: string } }>(
@@ -161,7 +161,7 @@ export async function unison(q: LyricsQuery): Promise<Parsed | null> {
   return fromLines(enhanced.length ? enhanced : parseLrc(text));
 }
 
-// ---- PaxSenix (PaxSenix.kt) ---------------------------------------------------------------------
+// PaxSenix (PaxSenix.kt)
 
 interface Candidate {
   id: string;
@@ -332,7 +332,7 @@ export async function paxSenixMusixmatch(q: LyricsQuery, key: string): Promise<P
   return found ?? paxGeneric(q, key);
 }
 
-// ---- LyricsPlus (LyricsPlus.kt) ------------------------------------------------------------------
+// LyricsPlus (LyricsPlus.kt)
 
 // atomix.one (bad certificate), prjktla.workers.dev (worker deleted) and the
 // two vercel.app deployments (disabled, 402) were dropped on 2026-10-17.
@@ -396,7 +396,7 @@ export async function lyricsPlus(q: LyricsQuery): Promise<Parsed | null> {
   });
 }
 
-// ---- YouTube (YouTubeLyrics.kt) -----------------------------------------------------------------
+// YouTube (YouTubeLyrics.kt)
 
 /** Plain lyrics from the Lyrics tab of the exact playing video. */
 export async function youtubeMusicLyrics(_q: LyricsQuery): Promise<Parsed | null> {
@@ -409,7 +409,7 @@ export async function youtubeCaptions(_q: LyricsQuery): Promise<Parsed | null> {
   return null; // Desktop: no Innertube client wired yet.
 }
 
-// ---- KuGou (KuGou.kt) ---------------------------------------------------------------------------
+// KuGou (KuGou.kt)
 
 const stripParenthetical = (s: string) => s.replace(/[(（].*?[)）]/g, '').trim() || s;
 const KUGOU_STAMPED = /^\[\d{2}:\d{2}\.\d{2,3}\].*/;
@@ -481,7 +481,7 @@ export async function kugou(q: LyricsQuery): Promise<Parsed | null> {
   }
 }
 
-// ---- LRCLIB (LrcLib.kt) ---------------------------------------------------------------------------
+// LRCLIB (LrcLib.kt)
 
 const LRCLIB_NOISE = /\((?:from|feat\.?|official|lyrical|video|audio|remix)[^)]*\)|\[[^\]]*\]|\b(?:official (?:video|audio|music video)|lyrical|full song|4k video)\b/gi;
 const lrclibClean = (s: string) => s.replace(LRCLIB_NOISE, ' ').split(' | ')[0]!.replace(/\s+/g, ' ').trim() || s;
@@ -503,16 +503,21 @@ export async function lrclib(q: LyricsQuery): Promise<Parsed | null> {
   return synced ? fromLines(parseLrc(synced)) : null;
 }
 
-// ---- Musixmatch (Musixmatch.kt) -------------------------------------------------------------------
+// Musixmatch (Musixmatch.kt)
 
 const MXM = 'https://apic.musixmatch.com/ws/1.1';
 const MXM_APP = 'mobile-app-v1.0';
-const MXM_FALLBACK_SECRET = 'f09016176ba43a1cfd1031fbd6b3d26c';
 const mxmGuid = crypto.randomUUID();
 let mxmSecret: string | null = null;
 let mxmToken: string | null = null;
 
-async function musixmatchSecret(): Promise<string> {
+/**
+ * Reads Musixmatch's web-client signing secret from Musixmatch's own public
+ * web bundle at request time. No secret is embedded in Tansen (TSN-2026-16);
+ * when the fetch fails this returns null and the provider degrades gracefully
+ * (the repository falls through to the next lyrics source).
+ */
+async function musixmatchSecret(): Promise<string | null> {
   if (mxmSecret) return mxmSecret;
   const ext = { route: 'extension' as const };
   try {
@@ -521,9 +526,9 @@ async function musixmatchSecret(): Promise<string> {
     const source = script ? await lyricsGet(new URL(script, 'https://www.musixmatch.com/search').toString(), ext) : null;
     const encoded = source?.match(/from\(\s*["']([^"']+)["']\s*\.split/)?.[1];
     const decoded = encoded ? atob([...encoded].reverse().join('')) : '';
-    mxmSecret = decoded.trim() || MXM_FALLBACK_SECRET;
+    mxmSecret = decoded.trim() || null;
   } catch {
-    mxmSecret = MXM_FALLBACK_SECRET;
+    mxmSecret = null;
   }
   return mxmSecret;
 }
@@ -542,6 +547,7 @@ async function mxmSign(url: string, secret: string): Promise<string> {
 async function mxmGet(build: (token: string) => string): Promise<Obj | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const secret = await musixmatchSecret();
+    if (!secret) return null;
     if (!mxmToken) {
       const body = json<{ message?: { body?: { user_token?: string } } }>(
         await lyricsGet(await mxmSign(urlWith(`${MXM}/token.get`, { app_id: MXM_APP, guid: mxmGuid, format: 'json' }), secret), { route: 'extension' }),
@@ -626,7 +632,7 @@ export async function musixmatch(q: LyricsQuery): Promise<Parsed | null> {
   return fromLines(entries.filter((e) => e.text.trim()).map((e) => line(Math.trunc(e.time.total * 1000), e.text.trim())));
 }
 
-// ---- Genius (Genius.kt) ---------------------------------------------------------------------------
+// Genius (Genius.kt)
 
 const GENIUS_NOISE =
   /\s*[([]\s*(?:from|feat\.?|ft\.?|featuring|with|prod\.?|produced by|official|lyrical|video|audio|remix|music video|visualizer|mv|hd|4k|hq|full song)[^)\]]*[)\]]|\s*\b(?:official\s+(?:music\s+)?(?:video|audio)|lyrical(?:\s+video)?|full\s+song|4k\s+video|hd\s+video|music\s+video)\b/gi;

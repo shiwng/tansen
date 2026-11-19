@@ -1,106 +1,130 @@
-import { ArrowDown, ArrowUp, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ArrowDown, ArrowUp, Check, RotateCcw } from 'lucide-react';
+import { useState } from 'react';
+import { Menu, MenuSeparator } from '@/components/Menu';
 import { useLyricsSettings } from '@/lyrics/settings';
 import { sourceById } from '@/lyrics/sources';
 
-const section = 'mx-1 mt-[18px] mb-1.5 type-subhead-emphasized uppercase text-secondary';
-const note = 'mx-1 mb-2 type-callout text-secondary';
-const group = 'overflow-hidden rounded-[10px] bg-quinary';
-const row = 'flex items-center gap-2 py-2 pr-2.5 pl-3';
-const toggle = 'flex min-w-0 flex-1 cursor-pointer items-center gap-2.5';
-const checkbox = 'size-4 accent-key';
-const moveButton = 'grid size-[26px] place-items-center rounded-[6px] text-secondary enabled:hover:bg-quaternary disabled:opacity-30';
+const row =
+  'flex min-h-6 w-full items-center gap-2 rounded-[5px] px-2 py-1 text-start outline-none hover:bg-quinary focus-visible:bg-quinary';
+const moveButton =
+  'grid size-[18px] flex-none place-items-center rounded-[4px] text-tertiary enabled:hover:bg-quaternary enabled:hover:text-primary focus-visible:bg-quaternary disabled:opacity-30';
+const checkSlot = 'inline-grid w-3.5 flex-none place-items-center text-primary';
 
 /**
- * Lyric providers, as the desktop's settings have them: switch each on or
- * off, put them in order, prefer syllable timing, and the PaxSenix key. (The
- * web's extension-access section is gone: the desktop proxy reaches every
- * allowlisted host directly.)
+ * Lyric providers in the same glass popover as Apple's contextual menus:
+ * switch each source on or off, put them in order, prefer syllable timing,
+ * and the PaxSenix key. Everything persists on the first change
+ * (lyrics/settings.ts).
  */
-export function LyricsSettings({ onClose }: { onClose: () => void }) {
+export function LyricsSettings({ anchor, onClose }: { anchor: HTMLElement; onClose: () => void }) {
   const { order, disabled, preferSyllables, paxsenixKey, setEnabled, move, setPreferSyllables, setPaxsenixKey, reset } =
     useLyricsSettings();
   const [key, setKey] = useState(paxsenixKey);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return createPortal(
-    // A modal (report §8): scrim, 14px card radius, fade with a slight zoom, 30px close circle.
-    <div className="fixed inset-0 z-(--z-modal) grid animate-fade place-items-center bg-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div
-        className="flex max-h-[min(720px,calc(100vh-48px))] w-[min(520px,calc(100vw-32px))] animate-zoom flex-col rounded-[14px] bg-page shadow-glass"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Lyric settings"
-      >
-        <header className="flex items-center justify-between px-5 pt-[18px] pb-2">
-          <h2 className="type-title-2-emphasized">Lyrics</h2>
-          <button className="grid size-[30px] place-items-center rounded-full bg-quaternary text-secondary" aria-label="Close" onClick={onClose}>
-            <X size={16} />
-          </button>
-        </header>
-
-        <div className="overflow-y-auto px-5 pb-5">
-          <h3 className={section}>Providers</h3>
-          <p className={note}>Asked all at once; the first in this order with word-timed lyrics wins.</p>
-          <ol className={group}>
-            {order.map((id, index) => {
-              const source = sourceById(id)!;
-              const on = !disabled.includes(id);
-              return (
-                <li key={id} className={`${row} [&+&]:border-t-[0.5px] [&+&]:border-t-divider`}>
-                  <label className={toggle}>
-                    <input type="checkbox" className={checkbox} checked={on} onChange={(e) => setEnabled(id, e.currentTarget.checked)} />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="type-body-emphasized">{source.label}</span>
-                      <span className="truncate type-callout text-secondary">{source.detail}</span>
-                    </span>
-                  </label>
-                  <span className="flex gap-0.5">
-                    <button className={moveButton} aria-label={`Move ${source.label} up`} disabled={index === 0} onClick={() => move(id, -1)}>
-                      <ArrowUp size={14} />
-                    </button>
-                    <button className={moveButton} aria-label={`Move ${source.label} down`} disabled={index === order.length - 1} onClick={() => move(id, 1)}>
-                      <ArrowDown size={14} />
-                    </button>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-
-          <label className={`${group} ${toggle} py-2 pr-2.5 pl-3`}>
-            <input type="checkbox" className={checkbox} checked={preferSyllables} onChange={(e) => setPreferSyllables(e.currentTarget.checked)} />
-            <span className="flex min-w-0 flex-col">
-              <span className="type-body-emphasized">Prefer syllable timing</span>
-              <span className="truncate type-callout text-secondary">Keep looking past a line-timed answer for a word-timed one.</span>
-            </span>
-          </label>
-
-          <p className={note}>All providers are reached through the app's own network layer.</p>
-
-          <h3 className={section}>PaxSenix key</h3>
-          <input
-            className="w-full rounded-[10px] border-0 bg-quinary px-3 py-2 type-body text-primary"
-            type="password"
-            placeholder="For PaxSenix: Spotify and Musixmatch"
-            value={key}
-            onChange={(e) => setKey(e.currentTarget.value)}
-            onBlur={() => setPaxsenixKey(key)}
-            autoComplete="off"
-          />
-
-          <button className="mt-[18px] type-callout-emphasized text-key" onClick={reset}>
-            Restore Defaults
-          </button>
-        </div>
+  return (
+    <Menu anchor={anchor} placement="below-end" width={280} maxHeight={420} onClose={onClose} label="Lyric settings">
+      <div role="group" aria-label="Lyric providers">
+        {order.map((id, index) => {
+          const source = sourceById(id)!;
+          const on = !disabled.includes(id);
+          return (
+            <div
+              key={id}
+              role="menuitemcheckbox"
+              aria-checked={on}
+              aria-label={`${source.label}: ${on ? 'enabled' : 'disabled'}`}
+              title={source.detail}
+              tabIndex={0}
+              className={row}
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest('button')) return;
+                setEnabled(id, !on);
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === ' ' || event.key === 'Enter') {
+                  event.preventDefault();
+                  setEnabled(id, !on);
+                }
+              }}
+            >
+              <span className={checkSlot}>{on && <Check size={13} strokeWidth={2.8} />}</span>
+              <span className="min-w-0 flex-1 truncate type-body text-primary">{source.label}</span>
+              <span className="flex flex-none gap-0.5">
+                <button
+                  type="button"
+                  className={moveButton}
+                  aria-label={`Move ${source.label} up`}
+                  disabled={index === 0}
+                  onClick={() => move(id, -1)}
+                >
+                  <ArrowUp size={11} />
+                </button>
+                <button
+                  type="button"
+                  className={moveButton}
+                  aria-label={`Move ${source.label} down`}
+                  disabled={index === order.length - 1}
+                  onClick={() => move(id, 1)}
+                >
+                  <ArrowDown size={11} />
+                </button>
+              </span>
+            </div>
+          );
+        })}
       </div>
-    </div>,
-    document.body,
+
+      <MenuSeparator />
+      <div
+        role="menuitemcheckbox"
+        aria-checked={preferSyllables}
+        title="Keep looking past a line-timed answer for a word-timed one."
+        tabIndex={0}
+        className={row}
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest('button, input')) return;
+          setPreferSyllables(!preferSyllables);
+        }}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key === ' ' || event.key === 'Enter') {
+            event.preventDefault();
+            setPreferSyllables(!preferSyllables);
+          }
+        }}
+      >
+        <span className={checkSlot}>{preferSyllables && <Check size={13} strokeWidth={2.8} />}</span>
+        <span className="min-w-0 flex-1 truncate type-body text-primary">Prefer syllable timing</span>
+      </div>
+
+      <MenuSeparator />
+      <label className="flex items-center gap-2 px-2 pt-0.5 pb-1 type-body text-primary">
+        <span className="flex-1 truncate">PaxSenix key</span>
+        <input
+          className="w-[130px] rounded-[5px] border-0 bg-quinary px-2 py-0.5 type-callout text-primary outline-none focus-visible:ring-2 focus-visible:ring-key"
+          type="password"
+          placeholder="Spotify / Musixmatch"
+          value={key}
+          onChange={(event) => setKey(event.currentTarget.value)}
+          onBlur={() => setPaxsenixKey(key)}
+          autoComplete="off"
+          aria-label="PaxSenix key"
+        />
+      </label>
+
+      <MenuSeparator />
+      <button
+        type="button"
+        role="menuitem"
+        className={`${row} text-secondary`}
+        onClick={reset}
+      >
+        <span className="inline-grid w-3.5 flex-none place-items-center">
+          <RotateCcw size={12} />
+        </span>
+        Restore Defaults
+      </button>
+    </Menu>
   );
 }

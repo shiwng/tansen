@@ -1,7 +1,7 @@
-# cargo-deny configuration (F0 S13-resolution stage). Only the advisories
-# check is meaningful for this repo's audit workflow; every ignored advisory
-# is an informational "unmaintained" warning on a transitive macro/UI-stack
-# crate, not a vulnerability (cargo audit reports 0 vulnerabilities).
+# cargo-deny configuration. Advisories gate the audit workflow; licenses
+# validate the accepted dependency set. Every ignored advisory is an
+# informational "unmaintained" warning on a transitive macro/UI-stack crate,
+# not a vulnerability.
 
 [advisories]
 version = 2
@@ -12,8 +12,29 @@ ignore = [
     # proc-macro-error v1.0.4 ← macro stacks of the UI/gtk dependencies.
     # Upstream migrations (proc-macro-error2) land in the dependents.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; transitive, informational only." },
-    # glib 0.18.5 ← gtk3 stack (linux-targeted transitive). Unsoundness
-    # advisory on an iterator impl not reachable from the shipped macOS
-    # paths; fixed by an upstream glib bump.
-    { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter unsoundness; transitive gtk stack, upstream bump required." },
+]
+
+[licenses]
+version = 2
+# Explicit allowlist for every license expression in the dependency graph.
+# Permissive terms plus the workspace's own GPL-3.0-or-later; MPL-2.0 and
+# LGPL-2.1-or-later appear only in transitive crates.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
 ]

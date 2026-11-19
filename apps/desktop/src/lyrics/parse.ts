@@ -17,7 +17,7 @@ import {
  * ProviderLyrics.kt.
  */
 
-// ---- EnhancedLrc.decodeEntities -------------------------------------------------------------
+// EnhancedLrc.decodeEntities
 
 /** SimpMusic and friends serve HTML-escaped text; "&#x27;" would otherwise be sung literally. */
 /** fromCodePoint throws past U+10FFFF, which would take the whole lookup down: keep such an entity as written. */
@@ -36,7 +36,7 @@ export function decodeEntities(text: string): string {
     .replace(/&amp;/g, '&');
 }
 
-// ---- TTML (TtmlLyrics.kt) ---------------------------------------------------------------------
+// TTML (TtmlLyrics.kt)
 
 const SKIPPED_ROLES = new Set(['x-translation', 'x-roman']);
 const BACKGROUND_ROLE = 'x-bg';
@@ -177,7 +177,7 @@ export function parseTtml(ttml: string): LyricLine[] {
   }
 }
 
-// ---- Enhanced (A2) LRC (EnhancedLrc.kt) -----------------------------------------------------
+// Enhanced (A2) LRC (EnhancedLrc.kt)
 
 const A2_LINE = /^\[(\d{1,3}):(\d{2})[.:](\d{2,3})\](.*)$/;
 const A2_WORD = /<(\d{1,3}):(\d{2})[.:](\d{2,3})>([^<]*)/g;
@@ -221,7 +221,7 @@ export function parseEnhancedLrc(lrc: string): LyricLine[] {
   return withInstrumentalGaps(lines);
 }
 
-// ---- Plain LRC (LrcLib.parseLrc) --------------------------------------------------------------
+// Plain LRC (LrcLib.parseLrc)
 
 const LRC_STAMP = /\[(\d{1,2}):(\d{2})[.:](\d{2,3})\]/;
 const WORD_STAMP = /<(\d{1,3}):(\d{2})[.:](\d{2,3})>/g;
@@ -275,7 +275,7 @@ export function parseLrc(lrc: string): LyricLine[] {
   return first && first.text && first.timeMs >= MIN_GAP_MS ? [line(0, ''), ...kept] : kept;
 }
 
-// ---- QQ/QRC and NetEase YRC (KaraokeLrc) ------------------------------------------------------
+// QQ/QRC and NetEase YRC (KaraokeLrc)
 
 const KARAOKE_LINE = /^\[(\d{1,8}),(\d{1,8})\](.*)$/;
 const PREFIX_WORD = /\((\d{1,8}),(\d{1,8})(?:,\d{1,8})?\)([^()]*)/g;
@@ -329,7 +329,7 @@ export function parseKaraoke(raw: string): LyricLine[] {
   return withInstrumentalGaps(rows.sort((a, b) => a.timeMs - b.timeMs));
 }
 
-// ---- Whatever a provider sent (ProviderLyrics.kt) ------------------------------------------------
+// Whatever a provider sent (ProviderLyrics.kt)
 
 const CONTENT_KEYS = [
   'ttml', 'ttmlContent', 'lyrics', 'lrc', 'content', 'text', 'plainLyrics', 'syncedLyrics',

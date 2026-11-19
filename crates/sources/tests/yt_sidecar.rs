@@ -11,29 +11,39 @@
 //! cargo test -p sources --test yt_sidecar -- --ignored --nocapture
 //! ```
 
-use sources::yt::{fetch_prefix, YtMusicSource};
+use sources::yt::YtMusicSource;
 use sources::{MusicSource, SourceKind, StreamRequest, TrackKey};
 use std::path::PathBuf;
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "needs the built sidecar jar + network access to YouTube"]
 async fn sidecar_search_stream_decode_round_trip() {
-    let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../BitChord/sidecar/build/libs/sidecar-all.jar");
+    let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../BitChord/sidecar/build/libs/sidecar-all.jar");
     if !jar.is_file() {
-        panic!("sidecar jar missing at {} — build it with :sidecar:fatJar", jar.display());
+        panic!(
+            "sidecar jar missing at {} — build it with :sidecar:fatJar",
+            jar.display()
+        );
     }
 
     // Launch supervises its own process; dropping the source kills the JVM.
     // Java: JAVA_HOME if the environment carries one, else this dev machine's
     // JDK 17 (the macOS /usr/bin/java stub exits 1 and is correctly refused).
-    let java = std::env::var("JAVA_HOME").map(|h| format!("{h}/bin/java")).unwrap_or_else(|_| {
-        "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java".to_string()
-    });
-    let source = YtMusicSource::launch(Some(jar), Some(java)).expect("sidecar launches and reports healthy");
+    let java = std::env::var("JAVA_HOME")
+        .map(|h| format!("{h}/bin/java"))
+        .unwrap_or_else(|_| {
+            "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java".to_string()
+        });
+    let source =
+        YtMusicSource::launch(Some(jar), Some(java)).expect("sidecar launches and reports healthy");
     assert!(source.version().is_some());
 
     // Search a recording that is certainly on YouTube Music.
-    let rows = source.search("Tom Sawyer Rush", 10).await.expect("search succeeds");
+    let rows = source
+        .search("Tom Sawyer Rush", 10)
+        .await
+        .expect("search succeeds");
     assert!(!rows.is_empty(), "search returned rows");
     let track = &rows[0];
     assert!(!track.track_id.is_empty());
@@ -41,13 +51,27 @@ async fn sidecar_search_stream_decode_round_trip() {
 
     // Resolve a progressive AAC stream through the prefer=aac gate.
     let stream = source
-        .stream(&TrackKey { source: SourceKind::YouTube, id: track.track_id.clone() }, &StreamRequest::Best)
+        .stream(
+            &TrackKey {
+                source: SourceKind::YouTube,
+                id: track.track_id.clone(),
+            },
+            &StreamRequest::Best,
+        )
         .await
         .expect("stream resolves")
         .expect("stream exists for the search hit");
     assert_eq!(stream.format.codec, "AAC");
-    assert!(stream.url.contains("googlevideo"), "a googlevideo URL: {}", stream.url);
-    println!("resolved: itag-format {:?} at {} kbps", stream.format.kbps, stream.format.kbps.unwrap_or(0));
+    assert!(
+        stream.url.contains("googlevideo"),
+        "a googlevideo URL: {}",
+        stream.url
+    );
+    println!(
+        "resolved: itag-format {:?} at {} kbps",
+        stream.format.kbps,
+        stream.format.kbps.unwrap_or(0)
+    );
 
     // Download the whole file (4:37 @ 131 kbps ≈ 4.5 MB; MP4 demuxing wants
     // the real length) and decode it. The probe decodes real samples with
@@ -70,5 +94,8 @@ async fn sidecar_search_stream_decode_round_trip() {
     })
     .expect("5 seconds decode from ranged HTTP");
     println!("decoded RMS (ranged HTTP): {rms:.5}");
-    assert!(rms > 0.005, "decoded audio is effectively silence (RMS {rms})");
+    assert!(
+        rms > 0.005,
+        "decoded audio is effectively silence (RMS {rms})"
+    );
 }

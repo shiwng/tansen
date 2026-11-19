@@ -7,7 +7,7 @@ import { sourceFor } from '@/lib/rows';
 import type { Track } from '@/data/music/types';
 
 /**
- * S10 discovery: typeahead rows from the sidecar (unauthenticated) plus the
+ * Discovery: typeahead rows from the sidecar (unauthenticated) plus the
  * browse cards it returns. Reuses the search page's remote-row mapping and
  * TrackList; no redesign. Remote album/artist/playlist pages do not exist —
  * the cards render as plain chips (their commands exist for later wiring).

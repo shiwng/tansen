@@ -1,4 +1,4 @@
-//! M14 supervisor integration (`#[ignore]`): needs the built sidecar jar and
+//! Supervisor integration (`#[ignore]`): needs the built sidecar jar and
 //! a local Java 17, but nothing beyond loopback — the health endpoint is the
 //! restart probe. Run with:
 //!
@@ -13,7 +13,9 @@ use std::time::Duration;
 fn java() -> String {
     std::env::var("JAVA_HOME")
         .map(|h| format!("{h}/bin/java"))
-        .unwrap_or_else(|_| "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java".to_string())
+        .unwrap_or_else(|_| {
+            "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java".to_string()
+        })
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -53,4 +55,3 @@ fn kill9(pid: u32) {
         .expect("kill runs");
     assert!(status.success(), "kill -9 {pid} failed");
 }
-

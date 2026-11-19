@@ -31,7 +31,7 @@ pub struct AddonManifest {
     #[serde(default)]
     pub name: Option<String>,
     pub resources: Vec<String>,
-    /// F3 contract: capabilities mirror `resources` for new-style addons;
+    /// Contract: capabilities mirror `resources` for new-style addons;
     /// health accepts either spelling.
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -134,25 +134,35 @@ pub struct AddonSource {
 
 /// Cap on every addon response body (manifest, search, stream).
 const BODY_MAX_BYTES: u64 = 4 * 1024 * 1024;
-/// Id and query length caps (F3 contract).
+/// Id and query length caps.
 pub const ADDON_ID_MAX_LEN: usize = 128;
 pub const ADDON_QUERY_MAX_LEN: usize = 200;
 /// The only request headers an addon may attach to a stream URL.
 const HEADER_ALLOWLIST: [&str; 3] = ["user-agent", "referer", "authorization"];
 
-/// Base-URL policy (F3): https default; http only with the per-addon
+/// Base-URL policy: https default; http only with the per-addon
 /// opt-in (and, as everywhere, no userinfo in the URL).
 fn validate_base(base: &str, allow_http: bool) -> Result<url::Url, SourceError> {
     let url = url::Url::parse(base)
         .map_err(|e| SourceError::Permanent(format!("bad addon base url: {e}")))?;
     if url.username() != "" || url.password().is_some() {
-        return Err(SourceError::Permanent("addon base url must not carry userinfo".into()));
+        return Err(SourceError::Permanent(
+            "addon base url must not carry userinfo".into(),
+        ));
     }
     match url.scheme() {
         "https" => {}
         "http" if allow_http => {}
-        "http" => return Err(SourceError::Permanent("http addon requires the per-addon opt-in".into())),
-        other => return Err(SourceError::Permanent(format!("addon scheme not allowed: {other}"))),
+        "http" => {
+            return Err(SourceError::Permanent(
+                "http addon requires the per-addon opt-in".into(),
+            ))
+        }
+        other => {
+            return Err(SourceError::Permanent(format!(
+                "addon scheme not allowed: {other}"
+            )))
+        }
     }
     if url.host_str().is_none() {
         return Err(SourceError::Permanent("addon base url has no host".into()));
@@ -161,7 +171,7 @@ fn validate_base(base: &str, allow_http: bool) -> Result<url::Url, SourceError> 
 }
 
 impl AddonSource {
-    /// F3: the base URL is validated at construction (Result, like the
+    /// The base URL is validated at construction (Result, like the
     /// Subsonic source); redirects never leave the base host; every
     /// response body is size-capped.
     pub fn new(
@@ -241,14 +251,16 @@ impl AddonSource {
         &self.base
     }
 
-    /// F3: the addon-returned stream URL is validated before use — http(s)
+    /// The addon-returned stream URL is validated before use — http(s)
     /// only, no userinfo, and no loopback/link-local/private host unless
     /// the addon's own base host is local/private.
     fn validate_stream_url(&self, url: &str) -> Result<(), SourceError> {
         let parsed = url::Url::parse(url)
             .map_err(|e| SourceError::Permanent(format!("addon stream url: {e}")))?;
         if parsed.username() != "" || parsed.password().is_some() {
-            return Err(SourceError::Permanent("addon stream url must not carry userinfo".into()));
+            return Err(SourceError::Permanent(
+                "addon stream url must not carry userinfo".into(),
+            ));
         }
         if !matches!(parsed.scheme(), "https" | "http") {
             return Err(SourceError::Permanent(format!(
@@ -259,20 +271,24 @@ impl AddonSource {
         // Locality on both sides is judged from the URL's parsed host —
         // url exposes Ipv6 hosts pre-parsed, so bracketed literals like
         // "[::1]" classify correctly (the string re-parse never did).
-        let base_local = url::Url::parse(self.base())
-            .map(|base| netguard::url_host_is_local(&base))
-            .unwrap_or(false);
+        let base = url::Url::parse(self.base())
+            .map_err(|e| SourceError::Permanent(format!("bad addon base url: {e}")))?;
+        let base_local = netguard::url_host_is_local(&base);
         if !base_local && netguard::url_host_is_local(&parsed) {
-            return Err(SourceError::Permanent("addon stream host is local/private but the addon is not".into()));
+            return Err(SourceError::Permanent(
+                "addon stream host is local/private but the addon is not".into(),
+            ));
+        }
+        // An https addon must not downgrade its media to plaintext: the
+        // stream may carry an allowlisted Authorization header, and an active
+        // network attacker could read or replace the audio. Local addons (the
+        // only http base allowed) keep serving http streams.
+        if base.scheme() == "https" && parsed.scheme() != "https" {
+            return Err(SourceError::Permanent(
+                "addon stream would downgrade https".into(),
+            ));
         }
         Ok(())
-    }
-
-    fn base_url_host(&self) -> String {
-        url::Url::parse(self.base())
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_string))
-            .unwrap_or_default()
     }
 
     /// Cached GET: one request per key per TTL, however many callers ask.
@@ -286,7 +302,10 @@ impl AddonSource {
             }
         }
         let body = self.get_uncached(url).await?;
-        self.cache.lock().unwrap().insert(key.to_string(), (Instant::now(), body.clone()));
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), (Instant::now(), body.clone()));
         Ok(body)
     }
 
@@ -301,7 +320,9 @@ impl AddonSource {
             .get(url)
             .send()
             .await
-            .map_err(|e| SourceError::Network(e.to_string()))?;
+            // Addon URLs may carry a per-addon key in the path or query;
+            // reqwest's Display appends the whole URL to transport errors.
+            .map_err(|e| SourceError::Network(e.without_url().to_string()))?;
         match response.status().as_u16() {
             200..=299 => {
                 // Size-capped body: Content-Length refused upfront, chunked
@@ -323,21 +344,31 @@ impl AddonSource {
                         return Err(SourceError::Permanent("addon response too large".into()));
                     }
                 }
-                String::from_utf8(body).map_err(|_| SourceError::Protocol("addon response not utf-8".into()))
+                String::from_utf8(body)
+                    .map_err(|_| SourceError::Protocol("addon response not utf-8".into()))
             }
             429 => {
                 *self.quiet_until.lock().unwrap() = Some(Instant::now() + QUIET_AFTER_429);
                 Err(SourceError::Network("429 rate limited".into()))
             }
-            code => Err(SourceError::Protocol(format!("HTTP {code} from {url}"))),
+            // The URL is deliberately omitted: addon endpoints can embed a
+            // configuration key in the path or query string.
+            code => Err(SourceError::Protocol(format!(
+                "HTTP {code} from addon endpoint"
+            ))),
         }
     }
 
     async fn manifest(&self) -> Result<AddonManifest, SourceError> {
         let body = self
-            .get_cached("manifest", &format!("{}/manifest.json", self.base()), MANIFEST_TTL)
+            .get_cached(
+                "manifest",
+                &format!("{}/manifest.json", self.base()),
+                MANIFEST_TTL,
+            )
             .await?;
-        serde_json::from_str(&body).map_err(|e| SourceError::Protocol(format!("manifest.json: {e}")))
+        serde_json::from_str(&body)
+            .map_err(|e| SourceError::Protocol(format!("manifest.json: {e}")))
     }
 
     /// Manifest fetch for registration-time validation (no health wrap).
@@ -346,10 +377,12 @@ impl AddonSource {
     }
 
     fn format_of(track: &AddonTrack) -> StreamFormat {
-        let is_lossless = track
-            .format
-            .as_deref()
-            .map(|f| matches!(f.to_ascii_uppercase().as_str(), "FLAC" | "ALAC" | "WAV" | "APE" | "WV" | "AIFF"));
+        let is_lossless = track.format.as_deref().map(|f| {
+            matches!(
+                f.to_ascii_uppercase().as_str(),
+                "FLAC" | "ALAC" | "WAV" | "APE" | "WV" | "AIFF"
+            )
+        });
         StreamFormat {
             codec: track
                 .format
@@ -385,12 +418,14 @@ impl AddonSource {
 
     /// The tier an outgoing stream request maps to on the wire, when the
     /// source grades its rows (upstream: `HIGH` for Best, `LOSSLESS` for
-    /// lossless, a kbps ceiling otherwise).
+    /// lossless, `LOW` under a small kbps ceiling). The wire has three
+    /// tiers, so a Medium cap rides as HIGH — no invented protocol values.
     fn quality_param(request: &StreamRequest) -> &'static str {
         match request {
             StreamRequest::Lossless => "LOSSLESS",
             StreamRequest::Best => "HIGH",
-            StreamRequest::Capped { .. } => "LOW",
+            StreamRequest::Capped { max_kbps } if *max_kbps <= 96 => "LOW",
+            StreamRequest::Capped { .. } => "HIGH",
         }
     }
 }
@@ -420,11 +455,15 @@ impl MusicSource for AddonSource {
                         reason: "manifest does not declare search and stream".into(),
                     })
                 } else {
-                    Ok(SourceHealth::Ok { detail: Some(m.name.unwrap_or(m.id)) })
+                    Ok(SourceHealth::Ok {
+                        detail: Some(m.name.unwrap_or(m.id)),
+                    })
                 }
             }
             Err(SourceError::Network(e)) => Ok(SourceHealth::Unreachable { reason: e }),
-            Err(e) => Ok(SourceHealth::Rejected { reason: e.to_string() }),
+            Err(e) => Ok(SourceHealth::Rejected {
+                reason: e.to_string(),
+            }),
         }
     }
 
@@ -440,13 +479,24 @@ impl MusicSource for AddonSource {
             urlencoding_lite(query),
             limit
         );
-        let body = self.get_cached(&format!("search:{query}:{limit}"), &url, SEARCH_TTL).await?;
-        let parsed: AddonSearchResponse =
-            serde_json::from_str(&body).map_err(|e| SourceError::Protocol(format!("search: {e}")))?;
-        Ok(parsed.tracks.into_iter().take(limit).map(|t| self.track_of(t)).collect())
+        let body = self
+            .get_cached(&format!("search:{query}:{limit}"), &url, SEARCH_TTL)
+            .await?;
+        let parsed: AddonSearchResponse = serde_json::from_str(&body)
+            .map_err(|e| SourceError::Protocol(format!("search: {e}")))?;
+        Ok(parsed
+            .tracks
+            .into_iter()
+            .take(limit)
+            .map(|t| self.track_of(t))
+            .collect())
     }
 
-    async fn stream(&self, key: &TrackKey, request: &StreamRequest) -> Result<Option<SourceStream>, SourceError> {
+    async fn stream(
+        &self,
+        key: &TrackKey,
+        request: &StreamRequest,
+    ) -> Result<Option<SourceStream>, SourceError> {
         let track_id = &key.id;
         if track_id.is_empty() || track_id.len() > ADDON_ID_MAX_LEN {
             return Err(SourceError::Permanent(format!(
@@ -455,9 +505,11 @@ impl MusicSource for AddonSource {
         }
         let mut url = format!("{}/stream/{}", self.base(), urlencoding_lite(track_id));
         url.push_str(&format!("?quality={}", Self::quality_param(request)));
-        let body = self.get_cached(&format!("stream:{track_id}:{url}"), &url, STREAM_TTL).await?;
-        let parsed: AddonStream =
-            serde_json::from_str(&body).map_err(|e| SourceError::Protocol(format!("stream: {e}")))?;
+        let body = self
+            .get_cached(&format!("stream:{track_id}:{url}"), &url, STREAM_TTL)
+            .await?;
+        let parsed: AddonStream = serde_json::from_str(&body)
+            .map_err(|e| SourceError::Protocol(format!("stream: {e}")))?;
         // In-band error first: the addon says so.
         if let Some(err) = &parsed.error {
             return Err(SourceError::Permanent(format!("addon: {err}")));
@@ -474,7 +526,7 @@ impl MusicSource for AddonSource {
             }
             _ => {}
         }
-        // The returned URL is validated against the F3 policy before use.
+        // The returned URL is validated against the policy before use.
         let url = parsed.url.ok_or_else(|| {
             SourceError::Permanent("addon stream answer has neither url nor error".into())
         })?;
@@ -497,11 +549,15 @@ impl MusicSource for AddonSource {
                     .collect()
             })
             .unwrap_or_default();
-        let container = parsed.container.as_deref().map(|c| match c.to_ascii_lowercase().as_str() {
-            "mp4" | "m4a" => "mp4",
-            "webm" => "webm",
-            _ => c,
-        });
+        let container =
+            parsed
+                .container
+                .as_deref()
+                .map(|c| match c.to_ascii_lowercase().as_str() {
+                    "mp4" | "m4a" => "mp4",
+                    "webm" => "webm",
+                    _ => c,
+                });
         Ok(Some(SourceStream {
             url,
             format: StreamFormat {
@@ -522,7 +578,7 @@ impl MusicSource for AddonSource {
             // The addon protocol carries no MIME or expiry; both stay unknown.
             mime: None,
             expiry_ms: None,
-            container: container.map(|c| crate::Container::Progressive),
+            container: container.map(|_c| crate::Container::Progressive),
         }))
     }
 }
@@ -533,7 +589,9 @@ fn urlencoding_lite(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -549,10 +607,22 @@ mod url_policy_tests {
     fn base_url_policy() {
         assert!(validate_base("https://addons.example", false).is_ok());
         assert!(validate_base("https://addons.example", true).is_ok());
-        assert!(validate_base("http://addons.example", false).is_err(), "http without opt-in");
-        assert!(validate_base("http://addons.example", true).is_ok(), "opt-in allows http");
-        assert!(validate_base("https://u:p@addons.example", true).is_err(), "userinfo rejected");
-        assert!(validate_base("ftp://addons.example", true).is_err(), "scheme allowlist");
+        assert!(
+            validate_base("http://addons.example", false).is_err(),
+            "http without opt-in"
+        );
+        assert!(
+            validate_base("http://addons.example", true).is_ok(),
+            "opt-in allows http"
+        );
+        assert!(
+            validate_base("https://u:p@addons.example", true).is_err(),
+            "userinfo rejected"
+        );
+        assert!(
+            validate_base("ftp://addons.example", true).is_err(),
+            "scheme allowlist"
+        );
         assert!(validate_base("not a url", true).is_err());
     }
 
@@ -560,19 +630,50 @@ mod url_policy_tests {
     fn stream_url_policy_rejects_private_hosts_unless_base_is_local() {
         // A public addon may not pivot to loopback/private/link-local.
         let public = AddonSource::new("p", "P", "https://addons.example", false).unwrap();
-        assert!(public.validate_stream_url("https://cdn.example/t.flac").is_ok());
-        assert!(public.validate_stream_url("http://127.0.0.1:9000/x").is_err(), "loopback refused");
-        assert!(public.validate_stream_url("http://10.0.0.5/x").is_err(), "private refused");
-        assert!(public.validate_stream_url("http://169.254.1.1/x").is_err(), "link-local refused");
-        assert!(public.validate_stream_url("https://u:p@cdn.example/x").is_err(), "userinfo refused");
-        assert!(public.validate_stream_url("file:///etc/passwd").is_err(), "scheme refused");
+        assert!(public
+            .validate_stream_url("https://cdn.example/t.flac")
+            .is_ok());
+        assert!(
+            public
+                .validate_stream_url("http://127.0.0.1:9000/x")
+                .is_err(),
+            "loopback refused"
+        );
+        assert!(
+            public.validate_stream_url("http://10.0.0.5/x").is_err(),
+            "private refused"
+        );
+        assert!(
+            public.validate_stream_url("http://169.254.1.1/x").is_err(),
+            "link-local refused"
+        );
+        assert!(
+            public
+                .validate_stream_url("https://u:p@cdn.example/x")
+                .is_err(),
+            "userinfo refused"
+        );
+        assert!(
+            public.validate_stream_url("file:///etc/passwd").is_err(),
+            "scheme refused"
+        );
+        // An https addon may not downgrade media (and its Authorization
+        // header) to plaintext.
+        assert!(
+            public
+                .validate_stream_url("http://cdn.example/t.flac")
+                .is_err(),
+            "https downgrade refused"
+        );
         // A local addon may serve local stream URLs (same trust zone).
         let local = AddonSource::new("l", "L", "http://127.0.0.1:9000", true).unwrap();
         assert!(local.validate_stream_url("http://127.0.0.1:9000/x").is_ok());
-        assert!(local.validate_stream_url("https://cdn.example/t.flac").is_ok());
+        assert!(local
+            .validate_stream_url("https://cdn.example/t.flac")
+            .is_ok());
     }
 
-    /// Regression (audit run-1: sources.addon.host_is_local
+    /// Regression (sources.addon.host_is_local
     /// .ipv6-bracketed-hoststr-and-0.0.0.0-unclassified): the old
     /// classifier re-parsed host_str(), whose bracketed IPv6 serialization
     /// never parses as IpAddr — every IPv6 URL host (loopback ::1
@@ -589,9 +690,14 @@ mod url_policy_tests {
             "http://[::ffff:10.0.0.5]:9000/x",
             "http://0.0.0.0:9000/x",
         ] {
-            assert!(public.validate_stream_url(url).is_err(), "{url} must be refused");
+            assert!(
+                public.validate_stream_url(url).is_err(),
+                "{url} must be refused"
+            );
         }
-        // Public IPv6 stream URLs keep working.
-        assert!(public.validate_stream_url("http://[2001:4860:4860::8888]/x").is_ok());
+        // Public IPv6 stream URLs keep working (https, matching the base).
+        assert!(public
+            .validate_stream_url("https://[2001:4860:4860::8888]/x")
+            .is_ok());
     }
 }
