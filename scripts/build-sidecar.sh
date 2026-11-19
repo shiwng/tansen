@@ -43,14 +43,21 @@ else
     exit 1
   fi
   current="$(git -C "$UP" rev-parse HEAD)"
-  target="$(git -C "$UP" rev-parse "$REF^{commit}" 2>/dev/null || echo "")"
+  # --verify --quiet: plain rev-parse echoes the unresolvable argument to
+  # stdout, which made $target the literal string "v1.8.1^{commit}" on CI and
+  # skipped the fetch (GitHub runners: runs 44619069604, 44619714960,
+  # 44620207198). With --verify, failure yields an empty string.
+  target="$(git -C "$UP" rev-parse --verify --quiet "$REF^{commit}" 2>/dev/null || true)"
   if [ -z "$target" ]; then
     git -C "$UP" fetch --depth 1 origin tag "$REF"
-    target="$(git -C "$UP" rev-parse "$REF^{commit}")"
+    target="$(git -C "$UP" rev-parse --verify --quiet "$REF^{commit}")"
   fi
   if [ "$current" != "$target" ]; then
     echo "checking out $REF in $UP (from $current)"
-    git -C "$UP" checkout --quiet "$REF"
+    # Check out the resolved commit, not the tag name: the SHA is always a
+    # valid pathspec, and the provenance gate below still pins HEAD to
+    # BITCHORD_SHA, so this stays safe.
+    git -C "$UP" checkout --quiet "$target"
   fi
 fi
 
