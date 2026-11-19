@@ -1169,9 +1169,19 @@ function AboutSection() {
   return (
     <section>
       <h2 className="mb-3 type-title-2-emphasized">{t('settings.about')}</h2>
-      <div className="flex items-baseline gap-3 rounded-[10px] bg-quinary px-3 py-2.5">
-        <span className="type-body">Tansen</span>
-        <span className="type-callout text-secondary">{version || '…'}</span>
+      <div className="rounded-[10px] bg-quinary px-3 py-2.5">
+        <div className="flex items-baseline gap-3">
+          <span className="type-body">Tansen</span>
+          <span className="type-callout text-secondary">{version || '…'}</span>
+        </div>
+        <p className="mt-1.5 type-callout-emphasized">
+          The first Apple Music-style local music player built in Rust.
+        </p>
+        <p className="mt-1 type-callout text-secondary">
+          Local-first — your library stays on disk and a native Rust audio
+          engine plays it. No telemetry, no account, no backend. Not
+          affiliated with Apple.
+        </p>
       </div>
     </section>
   );

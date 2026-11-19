@@ -3,9 +3,11 @@
 
   # Tansen
 
-  <p><strong>A local-first desktop music player for macOS: your library on
-  disk, optional catalogue sources when you want them, and nothing leaving
-  your machine.</strong></p>
+  <p><strong>The first Apple Music-style local music player, built in Rust.</strong></p>
+
+  <p>Your library stays on disk and a native Rust audio engine plays it —
+  optional catalogue sources when you want them, and nothing leaving your
+  machine.</p>
 
   <p>
     <a href="#features">Features</a> ·
