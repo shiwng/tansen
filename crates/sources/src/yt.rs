@@ -616,8 +616,7 @@ impl YtMusicSource {
         let token = sidecar_token()?;
         let jar = jar_path.or_else(discover_jar).ok_or_else(|| {
             SourceError::Protocol(
-                "sidecar jar not found (set TANSEN_SIDECAR_JAR or the sidecar_jar setting)"
-                    .into(),
+                "sidecar jar not found (set TANSEN_SIDECAR_JAR or the sidecar_jar setting)".into(),
             )
         })?;
         let java = java_path.or_else(discover_java).ok_or_else(|| {
