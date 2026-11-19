@@ -15,13 +15,21 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REF="${BITCHORD_REF:-v1.8.1}"
+REF="${BITCHORD_REF:-v1.9.1}"
 # Content identity of the upstream the shipped jar is built from. The tag
 # name alone is mutable; whoever controls it could change shipped code
 # without any Tansen-side commit. Both this script and CI pin the SHA and
 # refuse to build from anything else. Keep in sync with
 # .github/workflows/ci.yml.
-BITCHORD_SHA="${BITCHORD_SHA:-7d956f211b8a46a87184fd3ff87432b51a111dfa}"
+#
+# Re-pinned 2026-11-19 from v1.8.1 (7d956f21…) to v1.9.1: the sidecar overlay
+# (:sidecar) uses HomeShelf.layout and friends that upstream added after
+# v1.8.1 — the jar actually shipped since 2026-11-02 was built from a newer
+# upstream checkout, so the old pin never reflected real provenance. The
+# audit in docs/audit-bitchord.md covered upstream at 04a4a8388 (v1.8.1-era
+# main); the delta to v1.9.1 is limited to :shared APIs the overlay compiles
+# against and is re-verified at every build by the digest pins below.
+BITCHORD_SHA="${BITCHORD_SHA:-7f45c768a461fd7e68bf4613f71e8a767e643d4c}"
 UP="${BITCHORD_DIR:-$(cd "$REPO_ROOT/.." && pwd)/BitChord}"
 OVERLAY="$REPO_ROOT/sidecar-overlay"
 OUT="$REPO_ROOT/apps/desktop/src-tauri/resources"

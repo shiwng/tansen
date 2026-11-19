@@ -427,9 +427,13 @@ approval, not a code change.
 
 - **Severity:** Low. **Confidence:** High. **Verdict:** confirmed. **Status:** accepted.
 - **Evidence:** `apps/desktop/src-tauri/resources/sidecar-all.jar` is a bundled
-  artifact (18,289,719 bytes; SHA-256
-  `38bec046ae89d890c157c5614c4fa21bb31548ca6116d64dcacf12bdff6c08c0`). The build
-  script pins upstream BitChord commit `7d956f211b8a46a87184fd3ff87432b51a111dfa`
+  artifact (18,548,947 bytes; SHA-256
+  `eedbb8e3fdc645a48e77a5e1b5c8ce9ca74312e36f135015de0578775d8aca69`, rebuilt
+  2026-11-19). The build
+  script pins upstream BitChord commit `7f45c768a461fd7e68bf4613f71e8a767e643d4c`
+  (the v1.9.1 tag — re-pinned on 2026-11-19 from v1.8.1 `7d956f21…`, which the
+  overlay no longer compiles against; the previously recorded jar was built
+  from a newer upstream checkout, so the old pin understated its provenance)
   and refuses a dirty checkout; the runtime discovers and launches the JAR
   without comparing a hash. The `resources/` directory is gitignored, so the
   binary is reproducible from the pinned source, not reviewed as a tracked file.

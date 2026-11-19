@@ -329,7 +329,11 @@ private fun handle(ex: HttpExchange, body: suspend () -> JsonObject) {
     val (status, json) = try {
         val json = runBlocking { withContext(Dispatchers.IO) { body() } }
         if (json.containsKey("error")) {
-            explicitStatus(json) ?: statusForError(json) to json
+            // Bind the status first: `a ?: b to json` types as the Int/Pair
+            // intersection (reported as "Serializable"), which cannot
+            // destructure. Both branches below are Pair<Int, JsonObject>.
+            val status = explicitStatus(json) ?: statusForError(json)
+            status to json
         } else {
             200 to json
         }

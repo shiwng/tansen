@@ -32,10 +32,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: kushagrasinghx/BitChord
-          # Immutable commit the v1.8.1 tag pointed at when audited; the
-          # tag itself is mutable. Keep in sync with BITCHORD_SHA in
-          # scripts/build-sidecar.sh.
-          ref: 7d956f211b8a46a87184fd3ff87432b51a111dfa
+          # Immutable commit of the v1.9.1 tag the sidecar overlay compiles
+          # against; the tag itself is mutable. Keep in sync with
+          # BITCHORD_SHA in scripts/build-sidecar.sh.
+          ref: 7f45c768a461fd7e68bf4613f71e8a767e643d4c
           path: BitChord
           fetch-depth: 1
           persist-credentials: false
