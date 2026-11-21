@@ -43,7 +43,8 @@
   "bundle": {
     "macOS": {
       "entitlements": "Tansen.entitlements",
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "active": true,
     "targets": "all",

@@ -67,7 +67,7 @@ stable commit coordinates.
 | TSN-2026-06 | Radio station hostnames were not resolved before the engine opened the stream | Medium | confirmed | remediated | High |
 | TSN-2026-07 | CI workflow used default token permissions and persisted checkout credentials | Low | confirmed | remediated | High |
 | TSN-2026-08 | `libsqlite3-sys 0.30.1` is affected by RUSTSEC-2026-0459 / CVE-2026-119375 | Low | confirmed | remediated | High |
-| TSN-2026-09 | Release bundle is ad-hoc/linker-signed, not notarized, and fails `spctl` | Medium | confirmed | open | High |
+| TSN-2026-09 | Release bundle is ad-hoc signed, not notarized, and fails `spctl` | Medium | confirmed | open | High |
 | TSN-2026-10 | Sidecar token is compared with `==` and passed through the environment | Low | confirmed | remediated | High |
 | TSN-2026-11 | Project documents still claim `cargo audit` found zero vulnerabilities | Info | confirmed | remediated | High |
 | TSN-2026-12 | Google desktop OAuth client secret is embedded in the shipped binary | Info | confirmed | accepted | High |
@@ -347,28 +347,33 @@ approval, not a code change.
   ever imports a user-supplied SQLite file, re-check the advisory database at
   that time.
 
-### TSN-2026-09 — Release bundle is ad-hoc/linker-signed and not notarized
+### TSN-2026-09 — Release bundle is ad-hoc signed and not notarized
 
 - **Severity:** Medium. **Confidence:** High. **Verdict:** confirmed. **Status:** open.
 - **Components:** `target/release/bundle/macos/Tansen.app`.
 - **Preconditions:** The user downloads the bundle from a channel that is not
   integrity-protected, or an attacker can replace it before first launch.
-- **Evidence:** `codesign -dv --verbose=2` reports
-  `flags=0x20002(adhoc,linker-signed)`, `TeamIdentifier=not set`; the resource
-  envelope is absent (`Sealed Resources=none`, `Info.plist=not bound`);
-  `codesign --verify --deep --strict` exits 1 with "code has no resources but
-  signature indicates they must be present"; `spctl --assess --type execute`
-  exits 1. The bundle version is `0.3.0`.
-- **Impact:** Gatekeeper rejects the app on a clean machine; users cannot verify a
-  publisher identity; tampering after build is not detectable. This is a
-  distribution-integrity gap, not a runtime code vulnerability.
+- **Evidence:** `codesign -dv --verbose=4` reports
+  `flags=0x10002(adhoc,runtime)`, `TeamIdentifier=not set`, and
+  `Sealed Resources version=2 rules=13 files=75`; the bundle is ad-hoc signed
+  via `signingIdentity: "-"` in `apps/desktop/src-tauri/tauri.conf.json`.
+  `codesign --verify --deep --strict` exits 0; `spctl --assess --type execute`
+  exits 3 (rejected); `xcrun stapler validate` exits 65 (no ticket). The bundle
+  version is `0.3.0`.
+- **Impact:** Gatekeeper rejects the app on a clean machine because there is no
+  notarization ticket; users cannot verify a publisher identity. The resource
+  seal detects post-signing tampering with the bundle, but not substitution of
+  the entire DMG. This is a distribution-integrity gap, not a runtime code
+  vulnerability.
 - **Remediation (requires owner action):** Developer ID Application signing,
-  hardened runtime, a complete resource seal, notarization, and stapling. The
-  JVM entitlements are already in `Tansen.entitlements`; they should be reviewed
-  with the signing identity. Do not remove them blindly: the bundled JRE needs
-  JIT and unsigned executable memory.
-- **Status rationale:** signing credentials and `/Applications` installation were
-  explicitly out of scope without approval. The running build was not replaced.
+  hardened runtime, notarization, and stapling. The JVM entitlements are
+  already in `Tansen.entitlements`; they should be reviewed with the signing
+  identity. Do not remove them blindly: the bundled JRE needs JIT and unsigned
+  executable memory.
+- **Status rationale:** Ad-hoc signing is configured as a build-time stopgap so
+  macOS reports an unidentified developer rather than a damaged app; it is not
+  a substitute for Developer ID signing. Credentials, notarization, and
+  `/Applications` installation still require owner approval.
 
 ### TSN-2026-10 — Sidecar token comparison and environment exposure
 
@@ -427,9 +432,9 @@ approval, not a code change.
 
 - **Severity:** Low. **Confidence:** High. **Verdict:** confirmed. **Status:** accepted.
 - **Evidence:** `apps/desktop/src-tauri/resources/sidecar-all.jar` is a bundled
-  artifact (18,548,947 bytes; SHA-256
-  `eedbb8e3fdc645a48e77a5e1b5c8ce9ca74312e36f135015de0578775d8aca69`, rebuilt
-  2026-11-19). The build
+  artifact (18,548,923 bytes; SHA-256
+  `076e2ca2ab4e8f48066c4aec0b538aaba618b166229efe96632e3f731dff4739`, rebuilt
+  2026-11-21). The build
   script pins the upstream shared-module commit `7f45c768a461fd7e68bf4613f71e8a767e643d4c`
   (the v1.9.1 tag — re-pinned on 2026-11-19 from v1.8.1 `7d956f21…`, which the
   overlay no longer compiles against; the previously recorded jar was built
@@ -442,11 +447,11 @@ approval, not a code change.
   already has same-user/bundle write access, which is a stronger position than a
   remote attacker.
 - **Why accepted:** the artifact is launched from the app's own resources, the
-  distributed bundle is the integrity boundary (and is currently unsigned; see
-  TSN-2026-09), and runtime hashing would require a build-time manifest and a
-  key-management decision. Record the hash in release notes and verify it during
-  packaging. Do not treat the JAR as line-reviewed source; only the overlay and
-  provenance were reviewed.
+  distributed bundle is the integrity boundary (and is currently ad-hoc signed
+  but unnotarized; see TSN-2026-09), and runtime hashing would require a
+  build-time manifest and a key-management decision. Record the hash in
+  release notes and verify it during packaging. Do not treat the JAR as
+  line-reviewed source; only the overlay and provenance were reviewed.
 
 ### TSN-2026-14 — User-supplied PaxSenix API key is stored in `localStorage`
 
@@ -589,7 +594,7 @@ was tested rather than assumed.
 | `cargo deny check licenses` | Passes against the explicit `[licenses]` allowlist in `deny.toml`. |
 | `pnpm audit --audit-level=high` | 0 known vulnerabilities (re-run 2026-11-19). |
 | Secret scan | 329 product/report files + `dist` + packaged app + 32 commits; 0 source/history hits; 1 expected binary hit (public desktop client secret); 0 token/private-key patterns. |
-| macOS bundle | Ad-hoc/linker-signed; `TeamIdentifier=not set`; `Sealed Resources=none`; `codesign --verify --deep --strict` exit 1; `spctl` exit 1. |
+| macOS bundle | Ad-hoc signed (`signingIdentity: "-"`); valid resource seal; `TeamIdentifier=not set`; `codesign --verify --deep --strict` exit 0; `spctl` exit 3 (unnotarized). |
 | Runtime Google auth | Real sign-in succeeded earlier in the audit as the owner's Google test account; profile persisted; Keychain item present; session restore, forced refresh, sign-out cleanup, and re-sign-in verified. The app was closed before final report assembly; no restart was performed. |
 
 ## 8. Coverage notes

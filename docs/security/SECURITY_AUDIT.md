@@ -15,7 +15,7 @@
 > **Bottom line.** The application has a sound local-first security architecture
 > and the high-risk network paths were materially hardened during this audit. One
 > conditional High-severity redirect/SSRF finding was remediated and
-> regression-tested; the remaining High-impact concern is the unsigned,
+> regression-tested; the remaining High-impact concern is the ad-hoc-signed,
 > unnotarized macOS distribution. The former SQLite advisory is fixed and the
 > supply-chain inputs are digest-pinned; a small set of documented residual
 > risks remains. This report does **not** claim that Tansen is "100% secure" or
@@ -40,6 +40,13 @@
 > `cargo fmt --all` was applied, the gate now passes, and clippy plus the full
 > suite were re-run afterwards. TSN-2026-17/18 regression tests were run
 > explicitly and pass.
+
+> **Revision 2026-11-21 (release packaging).** The v0.3.0 bundle is now
+> ad-hoc signed via `signingIdentity: "-"`, so it has a valid resource seal and
+> `codesign --verify --deep --strict` exits 0; it remains unnotarized and
+> `spctl` rejects it (TSN-2026-09). The sidecar was rebuilt from the pinned
+> upstream commit (`7f45c768…`) and its final SHA-256 is
+> `076e2ca2…dff4739`. All release gates pass; see the v0.3.0 release notes.
 
 ---
 
@@ -79,9 +86,10 @@ because most security-relevant code is untracked or modified.
 
 **What remains**
 
-- The release bundle is ad-hoc/linker-signed, has no TeamIdentifier or sealed
-  resources, and `spctl` rejects it (`TSN-2026-09`, Medium, open). Developer ID
-  signing and notarization require owner credentials/approval.
+- The release bundle is ad-hoc signed with a valid resource seal but has no
+  TeamIdentifier and is not notarized; `spctl` rejects it (`TSN-2026-09`,
+  Medium, open). Developer ID signing and notarization require owner
+  credentials/approval.
 - ~~`libsqlite3-sys 0.30.1` is affected by RUSTSEC-2026-0459.~~ Fixed on
   2026-11-17: `rusqlite 0.41` resolves `libsqlite3-sys 0.39.1`, and `cargo
   audit` reports 0 vulnerabilities (`TSN-2026-08`, remediated).
@@ -109,9 +117,9 @@ expected public desktop-client secret.
 
 **Posture.** The security architecture is coherent and the sensitive paths are
 defended in depth. The product is **adequate for a development/local-first
-build**, but **not yet release-grade** because of the unsigned distribution and
-the residual network/entitlement risks. None of those is a reason to describe
-the app as "secure" without qualification.
+build**, but **not yet release-grade** because of the ad-hoc-signed,
+unnotarized distribution and the residual network/entitlement risks. None of
+those is a reason to describe the app as "secure" without qualification.
 
 ---
 
@@ -272,7 +280,7 @@ playback and the audio callback is real-time safe.
 | Local library paths and metadata | Privacy (what the user listens to and stores) | Path traversal, over-broad scanning, log leakage, local file read |
 | Playback state, queue, history | Integrity and privacy | IPC abuse, local database tampering, crash/DoS |
 | User's local network and loopback services | SSRF pivot target | Malicious source/addon URL or redirect, DNS rebinding |
-| App bundle and sidecar JAR | Code integrity | Unsigned distribution, same-user file write (build inputs are now digest-pinned) |
+| App bundle and sidecar JAR | Code integrity | Ad-hoc-signed/unnotarized distribution, same-user file write (build inputs are now digest-pinned) |
 | Third-party API keys (PaxSenix, Musixmatch fallback) | Provider abuse, not user account access | Frontend extraction, `localStorage` read, bundled secret |
 | User's files and downloads | Data integrity/availability | Malicious download content, filename traversal, disk exhaustion |
 
@@ -373,8 +381,8 @@ concerns. This is intentional, not a coverage gap.
 - `.git/`: VCS metadata.
 - `docs/security/`: the audit deliverables themselves.
 
-Artifact records: sidecar JAR 18,289,719 bytes, SHA-256
-`38bec046ae89d890c157c5614c4fa21bb31548ca6116d64dcacf12bdff6c08c0`;
+Artifact records: sidecar JAR 18,548,923 bytes, SHA-256
+`076e2ca2ab4e8f48066c4aec0b538aaba618b166229efe96632e3f731dff4739`;
 JRE directory 30,468,482 bytes. The JAR's upstream source is pinned by commit;
 the JRE is a binary dependency and is not line-reviewed.
 
@@ -461,7 +469,7 @@ credentials and owner approval, not a code change.
 | `cargo deny check licenses` | Passes against the `[licenses]` allowlist |
 | `pnpm audit --audit-level=high` | 0 known vulnerabilities (re-run 2026-11-19) |
 | Secret scan | 329 product/report files + `dist` + bundle + 32 commits: 0 source/history leaks; 1 expected binary client-secret hit; 0 standard token/private-key patterns |
-| macOS bundle | Ad-hoc/linker-signed; no TeamIdentifier; no sealed resources; `codesign --verify --deep --strict` exit 1; `spctl` exit 1 |
+| macOS bundle | Ad-hoc signed (`signingIdentity: "-"`) with a valid resource seal; no TeamIdentifier; `codesign --verify --deep --strict` exit 0; `spctl` exit 3 (unnotarized) |
 
 The frontend suite is green in the current tree: the Albums empty-state test no
 longer expects an `Import folder` button in that header (the button was removed
@@ -578,7 +586,7 @@ behavior was not fuzzed.
   tag-based, so the digest constants must be updated with the sidecar version
   (TSN-2026-15).
 - **Artifacts:** the sidecar JAR hash is recorded
-  (`38bec046…f6c08c0`), but the runtime does not verify it
+  (`076e2ca2…dff4739`), but the runtime does not verify it
   (TSN-2026-13). The JRE is a bundled binary; its size is recorded and its JVM
   entitlements are documented. Neither was line-reviewed.
 - **No SBOM** was generated. The lockfiles and the audit's artifact records
@@ -586,11 +594,12 @@ behavior was not fuzzed.
 
 ### 8.4 Distribution
 
-The macOS bundle is ad-hoc/linker-signed, has no TeamIdentifier, no sealed
-resources, and no notarization. `codesign --verify --deep --strict` and `spctl`
-both fail. This is the largest release-integrity gap (TSN-2026-09). The JVM
-entitlements (`allow-jit`, `allow-unsigned-executable-memory`,
-`disable-library-validation`) are required by the bundled JRE but widen the
+The macOS bundle is ad-hoc signed with a valid resource seal but has no
+TeamIdentifier and is not notarized. `codesign --verify --deep --strict`
+passes; `spctl` rejects it. This is the largest release-integrity gap
+(TSN-2026-09). The JVM entitlements (`allow-jit`,
+`allow-unsigned-executable-memory`, `disable-library-validation`) are required
+by the bundled JRE but widen the
 hardened-runtime surface (R-03); they should be reviewed as part of the signing
 work, not removed blindly.
 
@@ -667,9 +676,9 @@ not delete or modify user data. A future privacy note should state the
 | Custom art protocol | Canonicalized file and root; traversal/symlink tests | `main.rs:774-790`, tests |
 | Keychain | Generic-password items, separate services, OS ACL | `keychain.rs` |
 | Entitlements | JVM JIT/unsigned executable memory/library validation disabled | `Tansen.entitlements:5-14` |
-| Code signature | Ad-hoc/linker-signed; no TeamIdentifier; no sealed resources | `codesign -dv --verbose=4` |
-| Notarization / Gatekeeper | Not notarized; `spctl` rejects | `spctl --assess` exit 1 |
-| Hardened runtime | Incomplete until proper signing; entitlements present | TSN-2026-09 / R-03 |
+| Code signature | Ad-hoc signed; no TeamIdentifier; valid resource seal | `codesign -dv --verbose=4` |
+| Notarization / Gatekeeper | Not notarized; `spctl` rejects | `spctl --assess` exit 3 |
+| Hardened runtime | Ad-hoc hardened runtime with JVM entitlements; not notarized | TSN-2026-09 / R-03 |
 | Sidecar isolation | Loopback + per-launch token; no account/cookies | `Main.kt:50-77`; `yt.rs:514-534` |
 
 The JVM entitlements are a deliberate trade-off: the bundled JRE needs JIT and
@@ -750,8 +759,9 @@ The main rejected candidates were:
 6. **The app was closed at final assembly.** Runtime auth evidence was collected
    earlier; no restart was performed without approval. The Keychain session was
    preserved.
-7. **No Developer ID signing/notarization.** The bundle is ad-hoc signed and
-   `spctl` rejects it. This is an open distribution gap (TSN-2026-09).
+7. **No Developer ID signing/notarization.** The bundle is ad-hoc signed with
+   a valid resource seal and `spctl` rejects it. This is an open distribution
+   gap (TSN-2026-09).
 8. **Advisory database snapshot.** `cargo audit` and `pnpm audit` reflect the
    databases at the audit date; new advisories can appear.
 9. **License allowlist, not legal advice.** `deny.toml` now has an explicit
@@ -788,8 +798,8 @@ not to a regulated multi-tenant service.
 | Availability and abuse resistance | **Adequate** | 8 MiB body caps, queue/volume caps, bounded downloads; some trusted-zone bodies uncapped; no fuzzing. |
 | Dependency and supply chain | **Adequate** | Lockfiles, clean `cargo audit`, `deny` license allowlist, read-only CI token, SHA-pinned actions, SHA-256-pinned JitPack artifacts. No runtime JAR verification. |
 | macOS platform and distribution | **Weak** | JVM entitlements and minimal capabilities are deliberate; the bundle is ad-hoc signed, unnotarized, and rejected by Gatekeeper. |
-| Verification and regression coverage | **Adequate** | 260 Rust tests, 143/143 frontend, build, clean audits, secret scan, runtime auth. No fuzzing and no sandbox. |
-| **Overall** | **Adequate for a development/local-first build; not release-grade** | Strong runtime architecture and materially improved network defenses, offset by unsigned distribution and residual network/entitlement risks. |
+| Verification and regression coverage | **Adequate** | 262 Rust tests (9 ignored), 143/143 frontend, build, clean audits, secret scan, runtime auth. No fuzzing and no sandbox. |
+| **Overall** | **Adequate for a development/local-first build; not release-grade** | Strong runtime architecture and materially improved network defenses, offset by ad-hoc-signed/unnotarized distribution and residual network/entitlement risks. |
 
 The scorecard is not a percentage and is not a guarantee. It is a judgment
 grounded in the evidence in this report and the findings register.
@@ -898,8 +908,8 @@ files; the audit's changes are identified by the controls and tests in §6.1.
   the signed-in test account. The app was closed during final assembly;
   no restart/install was performed.
 - The only remaining Tansen app bundle is
-  `target/release/bundle/macos/Tansen.app` (version `0.3.0`), ad-hoc signed.
-  `/Applications` has no Tansen installed.
+  `target/release/bundle/macos/Tansen.app` (version `0.3.0`), ad-hoc signed
+  with a valid resource seal. `/Applications` has no Tansen installed.
 - No commit, push, tag, release, publication, credential rotation, deletion of
   user data, or macOS setting change was performed.
 
@@ -908,10 +918,10 @@ files; the audit's changes are identified by the controls and tests in §6.1.
 ## 17. Conclusion
 
 The audit confirmed a coherent local-first design and materially improved its
-weakest network paths. Eleven findings are remediated in the current tree,
+weakest network paths. Fifteen findings are remediated in the current tree,
 including the conditional High-severity download redirect/SSRF issue, the
 SQLite advisory, the sidecar token comparison, and the supply-chain pins. The
-remaining risk is concentrated in release integrity (unsigned/unnotarized
+remaining risk is concentrated in release integrity (ad-hoc-signed/unnotarized
 bundle) and a small set of documented residuals (media-hop DNS race,
 trusted-zone body caps, JVM entitlements, embedded third-party secrets).
 

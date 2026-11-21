@@ -3,11 +3,16 @@
 All notable changes to Tansen are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] - 2026-11-19
+## [0.3.0] - 2026-11-21
 
 First public release. Local-first music player for macOS with optional
 catalogue streaming. (The 0.3.0 release-candidate line was dated 2026-11-03;
 the public release adds the hardening and community work below.)
+
+### Installation
+- Download `Tansen_0.3.0_aarch64.dmg` and `SHA256SUMS.txt` from [GitHub Releases](https://github.com/shiwng/tansen/releases/tag/v0.3.0). The DMG is built for **macOS 11+ on Apple Silicon (arm64)**.
+- Verify the disk image with `shasum -a 256 -c SHA256SUMS.txt`, then drag Tansen to `Applications`.
+- The v0.3.0 build is **unsigned and unnotarized** (no Apple Developer ID signature and no notarization ticket). On first launch, open **System Settings → Privacy & Security → Open Anyway**, or run `xattr -cr /Applications/Tansen.app` once before opening the app.
 
 ### Player
 - Task-based playback engine (single writer, bounded command channel, event-driven state), gapless local playback via `rodio`/`Symphonia`.
@@ -27,6 +32,7 @@ the public release adds the hardening and community work below.)
 - Google Sign-In (OAuth 2.0 + PKCE, Keychain-only tokens) and public Spotify playlist import matched to YouTube Music.
 
 ### Added
+- First downloadable macOS Apple Silicon DMG (`Tansen_0.3.0_aarch64.dmg`), containing the unsigned, unnotarized app plus the pinned sidecar JAR and bundled Java 17 runtime; requires macOS 11+ (`TSN-2026-09`).
 - Cross-platform preparation: macOS-only `objc2`/`block2` crates gated under `[target.'cfg(target_os = "macos")'.dependencies]`, Windows window override (`apps/desktop/src-tauri/tauri.windows.conf.json`), cross-platform OAuth browser launch, and Windows headless `java.exe` spawning.
 - Open-source community and CI files: `LICENSE` (GPL-3.0-or-later), `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, GitHub issue/PR templates, and expanded CI checks (`rustfmt`, `clippy`, `cargo audit`, `cargo deny`, `pnpm audit`).
 
@@ -46,4 +52,5 @@ the public release adds the hardening and community work below.)
 ### Known Limitations
 - Opus/WebM decode and HLS/DASH manifests unsupported (progressive streams and AAC supply used instead).
 - Quality setting applies to newly resolving tracks; playback speed and sleep timer not implemented.
-- No auto-updater; Apple Developer ID signing and notarization not yet configured (`TSN-2026-09`).
+- The published artifact is Apple Silicon-only (arm64); Intel, Windows, and Linux builds are untested.
+- No auto-updater; Apple Developer ID signing and notarization not yet configured. The app in the v0.3.0 DMG is unsigned and unnotarized (`TSN-2026-09`).

@@ -80,8 +80,8 @@ Read [docs/architecture.md](docs/architecture.md) for the full design and [docs/
 
 | Platform | Status | Notes |
 |---|---|---|
-| **macOS (Apple Silicon)** | **Verified** | Primary platform; tested on macOS 27.2.1 (arm64) against a 10.15 deployment target. Native Now Playing and macOS Keychain integration. Release bundles are currently ad-hoc signed (Developer ID signing and notarization are not yet configured; see [TSN-2026-09](docs/security/SECURITY_FINDINGS.md)). |
-| **macOS (Intel)** | **Experimental / Untested** | The app targets 10.15+, but Intel packaging and the architecture-specific bundled JRE have not been exercised. |
+| **macOS (Apple Silicon)** | **Verified** | Primary platform; tested on macOS 27.2.1 (arm64) with an 11.0 deployment target. Native Now Playing and macOS Keychain integration. The release DMG is not signed with an Apple Developer ID and is not notarized (see [TSN-2026-09](docs/security/SECURITY_FINDINGS.md)). |
+| **macOS (Intel)** | **Experimental / Untested** | The published build is Apple Silicon-only and targets macOS 11.0+; Intel packaging and the architecture-specific bundled JRE have not been exercised. |
 | **Windows** | **Experimental / Untested** | Cross-platform window config and process spawning are in place, but Windows builds and CI have not been exercised yet. Keychain storage is currently macOS-only. |
 | **Linux** | **Experimental / Untested** | Not tested or packaged in CI; Keychain storage is currently macOS-only. |
 
@@ -93,6 +93,27 @@ Read [docs/architecture.md](docs/architecture.md) for the full design and [docs/
   - **For packaging (and the YouTube Music sidecar)**: JDK 17 (`JAVA_HOME`) and Android SDK (`platforms;android-37`) for building the pinned upstream sidecar JAR + bundled `jlink` JRE. Local library playback and `tauri dev` work without Java; `tauri build` expects the generated sidecar resources.
 
 ## Installation
+
+### Download (macOS, Apple Silicon)
+
+The **v0.3.0** release is distributed as a DMG on
+[GitHub Releases](https://github.com/shiwng/tansen/releases/latest). It requires
+**macOS 11 (Big Sur) or later on Apple Silicon**. Download the `.dmg` and the
+matching `SHA256SUMS.txt`, then verify the disk image before opening it:
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+The current build is **unsigned and unnotarized**: there is no Apple Developer
+ID signature and no notarization ticket. On first launch macOS Gatekeeper
+blocks it. Open **System Settings → Privacy & Security**, click **Open Anyway**,
+then confirm. After dragging Tansen to Applications, you can instead run
+`xattr -cr /Applications/Tansen.app` once to clear the quarantine attribute
+before opening the app. On macOS 14 and earlier, right-clicking the app and
+choosing **Open** also works. This is expected for an unsigned, unnotarized
+build — not a corrupted download. Verify the SHA-256 first. See
+[TSN-2026-09](docs/security/SECURITY_FINDINGS.md).
 
 ### From Source (Verified Local Workflow)
 
@@ -117,10 +138,10 @@ The `tansen` cask name is currently unclaimed on Homebrew. Publishing it
 requires a signed, notarized DMG first; Developer ID signing credentials are
 not yet configured, so this step is **blocked**, not silently skipped — see
 [packaging/homebrew/README.md](packaging/homebrew/README.md) for the exact
-release → cask sequence and the current blocker. Until then, Gatekeeper will
-reject unsigned local builds on a clean machine (right-click → Open works
-around it for self-built copies; see `TSN-2026-09` in
-[docs/security/SECURITY_FINDINGS.md](docs/security/SECURITY_FINDINGS.md)).
+release → cask sequence and the current blocker. Until then, the app in the
+release DMG is unsigned and unnotarized, so macOS requires each user to allow
+it in **System Settings → Privacy & Security** on first launch (`TSN-2026-09`
+in [docs/security/SECURITY_FINDINGS.md](docs/security/SECURITY_FINDINGS.md)).
 
 ## Development
 
@@ -171,7 +192,8 @@ cargo test -p sources --test yt_supervisor -- --ignored --nocapture
 - Playback speed and sleep timer are not implemented; audio quality changes apply to newly resolved tracks.
 - Google Sign-In and Subsonic password storage use the macOS Keychain; non-macOS platforms return a `"keychain unavailable"` error.
 - Queue entries are keyed by track ID: if the same track is queued twice, removing or moving one copy targets the first matching entry.
-- Auto-update, Developer ID signing, and macOS notarization are not yet configured (`TSN-2026-09`).
+- The published binary is Apple Silicon-only; Intel, Windows, and Linux builds are untested.
+- Auto-update, Developer ID signing, and macOS notarization are not yet configured; the app in the v0.3.0 DMG is unsigned and unnotarized (`TSN-2026-09`).
 
 ## Security
 

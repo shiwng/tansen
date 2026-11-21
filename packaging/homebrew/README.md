@@ -13,18 +13,19 @@ name is free. Getting there requires the following sequence, in order:
 
 1. **Signed, notarized DMG** — *currently blocked*: `security find-identity -v
    -p codesigning` finds **0 valid Developer ID identities** on the build
-   machine. The app is only ad-hoc signed (`TSN-2026-09`). Once an Apple
-   Developer ID Application certificate is available:
+   machine. The app is unsigned and unnotarized for Gatekeeper purposes (only
+   an ad-hoc bundle seal is present; `TSN-2026-09`). Once an Apple Developer ID
+   Application certificate is available:
 
    ```bash
-   export APPLE_CERTIFICATE_SIGNING_IDENTITY="Developer ID Application: <name> (<team-id>)"
+   export APPLE_SIGNING_IDENTITY="Developer ID Application: <name> (<team-id>)"
    export APPLE_ID="<apple-id-email>"
    export APPLE_PASSWORD="<app-specific-password>"
    export APPLE_TEAM_ID="<team-id>"
    pnpm --dir apps/desktop tauri build
-   codesign --verify --deep --strict src-tauri/target/release/bundle/macos/Tansen.app
-   spctl --assess --type execute src-tauri/target/release/bundle/macos/Tansen.app   # must say "accepted"
-   xcrun stapler validate src-tauri/target/release/bundle/dmg/Tansen_0.3.0_aarch64.dmg
+   codesign --verify --deep --strict target/release/bundle/macos/Tansen.app
+   spctl --assess --type execute target/release/bundle/macos/Tansen.app   # must say "accepted"
+   xcrun stapler validate target/release/bundle/dmg/Tansen_0.3.0_aarch64.dmg
    ```
 
    Keep the hardened-runtime entitlements in `Tansen.entitlements`: the bundled

@@ -18,7 +18,7 @@ cask "tansen" do
   end
 
   depends_on arch: :arm64
-  depends_on macos: ">= :catalina"
+  depends_on macos: ">= :big_sur"
 
   app "Tansen.app"
 

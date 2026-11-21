@@ -42,6 +42,10 @@ implementation.txt
 reports.txt
 skills-lock.json
 
+# Release artifacts are generated per build and attached to the GitHub release
+/SHA256SUMS.txt
+/Tansen_*.dmg
+
 # Dependency management lives in apps/desktop
 /package.json
 /package-lock.json
