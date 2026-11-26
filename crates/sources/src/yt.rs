@@ -532,6 +532,27 @@ fn sidecar_token() -> Result<String, SourceError> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// The jar and the JVM run as this user, so a path another account can replace is not
+/// a path to execute: it must be a regular file and not writable by group or other.
+/// A symlink is refused for the same reason, and so is anything that is not a file.
+fn spawnable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.file_type().is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o022 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn spawn_and_await(
     jar: &Path,
     java: &str,
@@ -624,6 +645,17 @@ impl YtMusicSource {
                 "no Java runtime found (set the java_path setting or JAVA_HOME)".into(),
             )
         })?;
+        if !spawnable(&jar) {
+            return Err(SourceError::Protocol(format!(
+                "sidecar jar {} is not a regular file or is writable by another account",
+                jar.display()
+            )));
+        }
+        if !spawnable(Path::new(&java)) {
+            return Err(SourceError::Protocol(format!(
+                "java runtime {java} is not a regular file or is writable by another account"
+            )));
+        }
         let (port, child, version) = spawn_and_await(&jar, &java, &token)?;
         Ok(Self {
             port: Mutex::new(port),
@@ -1531,5 +1563,36 @@ mod host_allowlist_tests {
         ));
         assert!(!yt_stream_host_allowed("file:///etc/passwd"));
         assert!(!yt_stream_host_allowed("not a url"));
+    }
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::spawnable;
+    use std::path::Path;
+
+    #[test]
+    fn only_a_regular_file_another_account_cannot_write_is_executed() {
+        let dir = std::env::temp_dir().join(format!("tansen-spawn-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("sidecar-all.jar");
+        std::fs::write(&jar, b"x").unwrap();
+        assert!(spawnable(&jar));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&jar, std::fs::Permissions::from_mode(0o666)).unwrap();
+            assert!(!spawnable(&jar), "group and other writable is refused");
+            std::fs::set_permissions(&jar, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+            let link = dir.join("link.jar");
+            std::os::unix::fs::symlink(&jar, &link).unwrap();
+            assert!(!spawnable(&link), "a symlink is refused");
+        }
+
+        assert!(!spawnable(&dir), "a directory is refused");
+        assert!(!spawnable(&dir.join("missing.jar")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
