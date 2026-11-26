@@ -71,7 +71,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "library",
  "notify",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "library"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lofty",
  "persistence",
@@ -2760,7 +2760,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "persistence"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -2836,7 +2836,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "playback"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "netguard",
  "persistence",
@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "sources"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "getrandom 0.2.17",
@@ -4148,7 +4148,7 @@ dependencies = [
 
 [[package]]
 name = "tansen"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "app-core",
  "async-trait",

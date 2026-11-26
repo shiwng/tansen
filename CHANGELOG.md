@@ -3,6 +3,21 @@
 All notable changes to Tansen are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-11-26
+
+Security fixes from the review of the 0.3.0 build. No feature changes.
+
+### Installation
+- Download `Tansen_0.3.1_aarch64.dmg` and `SHA256SUMS.txt` from [GitHub Releases](https://github.com/shiwng/tansen/releases/tag/v0.3.1). The DMG is built for **macOS 11+ on Apple Silicon (arm64)**.
+- Verify the disk image with `shasum -a 256 -c SHA256SUMS.txt`, then drag Tansen to `Applications`.
+- The build is still unsigned and unnotarized. On first launch use **System Settings, Privacy and Security, Open Anyway**, or run `xattr -cr /Applications/Tansen.app` once before opening.
+
+### Security
+- **Outbound fetches refuse the ranges that are never public.** `netguard` classified only RFC 1918, loopback, link local and IPv6 unique local addresses. Carrier grade NAT (`100.64.0.0/10`), the IANA protocol, test net and benchmarking blocks, multicast and the reserved block are now local too, and the IPv4 address carried inside NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) addresses is judged by its own range. Every client that asks `netguard` inherits the fix, so a source URL, a stream read or an artwork fetch cannot pivot into the host network through an IPv6 transition address.
+- **Radio station artwork connects to the address it resolved.** The host name was checked for "local" and then resolved a second time by the HTTP client, so a publisher's name that resolves to a private address once passed the check. The connection is now pinned to the validated address, and redirects are refused rather than followed to a second, unpinned host.
+- **A login startup folder is refused as a downloads destination.** A download folder pointed at `LaunchAgents`, `LaunchDaemons`, `etc/cron.*` or the XDG and Windows autostart folders would place a downloaded file where the session runs it without the user opening it. A destination that turned into a symlink is refused as well.
+- **The sidecar jar and the JVM are only started when another account cannot rewrite them.** Both are executed as the user, and their paths come from settings, so a file that is a symlink, not a regular file, or writable by group or other is refused with the path in the error.
+
 ## [0.3.0] - 2026-11-21
 
 First public release. Local-first music player for macOS with optional
