@@ -17,22 +17,55 @@ use url::Url;
 
 /// Whether an address is loopback, private, link-local, or unspecified —
 /// the address families a source server must not pivot a fetch into.
-/// IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is judged by its embedded IPv4.
+/// IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is judged by its embedded IPv4, and so
+/// are NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`), which a host with that
+/// transition route resolves to the IPv4 address they carry.
 pub fn ip_is_local(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
-        }
+        IpAddr::V4(v4) => v4_is_local(u32::from(v4)),
         IpAddr::V6(v6) => {
             if let Some(mapped) = v6.to_ipv4_mapped() {
-                return ip_is_local(IpAddr::V4(mapped));
+                return v4_is_local(u32::from(mapped));
+            }
+            let o = v6.segments();
+            if o[0..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+                return v4_is_local(((o[6] as u32) << 16) | o[7] as u32);
+            }
+            if o[0] == 0x2002 {
+                return v4_is_local(((o[1] as u32) << 16) | o[2] as u32);
             }
             v6.is_loopback()
                 || v6.is_unique_local()
                 || v6.is_unicast_link_local()
                 || v6.is_unspecified()
+                || v6.is_multicast()
         }
     }
+}
+
+/// IPv4 ranges the IANA special-purpose registry does not describe as globally
+/// reachable: a fetch aimed at one reaches the host or its local network.
+const LOCAL_V4: [(u32, u32); 14] = [
+    (0x0000_0000, 8),  // this network
+    (0x0a00_0000, 8),  // private
+    (0x6440_0000, 10), // carrier-grade NAT
+    (0x7f00_0000, 8),  // loopback
+    (0xa9fe_0000, 16), // link-local
+    (0xac10_0000, 12), // private
+    (0xc000_0000, 24), // IETF protocol assignments
+    (0xc000_0200, 24), // TEST-NET-1
+    (0xc0a8_0000, 16), // private
+    (0xc612_0000, 15), // benchmarking
+    (0xc633_6400, 24), // TEST-NET-2
+    (0xcb00_7100, 24), // TEST-NET-3
+    (0xe000_0000, 4),  // multicast
+    (0xf000_0000, 4),  // reserved, broadcast included
+];
+
+fn v4_is_local(ip: u32) -> bool {
+    LOCAL_V4
+        .iter()
+        .any(|&(net, bits)| ip & (u32::MAX << (32 - bits)) == net)
 }
 
 /// Strips the brackets url's `host_str()` puts around IPv6 hosts, so
@@ -133,6 +166,11 @@ mod tests {
             "172.16.0.1",   // private
             "169.254.1.1",  // link-local
             "0.0.0.0",      // unspecified
+            "100.64.1.1",   // carrier-grade NAT
+            "192.0.0.8",    // IETF protocol assignments
+            "198.18.0.1",   // benchmarking
+            "224.0.0.1",    // multicast
+            "240.0.0.1",    // reserved
         ] {
             assert!(host_is_local(host), "{host} must classify local");
         }
@@ -150,10 +188,18 @@ mod tests {
             "fe80::1",          // link-local
             "::ffff:127.0.0.1", // IPv4-mapped loopback
             "::ffff:10.0.0.5",  // IPv4-mapped private
+            "64:ff9b::7f00:1",  // NAT64 loopback
+            "2002:0a00:0001::", // 6to4 private
+            "ff02::1",          // multicast
         ] {
             assert!(host_is_local(host), "{host} must classify local");
         }
-        for host in ["2001:4860:4860::8888", "2606:4700::1111"] {
+        for host in [
+            "2001:4860:4860::8888",
+            "2606:4700::1111",
+            "64:ff9b::808:808", // NAT64 public
+            "2002:0808:0808::", // 6to4 public
+        ] {
             assert!(!host_is_local(host), "{host} must classify non-local");
         }
     }
