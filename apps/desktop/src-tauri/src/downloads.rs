@@ -301,9 +301,18 @@ impl DownloadManager {
         if path.is_empty() {
             return Err("downloads folder is empty".into());
         }
+        if destination_is_startup_dir(Path::new(path)) {
+            return Err(
+                "a login-time startup folder cannot hold downloads: a downloaded file there runs without being opened"
+                    .into(),
+            );
+        }
         let dir = PathBuf::from(path);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(format!("{} is a symlink", dir.display()));
+        }
         repo::set_setting(&self.db, SETTING_DIR, path).map_err(|e| e.to_string())?;
         self.emit();
         Ok(())
@@ -1162,6 +1171,40 @@ fn file_stem(artist: &str, title: &str, track_id: &str) -> String {
     }
 }
 
+/// Directories whose contents a login session runs by itself. A download folder
+/// there makes a downloaded file something the user never chooses to open.
+/// shortcut: a named list, not a policy; a Windows Startup entry under a renamed
+/// profile is not caught.
+fn destination_is_startup_dir(path: &Path) -> bool {
+    let mut candidate = path.to_string_lossy().replace('\\', "/");
+    while candidate.ends_with('/') {
+        candidate.pop();
+    }
+    let mut held = vec![
+        "/Library/LaunchAgents".to_string(),
+        "/Library/LaunchDaemons".to_string(),
+        "/System/Library/LaunchAgents".to_string(),
+        "/System/Library/LaunchDaemons".to_string(),
+        "/etc/cron.d".to_string(),
+        "/etc/cron.daily".to_string(),
+        "/etc/cron.hourly".to_string(),
+    ];
+    for home in [std::env::var("HOME"), std::env::var("APPDATA")]
+        .into_iter()
+        .flatten()
+    {
+        let home = home.trim_end_matches('/').replace('\\', "/");
+        held.push(format!("{home}/Library/LaunchAgents"));
+        held.push(format!("{home}/Library/LaunchDaemons"));
+        held.push(format!("{home}/.config/autostart"));
+        held.push(format!(
+            "{home}/Microsoft/Windows/Start Menu/Programs/Startup"
+        ));
+    }
+    held.iter()
+        .any(|dir| candidate == *dir || candidate.starts_with(&format!("{dir}/")))
+}
+
 fn unique_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
     let ext = if extension.is_empty() {
         "audio"
@@ -1466,5 +1509,24 @@ mod tests {
         assert!(!exceeds_download_cap(0));
         assert!(!exceeds_download_cap(MAX_DOWNLOAD_BYTES));
         assert!(exceeds_download_cap(MAX_DOWNLOAD_BYTES + 1));
+    }
+
+    #[test]
+    fn a_login_startup_folder_is_refused_as_a_download_destination() {
+        for dir in [
+            "/Library/LaunchAgents",
+            "/Library/LaunchAgents/",
+            "/System/Library/LaunchDaemons/com.example.plist",
+            "/etc/cron.daily",
+        ] {
+            assert!(destination_is_startup_dir(Path::new(dir)), "{dir}");
+        }
+        for dir in ["/Users/x/Music/Downloads", "/tmp/launchagents", "/Library"] {
+            assert!(!destination_is_startup_dir(Path::new(dir)), "{dir}");
+        }
+        let home = std::env::temp_dir()
+            .join("tansen-dest-test")
+            .join("Library");
+        assert!(!destination_is_startup_dir(&home));
     }
 }
