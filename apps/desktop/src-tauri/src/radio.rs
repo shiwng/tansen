@@ -397,23 +397,20 @@ pub async fn radio_artwork(state: crate::StateHandle<'_>, url: String) -> Result
             return Ok(cached.to_string_lossy().into_owned());
         }
     }
+    // The name is checked above and the connection is pinned to the address it
+    // resolved to, so a publisher cannot point a public name at a local service
+    // after the check. Redirects are refused: a hop is a second, unpinned host.
+    let pinned = netguard::resolve_validated(&parsed)
+        .map_err(|e| format!("artwork host not allowed: {e}"))?;
     const MAX: u64 = 3 * 1024 * 1024;
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent(USER_AGENT)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            let ok =
-                attempt.url().scheme() == "https" && !netguard::url_host_is_local(attempt.url());
-            if attempt.previous().len() >= 6 {
-                attempt.error("too many redirects")
-            } else if ok {
-                attempt.follow()
-            } else {
-                attempt.error("artwork redirect not allowed")
-            }
-        }))
-        .build()
-        .map_err(|e| e.to_string())?;
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(host) = netguard::dns_host(&parsed) {
+        builder = builder.resolve(&host, pinned);
+    }
+    let client = builder.build().map_err(|e| e.to_string())?;
     let response = client
         .get(&url)
         .send()
